@@ -1,0 +1,5 @@
+project_id = "your-gcp-project-id"
+# region        = "us-central1"
+# app_name      = "llm-gateway"
+# github_repo   = "AdamczykMaciej/llm-gateway"
+# gateway_image = "us-central1-docker.pkg.dev/your-gcp-project-id/llm-gateway/gateway:latest"
