@@ -49,6 +49,7 @@ jobs:
 
     env:
       TF_VAR_project_id: ${{ vars.GCP_PROJECT_ID }}
+      TF_VAR_sops_admin_member: ${{ vars.SOPS_ADMIN_MEMBER }}
       REGISTRY: us-central1-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/llm-gateway
 
     steps:
@@ -87,7 +88,7 @@ jobs:
             -target=google_artifact_registry_repository.images \
             -target=google_service_account.runtime \
             -target=google_secret_manager_secret.gateway \
-            -target=google_secret_manager_secret_version.gateway_placeholder \
+            -target=google_secret_manager_secret_version.gateway \
             -target=google_secret_manager_secret_iam_member.gateway_access
 
       - name: Build and push image

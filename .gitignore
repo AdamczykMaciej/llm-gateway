@@ -14,3 +14,5 @@ infra/terraform/.terraform/
 infra/terraform/*.tfstate
 infra/terraform/*.tfstate.*
 infra/terraform/terraform.tfvars
+# Plaintext SOPS source — only secrets.enc.yaml (ciphertext) is committed
+infra/terraform/secrets.yaml

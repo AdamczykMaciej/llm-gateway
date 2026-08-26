@@ -26,12 +26,7 @@ resource "google_cloud_run_v2_service" "gateway" {
       }
 
       dynamic "env" {
-        for_each = {
-          ANTHROPIC_API_KEY = "anthropic-api-key"
-          GROQ_API_KEY      = "groq-api-key"
-          OPENAI_API_KEY    = "openai-api-key"
-          GATEWAY_API_KEYS  = "gateway-api-keys"
-        }
+        for_each = local.gateway_env_secret_refs
         content {
           name = env.key
           value_source {
@@ -67,6 +62,6 @@ resource "google_cloud_run_v2_service" "gateway" {
 
   depends_on = [
     google_project_service.apis,
-    google_secret_manager_secret_version.gateway_placeholder,
+    google_secret_manager_secret_version.gateway,
   ]
 }

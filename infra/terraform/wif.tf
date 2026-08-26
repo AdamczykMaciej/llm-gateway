@@ -59,6 +59,9 @@ locals {
     # a Terraform-managed resource that CI refreshes on every untargeted
     # apply — reading/updating project IAM policy requires this.
     "roles/resourcemanager.projectIamAdmin",
+    # kms.tf (SOPS-encrypted secrets) is refreshed on every untargeted apply
+    # too, same reasoning as the two roles above.
+    "roles/cloudkms.admin",
   ]
 }
 

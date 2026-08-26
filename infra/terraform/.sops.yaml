@@ -1,0 +1,7 @@
+creation_rules:
+  # Matches both the plaintext source (secrets.yaml, what `sops -e` reads)
+  # and the encrypted output (secrets.enc.yaml, what `sops secrets.enc.yaml`
+  # re-opens later) — creation-rule matching is on the invoked filename, not
+  # an output redirect target.
+  - path_regex: secrets(\.enc)?\.yaml$
+    gcp_kms: projects/llm-gateway-mca01/locations/global/keyRings/llm-gateway-sops/cryptoKeys/secrets

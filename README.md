@@ -114,8 +114,19 @@ python3.12 -m venv .venv && .venv/bin/pip install -e ".[dev]"
 ## Deployment
 
 See `infra/terraform/` for the Cloud Run + Artifact Registry + Secret
-Manager + Workload Identity Federation setup this repo deploys with via
-`.github/workflows/ci.yml` on every push to `main`. Provider API keys and
-`GATEWAY_API_KEYS` are Secret-Manager-backed — populate real values with
-`gcloud secrets versions add <secret-name> --data-file=-` after the first
-deploy (placeholders are created by Terraform, not committed to git).
+Manager + Workload Identity Federation + Cloud KMS setup this repo deploys
+with via `.github/workflows/ci.yml` on every push to `main`.
+
+Provider API keys and `GATEWAY_API_KEYS` are managed with
+[SOPS](https://github.com/getsops/sops), encrypted against a Cloud KMS key
+(`kms.tf`) — the ciphertext (`infra/terraform/secrets.enc.yaml`) is safe to
+commit; only principals with `roles/cloudkms.cryptoKeyEncrypterDecrypter` on
+that key can decrypt it. To set or rotate a value:
+
+```bash
+cd infra/terraform
+sops secrets.enc.yaml   # opens decrypted in $EDITOR, re-encrypts on save
+git commit -am "rotate secrets" && git push   # CI applies the new values
+```
+
+See `secrets.yaml.example` for the full key list and first-time setup.

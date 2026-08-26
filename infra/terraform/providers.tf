@@ -6,6 +6,10 @@ terraform {
       source  = "hashicorp/google"
       version = "~> 6.0"
     }
+    sops = {
+      source  = "carlpett/sops"
+      version = "~> 1.1"
+    }
   }
 
   # Remote state — required so CI (ephemeral runners) and local runs share
