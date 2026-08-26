@@ -55,6 +55,10 @@ locals {
     "roles/iam.serviceAccountAdmin",
     "roles/serviceusage.serviceUsageAdmin",
     "roles/iam.workloadIdentityPoolAdmin",
+    # Needed because google_project_iam_member.ci (this very list) is itself
+    # a Terraform-managed resource that CI refreshes on every untargeted
+    # apply — reading/updating project IAM policy requires this.
+    "roles/resourcemanager.projectIamAdmin",
   ]
 }
 
@@ -67,6 +71,10 @@ resource "google_project_iam_member" "ci" {
 
 resource "google_storage_bucket_iam_member" "ci_tfstate" {
   bucket = google_storage_bucket.tfstate.name
-  role   = "roles/storage.objectAdmin"
+  # storage.admin (not just objectAdmin) because google_storage_bucket.tfstate
+  # is itself a Terraform-managed resource — refreshing it needs
+  # storage.buckets.get, which objectAdmin doesn't grant. Scoped to just this
+  # one bucket via the IAM member binding, not project-wide.
+  role   = "roles/storage.admin"
   member = "serviceAccount:${google_service_account.ci.email}"
 }
