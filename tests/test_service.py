@@ -28,6 +28,16 @@ def test_healthz_requires_no_auth():
     assert resp.json() == {"status": "ok"}
 
 
+def test_internal_healthz_alias_for_cloud_run_probe():
+    # Cloud Run reserves whatever path the startup probe targets and blocks
+    # external traffic to it — this alias is what the probe points at
+    # instead of /healthz. See infra/terraform/cloud_run.tf.
+    client = _client(gateway_api_keys="secret-key")
+    resp = client.get("/_internal/healthz")
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "ok"}
+
+
 def test_chat_completions_rejects_missing_auth():
     client = _client(gateway_api_keys="secret-key")
     resp = client.post(

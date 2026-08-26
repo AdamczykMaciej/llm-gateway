@@ -15,7 +15,12 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
     auth_dep = require_api_key(config)
 
     @app.get("/healthz")
+    @app.get("/_internal/healthz")
     async def healthz() -> dict:
+        # Two paths, same handler: Cloud Run reserves whatever exact path is
+        # configured as its startup probe target and blocks *external*
+        # traffic to it (see infra/terraform/cloud_run.tf) — so the probe
+        # points at /_internal/healthz, leaving /healthz reachable publicly.
         return {"status": "ok"}
 
     @app.get("/v1/models")

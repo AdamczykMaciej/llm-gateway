@@ -52,7 +52,9 @@ resource "google_cloud_run_v2_service" "gateway" {
 
       startup_probe {
         http_get {
-          path = "/healthz"
+          # Not /healthz: Cloud Run blocks external traffic to whatever exact
+          # path is configured here (see llm_gateway/service/app.py).
+          path = "/_internal/healthz"
           port = 8080
         }
         initial_delay_seconds = 5
