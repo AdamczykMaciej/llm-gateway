@@ -1,0 +1,5 @@
+# Only needed to run examples/langgraph_react_agent.py — not a dependency
+# of the llm-gateway package itself.
+langgraph>=0.2
+langchain-openai>=0.2
+langchain-core>=0.3

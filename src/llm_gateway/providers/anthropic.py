@@ -1,7 +1,13 @@
 from anthropic import AsyncAnthropic
 
 from ..config import GatewayConfig
-from .base import ProviderResult
+from ._anthropic_translate import (
+    from_anthropic_response,
+    to_anthropic_messages,
+    to_anthropic_tool_choice,
+    to_anthropic_tools,
+)
+from .base import ChatResult, ProviderResult
 
 _clients: dict[tuple[str, bool], AsyncAnthropic] = {}
 
@@ -48,3 +54,30 @@ async def call(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
     )
+
+
+async def chat(
+    config: GatewayConfig,
+    messages: list[dict],
+    tools: list[dict] | None,
+    max_tokens: int,
+    model: str | None = None,
+    tool_choice: object = None,
+) -> ChatResult:
+    model = model or default_model(config)
+    system, anthropic_messages = to_anthropic_messages(messages)
+    kwargs: dict = {}
+    anthropic_tools = to_anthropic_tools(tools)
+    if anthropic_tools:
+        kwargs["tools"] = anthropic_tools
+        choice = to_anthropic_tool_choice(tool_choice)
+        if choice:
+            kwargs["tool_choice"] = choice
+    resp = await _client(config).messages.create(
+        model=model,
+        max_tokens=max_tokens,
+        system=system,
+        messages=anthropic_messages,
+        **kwargs,
+    )
+    return from_anthropic_response(resp, model)

@@ -1,10 +1,16 @@
 from . import anthropic, groq, openai
-from .base import ProviderResult
+from .base import ChatResult, ProviderResult, ToolCall
 
 CALLS = {
     "anthropic": anthropic.call,
     "groq": groq.call,
     "openai": openai.call,
+}
+
+CHAT_CALLS = {
+    "anthropic": anthropic.chat,
+    "groq": groq.chat,
+    "openai": openai.chat,
 }
 
 CONFIGURED = {
@@ -19,4 +25,12 @@ DEFAULT_MODEL = {
     "openai": openai.default_model,
 }
 
-__all__ = ["ProviderResult", "CALLS", "CONFIGURED", "DEFAULT_MODEL"]
+__all__ = [
+    "ProviderResult",
+    "ChatResult",
+    "ToolCall",
+    "CALLS",
+    "CHAT_CALLS",
+    "CONFIGURED",
+    "DEFAULT_MODEL",
+]

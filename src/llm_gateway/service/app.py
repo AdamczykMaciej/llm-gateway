@@ -4,11 +4,16 @@ front of the same router.complete() the library exposes in-process."""
 from fastapi import Depends, FastAPI, HTTPException
 
 from .. import breaker
+from ..chat import chat as chat_engine
 from ..config import GatewayConfig
 from ..providers import CONFIGURED
 from ..router import LLMError, complete
 from .rate_limit import enforce_rate_limit
-from .schemas import ChatCompletionRequest, chat_completion_response
+from .schemas import (
+    ChatCompletionRequest,
+    chat_completion_response,
+    chat_completion_response_from_result,
+)
 
 
 def create_app(config: GatewayConfig | None = None) -> FastAPI:
@@ -57,18 +62,13 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
 
     @app.post("/v1/chat/completions", dependencies=[Depends(rate_limit_dep)])
     async def chat_completions(body: ChatCompletionRequest) -> dict:
-        try:
-            system, prompt = body.as_system_and_prompt()
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-
         if config.max_tokens_ceiling > 0 and body.max_tokens > config.max_tokens_ceiling:
             raise HTTPException(
                 status_code=400,
                 detail=f"max_tokens {body.max_tokens} exceeds the configured ceiling "
                 f"of {config.max_tokens_ceiling}",
             )
-        total_chars = sum(len(m.content) for m in body.messages)
+        total_chars = sum(len(m.content or "") for m in body.messages)
         if config.max_prompt_chars > 0 and total_chars > config.max_prompt_chars:
             raise HTTPException(
                 status_code=400,
@@ -87,6 +87,30 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
                 )
             force_provider = provider_name
             model = upstream_model
+
+        # Tool-calling path: full multi-turn history, no system/last-user
+        # single-turn flattening — ReAct-style agents (e.g. LangGraph's
+        # prebuilt create_react_agent) need the whole conversation, including
+        # prior assistant tool_calls and role="tool" results.
+        if body.tools:
+            try:
+                result = await chat_engine(
+                    messages=body.as_message_dicts(),
+                    tools=body.tools,
+                    tool_choice=body.tool_choice,
+                    max_tokens=body.max_tokens,
+                    config=config,
+                    force_provider=force_provider,
+                    model=model if force_provider else None,
+                )
+            except LLMError as exc:
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
+            return chat_completion_response_from_result(result)
+
+        try:
+            system, prompt = body.as_system_and_prompt()
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         try:
             text = await complete(

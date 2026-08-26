@@ -1,3 +1,4 @@
+import json
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -212,3 +213,105 @@ def test_rate_limit_disabled_when_zero():
                 headers={"Authorization": "Bearer secret-key"},
             )
             assert resp.status_code == 200
+
+
+# ─── Tool calling ─────────────────────────────────────────────────────────────
+
+
+def test_chat_completions_with_tools_routes_to_chat_engine_and_returns_tool_calls():
+    from llm_gateway.providers.base import ChatResult, ToolCall
+
+    client = _client(gateway_api_keys="secret-key")
+    result = ChatResult(
+        content=None,
+        model="claude-haiku-4-5-20251001",
+        input_tokens=10,
+        output_tokens=5,
+        tool_calls=[ToolCall(id="t1", name="get_weather", arguments={"city": "Warsaw"})],
+        finish_reason="tool_calls",
+    )
+    mock_chat = AsyncMock(return_value=result)
+    with patch("llm_gateway.service.app.chat_engine", mock_chat):
+        resp = client.post(
+            "/v1/chat/completions",
+            json={
+                "messages": [{"role": "user", "content": "What's the weather in Warsaw?"}],
+                "tools": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "get_weather",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {"city": {"type": "string"}},
+                            },
+                        },
+                    }
+                ],
+            },
+            headers={"Authorization": "Bearer secret-key"},
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["choices"][0]["finish_reason"] == "tool_calls"
+    tool_call = body["choices"][0]["message"]["tool_calls"][0]
+    assert tool_call["function"]["name"] == "get_weather"
+    assert json.loads(tool_call["function"]["arguments"]) == {"city": "Warsaw"}
+    # Full message history (not just system+last-user) is what reaches chat_engine.
+    assert mock_chat.await_args.kwargs["tools"][0]["function"]["name"] == "get_weather"
+
+
+def test_chat_completions_sends_full_multiturn_history_to_chat_engine():
+    from llm_gateway.providers.base import ChatResult
+
+    client = _client(gateway_api_keys="secret-key")
+    mock_chat = AsyncMock(
+        return_value=ChatResult(content="done", model="x", input_tokens=0, output_tokens=0)
+    )
+    with patch("llm_gateway.service.app.chat_engine", mock_chat):
+        client.post(
+            "/v1/chat/completions",
+            json={
+                "messages": [
+                    {"role": "user", "content": "weather?"},
+                    {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": "t1",
+                                "type": "function",
+                                "function": {"name": "get_weather", "arguments": "{}"},
+                            }
+                        ],
+                    },
+                    {"role": "tool", "tool_call_id": "t1", "content": "22C"},
+                ],
+                "tools": [{"type": "function", "function": {"name": "get_weather"}}],
+            },
+            headers={"Authorization": "Bearer secret-key"},
+        )
+
+    sent_messages = mock_chat.await_args.kwargs["messages"]
+    assert [m["role"] for m in sent_messages] == ["user", "assistant", "tool"]
+    assert sent_messages[2]["tool_call_id"] == "t1"
+
+
+def test_chat_completions_without_tools_still_uses_text_only_path():
+    # No `tools` in the request — must not touch chat_engine at all.
+    client = _client(gateway_api_keys="secret-key")
+    with (
+        patch(
+            "llm_gateway.service.app.complete", AsyncMock(return_value="hi there")
+        ) as mock_complete,
+        patch("llm_gateway.service.app.chat_engine", AsyncMock(side_effect=AssertionError)),
+    ):
+        resp = client.post(
+            "/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "hi"}]},
+            headers={"Authorization": "Bearer secret-key"},
+        )
+    assert resp.status_code == 200
+    assert resp.json()["choices"][0]["message"]["content"] == "hi there"
+    mock_complete.assert_awaited_once()
