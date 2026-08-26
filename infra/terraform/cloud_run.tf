@@ -52,8 +52,9 @@ resource "google_cloud_run_v2_service" "gateway" {
 
       startup_probe {
         http_get {
-          # Not /healthz: Cloud Run blocks external traffic to whatever exact
-          # path is configured here (see llm_gateway/service/app.py).
+          # Not /healthz: that literal path is reserved platform-wide on
+          # Cloud Run and 404s externally regardless of probe config (see
+          # llm_gateway/service/app.py). This path is internal-only.
           path = "/_internal/healthz"
           port = 8080
         }

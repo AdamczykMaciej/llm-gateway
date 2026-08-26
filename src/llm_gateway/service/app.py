@@ -14,13 +14,15 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
     app = FastAPI(title="llm-gateway", version="0.1.0")
     auth_dep = require_api_key(config)
 
-    @app.get("/healthz")
+    @app.get("/health")
     @app.get("/_internal/healthz")
     async def healthz() -> dict:
-        # Two paths, same handler: Cloud Run reserves whatever exact path is
-        # configured as its startup probe target and blocks *external*
-        # traffic to it (see infra/terraform/cloud_run.tf) — so the probe
-        # points at /_internal/healthz, leaving /healthz reachable publicly.
+        # NOT /healthz: that exact path is reserved platform-wide on Cloud
+        # Run (returns a Google edge 404 to external callers regardless of
+        # this app's own routes or probe config — a known, documented
+        # gotcha, not something scoped to this service). /health is the
+        # public endpoint; the Cloud Run startup probe targets
+        # /_internal/healthz (see infra/terraform/cloud_run.tf).
         return {"status": "ok"}
 
     @app.get("/v1/models")

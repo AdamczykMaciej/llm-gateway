@@ -67,7 +67,9 @@ client.chat.completions.create(model="auto", messages=[{"role": "user", "content
 - `"<provider>/<model>"`, e.g. `"anthropic/claude-sonnet-4-6"` — calls that
   provider directly, no fallback.
 
-Endpoints: `POST /v1/chat/completions`, `GET /v1/models`, `GET /healthz` (no auth).
+Endpoints: `POST /v1/chat/completions`, `GET /v1/models`, `GET /health` (no auth).
+Note: `/healthz` is deliberately not used — it's reserved platform-wide on
+Cloud Run and 404s for external callers regardless of app routing.
 
 ## Environment variables
 

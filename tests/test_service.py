@@ -21,17 +21,17 @@ def _client(**config_overrides) -> TestClient:
     return TestClient(app)
 
 
-def test_healthz_requires_no_auth():
+def test_health_requires_no_auth():
     client = _client(gateway_api_keys="secret-key")
-    resp = client.get("/healthz")
+    resp = client.get("/health")
     assert resp.status_code == 200
     assert resp.json() == {"status": "ok"}
 
 
 def test_internal_healthz_alias_for_cloud_run_probe():
-    # Cloud Run reserves whatever path the startup probe targets and blocks
-    # external traffic to it — this alias is what the probe points at
-    # instead of /healthz. See infra/terraform/cloud_run.tf.
+    # /healthz itself is reserved platform-wide on Cloud Run (external
+    # requests to it 404 at the edge regardless of app routes) — this is
+    # what the startup probe targets instead. See infra/terraform/cloud_run.tf.
     client = _client(gateway_api_keys="secret-key")
     resp = client.get("/_internal/healthz")
     assert resp.status_code == 200
