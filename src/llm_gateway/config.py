@@ -42,6 +42,13 @@ class GatewayConfig(BaseSettings):
     # when only the library is used in-process.
     gateway_api_keys: str = ""
 
+    # Basic abuse guardrails for the HTTP service. Per-key, in-process (not
+    # shared across Cloud Run replicas — see service/rate_limit.py). 0/negative
+    # disables the corresponding check.
+    rate_limit_per_minute: int = 60
+    max_tokens_ceiling: int = 4000
+    max_prompt_chars: int = 32000
+
     # Set to false only behind a corporate SSL-inspection proxy.
     ssl_verify: bool = True
 

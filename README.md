@@ -88,6 +88,9 @@ Cloud Run and 404s for external callers regardless of app routing.
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | — | Any OTLP collector (Langfuse, Grafana Cloud, ...) |
 | `OTEL_EXPORTER_OTLP_HEADERS` | — | Comma-separated `key=value` pairs |
 | `GATEWAY_API_KEYS` | — | Comma-separated bearer keys the HTTP service accepts. **Unset = open, no auth** — set this before deploying. |
+| `RATE_LIMIT_PER_MINUTE` | `60` | Per-key request cap, in-process. `0` disables it. |
+| `MAX_TOKENS_CEILING` | `4000` | Reject a request if `max_tokens` exceeds this. `0` disables it. |
+| `MAX_PROMPT_CHARS` | `32000` | Reject a request if total message content exceeds this many characters. `0` disables it. |
 
 ## PII masking
 
@@ -95,11 +98,37 @@ Cloud Run and 404s for external callers regardless of app routing.
 numbers, and PESEL-shaped national IDs from text before it's traced. It's a
 best-effort regex-based redactor, not a certified PII detector.
 
+## Guardrails, and what's deliberately not solved here
+
+What the gateway does:
+- **Per-key rate limiting** (`RATE_LIMIT_PER_MINUTE`) — in-process sliding
+  window, keyed by the caller's bearer key. Per-instance only: under Cloud
+  Run horizontal scale-out the effective ceiling is up to
+  `max_instances × RATE_LIMIT_PER_MINUTE`, not an exact global limit. Good
+  enough for basic abuse protection on a single-tenant gateway; a shared
+  store (Redis) would be needed for an exact cross-replica limit.
+- **Request size ceilings** (`MAX_TOKENS_CEILING`, `MAX_PROMPT_CHARS`) —
+  reject obviously-abusive payloads before they reach a provider.
+- **PII-masked tracing** — see above.
+- **`GET /v1/models` availability** reflects real state: whether a
+  provider's key is configured and whether its circuit breaker is
+  currently open, not just a static list.
+
+What it does *not* do, on purpose:
+- **Prompt injection defense.** There is no technical fix for this at a
+  gateway layer — the gateway relays `system`/`prompt` text and has no way
+  to distinguish malicious content from legitimate content (true of every
+  LLM gateway, not a gap specific to this one). That defense belongs in the
+  calling application: how it constructs prompts, scopes tool use, and
+  validates model output.
+- **Volumetric DDoS protection.** The rate limiting above is abuse
+  protection, not network-layer DDoS mitigation. That needs Cloud Armor (or
+  equivalent) in front of Cloud Run — deliberately not added while this is
+  a single-tenant gateway for internal use, not a public-facing product.
+
 ## Known v1 limitations
 
 - No streaming responses.
-- No per-key usage metering/rate limiting on the HTTP service — a valid
-  `GATEWAY_API_KEYS` entry has unlimited access.
 - `model` selection is provider-level only (`"auto"` or `"<provider>/<model>"`)
   — no per-request temperature/other sampling params yet.
 
