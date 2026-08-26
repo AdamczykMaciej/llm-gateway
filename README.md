@@ -129,4 +129,25 @@ sops secrets.enc.yaml   # opens decrypted in $EDITOR, re-encrypts on save
 git commit -am "rotate secrets" && git push   # CI applies the new values
 ```
 
+### Changing provider order / models
+
+`provider_order`, `claude_model`, `groq_model`, `openai_model` are Terraform
+variables (`infra/terraform/variables.tf`) wired straight to Cloud Run env
+vars — that's the versioned, reviewable path (edit, commit, push, CI
+redeploys in ~2 min).
+
+For an instant change with no rebuild/redeploy, update the live Cloud Run
+revision's env vars directly:
+
+```bash
+gcloud run services update llm-gateway --region=us-central1 \
+  --update-env-vars PROVIDER_ORDER=groq,anthropic,CLAUDE_MODEL=claude-opus-4-7
+```
+
+This takes effect in seconds, but it's a manual override, not a config
+change: the next `terraform apply` (i.e. the next push to `main`) resets
+Cloud Run's env vars back to whatever `variables.tf` says. Treat it as a
+temporary/emergency lever — reflect anything you want to keep back into
+Terraform.
+
 See `secrets.yaml.example` for the full key list and first-time setup.

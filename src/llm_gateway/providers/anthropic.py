@@ -22,9 +22,20 @@ def configured(config: GatewayConfig) -> bool:
     return bool(config.anthropic_api_key)
 
 
-async def call(config: GatewayConfig, system: str, prompt: str, max_tokens: int) -> ProviderResult:
+def default_model(config: GatewayConfig) -> str:
+    return config.claude_model
+
+
+async def call(
+    config: GatewayConfig,
+    system: str,
+    prompt: str,
+    max_tokens: int,
+    model: str | None = None,
+) -> ProviderResult:
+    model = model or default_model(config)
     resp = await _client(config).messages.create(
-        model=config.claude_model,
+        model=model,
         max_tokens=max_tokens,
         system=system,
         messages=[{"role": "user", "content": prompt}],
@@ -33,7 +44,7 @@ async def call(config: GatewayConfig, system: str, prompt: str, max_tokens: int)
     output_tokens = resp.usage.output_tokens if resp.usage else 0
     return ProviderResult(
         text=resp.content[0].text.strip(),
-        model=config.claude_model,
+        model=model,
         input_tokens=input_tokens,
         output_tokens=output_tokens,
     )

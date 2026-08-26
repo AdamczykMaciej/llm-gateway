@@ -22,7 +22,19 @@ resource "google_cloud_run_v2_service" "gateway" {
 
       env {
         name  = "PROVIDER_ORDER"
-        value = "anthropic,groq,openai"
+        value = var.provider_order
+      }
+      env {
+        name  = "CLAUDE_MODEL"
+        value = var.claude_model
+      }
+      env {
+        name  = "GROQ_MODEL"
+        value = var.groq_model
+      }
+      env {
+        name  = "OPENAI_MODEL"
+        value = var.openai_model
       }
 
       dynamic "env" {

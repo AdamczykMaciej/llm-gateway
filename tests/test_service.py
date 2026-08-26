@@ -96,6 +96,7 @@ def test_chat_completions_forces_provider_from_model_prefix():
         )
     assert resp.status_code == 200
     assert mock_complete.await_args.kwargs["force_provider"] == "anthropic"
+    assert mock_complete.await_args.kwargs["model"] == "claude-sonnet-4-6"
 
 
 def test_models_endpoint_lists_configured_models():

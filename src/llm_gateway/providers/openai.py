@@ -22,9 +22,20 @@ def configured(config: GatewayConfig) -> bool:
     return bool(config.openai_api_key)
 
 
-async def call(config: GatewayConfig, system: str, prompt: str, max_tokens: int) -> ProviderResult:
+def default_model(config: GatewayConfig) -> str:
+    return config.openai_model
+
+
+async def call(
+    config: GatewayConfig,
+    system: str,
+    prompt: str,
+    max_tokens: int,
+    model: str | None = None,
+) -> ProviderResult:
+    model = model or default_model(config)
     resp = await _client(config).chat.completions.create(
-        model=config.openai_model,
+        model=model,
         max_tokens=max_tokens,
         messages=[
             {"role": "system", "content": system},
@@ -35,7 +46,7 @@ async def call(config: GatewayConfig, system: str, prompt: str, max_tokens: int)
     output_tokens = resp.usage.completion_tokens if resp.usage else 0
     return ProviderResult(
         text=(resp.choices[0].message.content or "").strip(),
-        model=config.openai_model,
+        model=model,
         input_tokens=input_tokens,
         output_tokens=output_tokens,
     )

@@ -10,7 +10,7 @@ from opentelemetry.trace import StatusCode
 
 from . import breaker
 from .config import GatewayConfig
-from .providers import CALLS, CONFIGURED
+from .providers import CALLS, CONFIGURED, DEFAULT_MODEL
 from .tracing import get_tracer, set_call_attributes
 
 
@@ -25,15 +25,21 @@ async def complete(
     max_tokens: int = 2000,
     config: GatewayConfig | None = None,
     force_provider: str | None = None,
+    model: str | None = None,
 ) -> str:
     """Return a text completion, trying providers in `config.provider_order`.
 
     Pass `force_provider` (e.g. "anthropic") to call exactly that provider
     with no fallback — used by the HTTP service when a caller explicitly
-    requests `model="<provider>/<model>"`.
+    requests `model="<provider>/<model>"`. `model` only has an effect
+    together with `force_provider`: a model name only means something within
+    one provider's namespace, so it's meaningless across a multi-provider
+    fallback chain — each provider in the chain always uses its own
+    configured default model there.
     """
     config = config or GatewayConfig()
     order = [force_provider] if force_provider else config.provider_order_list
+    model_override = model if force_provider else None
 
     tracer = get_tracer()
     start = time.monotonic() * 1000
@@ -54,9 +60,10 @@ async def complete(
 
             attempted_any = True
             is_fallback = index > 0
+            resolved_model = model_override or DEFAULT_MODEL[provider](config)
 
             try:
-                result = await call(config, system, prompt, max_tokens)
+                result = await call(config, system, prompt, max_tokens, model_override)
             except Exception as e:  # noqa: BLE001 — any provider failure tries the next
                 breaker.record_failure(
                     provider,
@@ -69,7 +76,7 @@ async def complete(
                     span,
                     config=config,
                     provider=provider,
-                    model="",
+                    model=resolved_model,
                     input_tokens=0,
                     output_tokens=0,
                     latency_ms=latency,

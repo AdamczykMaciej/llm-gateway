@@ -34,3 +34,30 @@ variable "max_instances" {
   type    = number
   default = 3
 }
+
+# ── Routing config — the fast lane for changing these is
+# `gcloud run services update <app_name> --update-env-vars ...` (seconds,
+# no rebuild/redeploy). These Terraform defaults are what a fresh
+# `terraform apply` resets to, so a manual gcloud tweak is temporary unless
+# also reflected here — that's expected IaC behavior, not a bug. ──────────
+
+variable "provider_order" {
+  description = "Comma-separated provider fallback order."
+  type        = string
+  default     = "anthropic,groq,openai"
+}
+
+variable "claude_model" {
+  type    = string
+  default = "claude-haiku-4-5-20251001"
+}
+
+variable "groq_model" {
+  type    = string
+  default = "llama-3.3-70b-versatile"
+}
+
+variable "openai_model" {
+  type    = string
+  default = "gpt-4o-mini"
+}

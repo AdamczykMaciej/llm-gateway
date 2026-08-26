@@ -63,6 +63,7 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
                 max_tokens=body.max_tokens,
                 config=config,
                 force_provider=force_provider,
+                model=model if force_provider else None,
             )
         except LLMError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc

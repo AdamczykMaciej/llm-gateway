@@ -13,4 +13,10 @@ CONFIGURED = {
     "openai": openai.configured,
 }
 
-__all__ = ["ProviderResult", "CALLS", "CONFIGURED"]
+DEFAULT_MODEL = {
+    "anthropic": anthropic.default_model,
+    "groq": groq.default_model,
+    "openai": openai.default_model,
+}
+
+__all__ = ["ProviderResult", "CALLS", "CONFIGURED", "DEFAULT_MODEL"]

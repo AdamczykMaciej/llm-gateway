@@ -107,3 +107,33 @@ async def test_force_provider_bypasses_fallback():
         )
     assert text == "a"
     groq_call.assert_not_called()
+
+
+async def test_force_provider_with_explicit_model_reaches_the_provider_call():
+    anthropic_call = AsyncMock(return_value=ProviderResult("a", "claude-sonnet-4-6", 0, 0))
+    with patch("llm_gateway.router.CALLS", {"anthropic": anthropic_call}):
+        await complete(
+            system="s",
+            prompt="p",
+            config=_config(provider_order="anthropic"),
+            force_provider="anthropic",
+            model="claude-sonnet-4-6",
+        )
+    # positional call signature: (config, system, prompt, max_tokens, model)
+    assert anthropic_call.await_args.args[-1] == "claude-sonnet-4-6"
+
+
+async def test_explicit_model_is_ignored_without_force_provider():
+    # A model override only makes sense tied to a specific provider — in the
+    # auto fallback chain each provider must keep using its own configured
+    # default, since a model name from one provider's namespace is
+    # meaningless to another.
+    anthropic_call = AsyncMock(return_value=ProviderResult("a", "x", 0, 0))
+    with patch("llm_gateway.router.CALLS", {"anthropic": anthropic_call}):
+        await complete(
+            system="s",
+            prompt="p",
+            config=_config(provider_order="anthropic"),
+            model="some-other-providers-model",
+        )
+    assert anthropic_call.await_args.args[-1] is None
