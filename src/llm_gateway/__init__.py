@@ -22,13 +22,16 @@ from .breaker import reset as reset_circuit_breakers
 from .chat import chat
 from .config import GatewayConfig
 from .pii import mask_pii
-from .providers.base import ChatResult, ToolCall
+from .providers.base import ChatResult, StreamDelta, ToolCall
 from .router import LLMError, complete
+from .streaming import stream_chat
 
 __all__ = [
     "complete",
     "chat",
+    "stream_chat",
     "ChatResult",
+    "StreamDelta",
     "ToolCall",
     "LLMError",
     "GatewayConfig",

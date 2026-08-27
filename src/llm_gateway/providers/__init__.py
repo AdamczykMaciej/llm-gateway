@@ -1,5 +1,5 @@
 from . import anthropic, groq, openai
-from .base import ChatResult, ProviderResult, ToolCall
+from .base import ChatResult, ProviderResult, StreamDelta, ToolCall
 
 CALLS = {
     "anthropic": anthropic.call,
@@ -11,6 +11,12 @@ CHAT_CALLS = {
     "anthropic": anthropic.chat,
     "groq": groq.chat,
     "openai": openai.chat,
+}
+
+STREAM_CALLS = {
+    "anthropic": anthropic.stream_chat,
+    "groq": groq.stream_chat,
+    "openai": openai.stream_chat,
 }
 
 CONFIGURED = {
@@ -28,9 +34,11 @@ DEFAULT_MODEL = {
 __all__ = [
     "ProviderResult",
     "ChatResult",
+    "StreamDelta",
     "ToolCall",
     "CALLS",
     "CHAT_CALLS",
+    "STREAM_CALLS",
     "CONFIGURED",
     "DEFAULT_MODEL",
 ]

@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
-from llm_gateway import GatewayConfig, reset_circuit_breakers
+from llm_gateway import GatewayConfig, LLMError, reset_circuit_breakers
 from llm_gateway.providers.base import ChatResult, ToolCall
 from llm_gateway.service import create_app
 from llm_gateway.service.rate_limit import reset as reset_rate_limits
@@ -384,3 +384,57 @@ def test_chat_completions_without_tools_passes_none_to_chat_engine():
     assert resp.status_code == 200
     assert resp.json()["choices"][0]["message"]["content"] == "hi there"
     assert mock_chat.await_args.kwargs["tools"] is None
+
+
+# ─── Streaming ─────────────────────────────────────────────────────────────
+
+
+def test_stream_true_returns_sse_with_expected_chunks_and_done():
+    from llm_gateway.providers.base import StreamDelta
+
+    async def fake_stream(**kwargs):
+        yield StreamDelta(content="Hel", model="x")
+        yield StreamDelta(content="lo", model="x")
+        yield StreamDelta(finish_reason="stop", model="x", usage=(3, 2))
+
+    client = _client(gateway_api_keys="secret-key")
+    with patch("llm_gateway.service.app.stream_engine", fake_stream):
+        resp = client.post(
+            "/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "hi"}], "stream": True},
+            headers={"Authorization": "Bearer secret-key"},
+        )
+
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/event-stream")
+    lines = [line for line in resp.text.split("\n\n") if line.strip()]
+    assert lines[-1] == "data: [DONE]"
+
+    payloads = [json.loads(line.removeprefix("data: ")) for line in lines[:-1]]
+    contents = [p["choices"][0]["delta"].get("content") for p in payloads if p["choices"]]
+    assert [c for c in contents if c] == ["Hel", "lo"]
+    # Final content-bearing chunk carries the finish_reason.
+    assert payloads[-2]["choices"][0]["finish_reason"] == "stop"
+    # Usage-only trailer chunk has empty choices and top-level usage.
+    assert payloads[-1]["choices"] == []
+    assert payloads[-1]["usage"]["total_tokens"] == 5
+
+
+def test_stream_provider_failure_before_any_chunk_emits_error_event_then_done():
+    async def failing_stream(**kwargs):
+        raise LLMError("no provider available")
+        yield  # pragma: no cover — makes this an async generator function
+
+    client = _client(gateway_api_keys="secret-key")
+    with patch("llm_gateway.service.app.stream_engine", failing_stream):
+        resp = client.post(
+            "/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "hi"}], "stream": True},
+            headers={"Authorization": "Bearer secret-key"},
+        )
+
+    assert resp.status_code == 200  # headers already committed — can't be 503 at this point
+    lines = [line for line in resp.text.split("\n\n") if line.strip()]
+    assert lines[-1] == "data: [DONE]"
+    error_payload = json.loads(lines[0].removeprefix("data: "))
+    assert error_payload["error"]["code"] == 503

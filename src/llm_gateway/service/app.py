@@ -1,16 +1,27 @@
 """The FastAPI flavor: an OpenAI-compatible /v1/chat/completions API in
-front of the same chat() engine the library exposes in-process."""
+front of the same chat()/stream_chat() engines the library exposes
+in-process."""
+
+import time
+import uuid
 
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from .. import breaker
 from ..chat import chat as chat_engine
 from ..config import GatewayConfig
 from ..providers import CONFIGURED
 from ..router import LLMError
+from ..streaming import stream_chat as stream_engine
 from .rate_limit import enforce_rate_limit
-from .schemas import ChatCompletionRequest, chat_completion_response_from_result
+from .schemas import (
+    SSE_DONE,
+    ChatCompletionRequest,
+    chat_completion_response_from_result,
+    sse_error_event,
+    stream_chunk_sse,
+)
 
 # HTTP status -> OpenAI error "type" string, matching what the openai-python
 # SDK (and therefore LangChain's ChatOpenAI) knows how to parse for clean
@@ -111,18 +122,39 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
             force_provider = provider_name
             model = upstream_model
 
+        engine_kwargs = dict(
+            messages=body.as_message_dicts(),
+            tools=body.tools,
+            tool_choice=body.tool_choice,
+            max_tokens=body.max_tokens,
+            config=config,
+            force_provider=force_provider,
+            model=model if force_provider else None,
+            sampling=body.sampling_dict(),
+            response_format=body.response_format,
+        )
+
+        if body.stream:
+
+            async def _sse():
+                chunk_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
+                created = int(time.time())
+                try:
+                    async for delta in stream_engine(**engine_kwargs):
+                        for line in stream_chunk_sse(delta, chunk_id=chunk_id, created=created):
+                            yield line
+                except LLMError as exc:
+                    # Headers (200 + SSE) are already committed by the time a
+                    # provider failure is known — can't change status code at
+                    # this point, so emit an error event instead of crashing
+                    # the connection. See schemas.sse_error_event.
+                    yield sse_error_event(str(exc))
+                yield SSE_DONE
+
+            return StreamingResponse(_sse(), media_type="text/event-stream")
+
         try:
-            result = await chat_engine(
-                messages=body.as_message_dicts(),
-                tools=body.tools,
-                tool_choice=body.tool_choice,
-                max_tokens=body.max_tokens,
-                config=config,
-                force_provider=force_provider,
-                model=model if force_provider else None,
-                sampling=body.sampling_dict(),
-                response_format=body.response_format,
-            )
+            result = await chat_engine(**engine_kwargs)
         except LLMError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
 

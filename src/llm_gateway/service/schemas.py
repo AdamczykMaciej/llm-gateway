@@ -12,7 +12,7 @@ import uuid
 
 from pydantic import BaseModel, Field
 
-from ..providers.base import ChatResult
+from ..providers.base import ChatResult, StreamDelta
 
 
 class ChatMessage(BaseModel):
@@ -37,6 +37,7 @@ class ChatCompletionRequest(BaseModel):
     tools: list[dict] | None = None
     tool_choice: str | dict | None = None
     response_format: dict | None = None
+    stream: bool = False
 
     # OpenAI-named sampling params. Previously silently dropped (Pydantic's
     # default extra="ignore" swallowed any field not declared here) — a real
@@ -96,3 +97,61 @@ def chat_completion_response_from_result(result: ChatResult) -> dict:
             "total_tokens": result.input_tokens + result.output_tokens,
         },
     }
+
+
+def stream_chunk_sse(delta: StreamDelta, *, chunk_id: str, created: int) -> list[str]:
+    """Render one StreamDelta as 0-2 OpenAI-shaped `chat.completion.chunk`
+    SSE events (`data: {...}\\n\\n`). A final delta commonly carries both
+    finish_reason and usage together — OpenAI's own streaming sends those as
+    two *separate* chunks (a finish_reason chunk, then a usage-only trailer
+    with empty choices), so a delta with both is split the same way rather
+    than collapsed into one non-standard chunk."""
+    lines = []
+    if (
+        delta.content is not None
+        or delta.tool_call_deltas is not None
+        or delta.finish_reason is not None
+    ):
+        delta_obj: dict = {}
+        if delta.content is not None:
+            delta_obj["content"] = delta.content
+        if delta.tool_call_deltas is not None:
+            delta_obj["tool_calls"] = delta.tool_call_deltas
+        payload = {
+            "id": chunk_id,
+            "object": "chat.completion.chunk",
+            "created": created,
+            "model": delta.model,
+            "choices": [{"index": 0, "delta": delta_obj, "finish_reason": delta.finish_reason}],
+        }
+        lines.append(f"data: {json.dumps(payload)}\n\n")
+
+    if delta.usage is not None:
+        payload = {
+            "id": chunk_id,
+            "object": "chat.completion.chunk",
+            "created": created,
+            "model": delta.model,
+            "choices": [],
+            "usage": {
+                "prompt_tokens": delta.usage[0],
+                "completion_tokens": delta.usage[1],
+                "total_tokens": delta.usage[0] + delta.usage[1],
+            },
+        }
+        lines.append(f"data: {json.dumps(payload)}\n\n")
+
+    return lines
+
+
+SSE_DONE = "data: [DONE]\n\n"
+
+
+def sse_error_event(message: str) -> str:
+    """A mid-or-pre-stream failure can't change the HTTP status code — the
+    200 + SSE headers are already committed by the time a provider failure
+    is known. This emits an OpenAI-error-shaped SSE event instead, followed
+    by the caller sending SSE_DONE, so consumers see a clean end rather than
+    a silently truncated connection."""
+    payload = {"error": {"message": message, "type": "service_unavailable_error", "code": 503}}
+    return f"data: {json.dumps(payload)}\n\n"

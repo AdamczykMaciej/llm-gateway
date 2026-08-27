@@ -164,9 +164,26 @@ What it does *not* do, on purpose:
   equivalent) in front of Cloud Run — deliberately not added while this is
   a single-tenant gateway for internal use, not a public-facing product.
 
+### Streaming
+
+`"stream": true` returns Server-Sent Events, chunk-shaped like OpenAI's own
+streaming (`chat.completion.chunk`, ending with `data: [DONE]`) — works with
+`ChatOpenAI(streaming=True)`/`.stream()` the same way non-streaming does.
+
+Fallback across providers only happens **before the first chunk** is sent —
+once a byte has reached the client, there's no way to un-send it, so a
+mid-stream failure ends the stream (as an OpenAI-shaped error event, not a
+silently truncated connection) rather than silently retrying elsewhere. A
+failure before anything is sent (auth, connection, immediate rate limit)
+falls back exactly like the non-streaming path.
+
+Tool-call arguments stream as fragments the same way OpenAI's own API does
+— the first fragment carries `id`/`name`, later ones carry only argument
+text — so client-side aggregation code (e.g. LangChain's) works unmodified
+regardless of which provider actually served the request.
+
 ## Known v1 limitations
 
-- No streaming responses yet (planned).
 - No multi-modal content (images) in messages.
 - No per-key usage metering beyond the rate limit — a valid key has
   unlimited spend within its rate-limit window.

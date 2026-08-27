@@ -13,6 +13,9 @@ Usage:
     LLM_GATEWAY_KEY=... \
     python examples/langgraph_react_agent.py "What's the weather in Warsaw?"
 
+    # Token-by-token streaming instead of waiting for the full response:
+    python examples/langgraph_react_agent.py --stream "What's the weather in Warsaw?"
+
 Defaults to http://localhost:8080/v1 (a locally-run `llm-gateway` process)
 if LLM_GATEWAY_URL isn't set.
 """
@@ -40,17 +43,17 @@ def get_weather(city: str) -> str:
     )
 
 
-def build_agent():
+def build_agent(streaming: bool = False):
     llm = ChatOpenAI(
         base_url=os.environ.get("LLM_GATEWAY_URL", "http://localhost:8080/v1"),
         api_key=os.environ.get("LLM_GATEWAY_KEY", "not-needed-if-gateway-has-no-keys-configured"),
         model="auto",  # or e.g. "anthropic/claude-sonnet-4-6" to force one
+        streaming=streaming,
     )
     return create_react_agent(model=llm, tools=[get_weather])
 
 
-def main() -> None:
-    question = " ".join(sys.argv[1:]) or "What's the weather in Warsaw and London?"
+def _run_invoke(question: str) -> None:
     agent = build_agent()
     result = agent.invoke({"messages": [{"role": "user", "content": question}]})
     for message in result["messages"]:
@@ -60,6 +63,29 @@ def main() -> None:
         )
         if content:
             print(f"[{role}] {content}")
+
+
+def _run_stream(question: str) -> None:
+    agent = build_agent(streaming=True)
+    for chunk, _metadata in agent.stream(
+        {"messages": [{"role": "user", "content": question}]}, stream_mode="messages"
+    ):
+        text = getattr(chunk, "content", "")
+        if text:
+            print(text, end="", flush=True)
+    print()
+
+
+def main() -> None:
+    args = sys.argv[1:]
+    stream = "--stream" in args
+    if stream:
+        args.remove("--stream")
+    question = " ".join(args) or "What's the weather in Warsaw and London?"
+    if stream:
+        _run_stream(question)
+    else:
+        _run_invoke(question)
 
 
 if __name__ == "__main__":
