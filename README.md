@@ -71,6 +71,44 @@ Endpoints: `POST /v1/chat/completions`, `GET /v1/models`, `GET /health` (no auth
 Note: `/healthz` is deliberately not used — it's reserved platform-wide on
 Cloud Run and 404s for external callers regardless of app routing.
 
+### Tool calling / ReAct-style agents
+
+`tools`/`tool_choice`/`tool_calls` follow OpenAI's wire format exactly, so
+LangGraph's prebuilt `create_react_agent` (or any LangChain `ChatOpenAI`
+consumer) works with zero custom integration code — just point `base_url`
+at the gateway. See `examples/langgraph_react_agent.py` for a full working
+example (weather-lookup tool, real multi-turn tool-call round trip).
+
+Anthropic has no native tool format compatible with OpenAI's — the gateway
+translates both directions internally (`providers/_anthropic_translate.py`),
+so tool-calling works identically regardless of which provider actually
+serves the request. `tool_choice: "none"` is enforced by omitting tools
+from that call entirely (Anthropic has no direct equivalent otherwise).
+
+### Structured output
+
+`response_format` (`{"type": "json_schema", "json_schema": {...}}` or
+`{"type": "json_object"}`) is passed straight through for OpenAI/Groq —
+they support it natively. Anthropic has no equivalent feature, so it's
+emulated with a forced single tool call matching the schema, transparently
+unwrapped back into plain `content` — the caller never sees a tool call,
+just the same JSON-schema response shape as any other provider.
+
+### Sampling parameters
+
+`temperature`, `top_p`, `stop`, `seed`, `presence_penalty`, `frequency_penalty`
+are accepted and passed through to whichever provider serves the request.
+Groq/OpenAI accept all of them natively; Anthropic supports `temperature`,
+`top_p`, and `stop` (translated to `stop_sequences`) — `seed` and the two
+penalty params have no Anthropic equivalent and are silently dropped rather
+than erroring.
+
+### Errors
+
+Error responses are OpenAI-shaped (`{"error": {"message", "type", "code"}}`),
+not FastAPI's default `{"detail": "..."}` — so the openai-python SDK (and
+therefore LangChain) can parse them the way it expects to.
+
 ## Environment variables
 
 | Variable | Default | Purpose |
@@ -128,9 +166,10 @@ What it does *not* do, on purpose:
 
 ## Known v1 limitations
 
-- No streaming responses.
-- `model` selection is provider-level only (`"auto"` or `"<provider>/<model>"`)
-  — no per-request temperature/other sampling params yet.
+- No streaming responses yet (planned).
+- No multi-modal content (images) in messages.
+- No per-key usage metering beyond the rate limit — a valid key has
+  unlimited spend within its rate-limit window.
 
 ## Development
 

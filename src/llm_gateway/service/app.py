@@ -1,25 +1,42 @@
 """The FastAPI flavor: an OpenAI-compatible /v1/chat/completions API in
-front of the same router.complete() the library exposes in-process."""
+front of the same chat() engine the library exposes in-process."""
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 
 from .. import breaker
 from ..chat import chat as chat_engine
 from ..config import GatewayConfig
 from ..providers import CONFIGURED
-from ..router import LLMError, complete
+from ..router import LLMError
 from .rate_limit import enforce_rate_limit
-from .schemas import (
-    ChatCompletionRequest,
-    chat_completion_response,
-    chat_completion_response_from_result,
-)
+from .schemas import ChatCompletionRequest, chat_completion_response_from_result
+
+# HTTP status -> OpenAI error "type" string, matching what the openai-python
+# SDK (and therefore LangChain's ChatOpenAI) knows how to parse for clean
+# error messages and its own retry-on-rate-limit logic.
+_OPENAI_ERROR_TYPES = {
+    400: "invalid_request_error",
+    401: "authentication_error",
+    404: "invalid_request_error",
+    429: "rate_limit_error",
+    503: "service_unavailable_error",
+}
 
 
 def create_app(config: GatewayConfig | None = None) -> FastAPI:
     config = config or GatewayConfig()
     app = FastAPI(title="llm-gateway", version="0.1.0")
     rate_limit_dep = enforce_rate_limit(config)
+
+    @app.exception_handler(HTTPException)
+    async def openai_shaped_error(request: Request, exc: HTTPException) -> JSONResponse:
+        error_type = _OPENAI_ERROR_TYPES.get(exc.status_code, "api_error")
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"error": {"message": exc.detail, "type": error_type, "code": exc.status_code}},
+            headers=exc.headers,
+        )
 
     @app.get("/health")
     @app.get("/_internal/healthz")
@@ -62,6 +79,12 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
 
     @app.post("/v1/chat/completions", dependencies=[Depends(rate_limit_dep)])
     async def chat_completions(body: ChatCompletionRequest) -> dict:
+        if not any(m.role != "system" for m in body.messages):
+            raise HTTPException(
+                status_code=400,
+                detail="messages must include at least one non-system entry",
+            )
+
         if config.max_tokens_ceiling > 0 and body.max_tokens > config.max_tokens_ceiling:
             raise HTTPException(
                 status_code=400,
@@ -88,42 +111,21 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
             force_provider = provider_name
             model = upstream_model
 
-        # Tool-calling path: full multi-turn history, no system/last-user
-        # single-turn flattening — ReAct-style agents (e.g. LangGraph's
-        # prebuilt create_react_agent) need the whole conversation, including
-        # prior assistant tool_calls and role="tool" results.
-        if body.tools:
-            try:
-                result = await chat_engine(
-                    messages=body.as_message_dicts(),
-                    tools=body.tools,
-                    tool_choice=body.tool_choice,
-                    max_tokens=body.max_tokens,
-                    config=config,
-                    force_provider=force_provider,
-                    model=model if force_provider else None,
-                )
-            except LLMError as exc:
-                raise HTTPException(status_code=503, detail=str(exc)) from exc
-            return chat_completion_response_from_result(result)
-
         try:
-            system, prompt = body.as_system_and_prompt()
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-        try:
-            text = await complete(
-                system=system,
-                prompt=prompt,
+            result = await chat_engine(
+                messages=body.as_message_dicts(),
+                tools=body.tools,
+                tool_choice=body.tool_choice,
                 max_tokens=body.max_tokens,
                 config=config,
                 force_provider=force_provider,
                 model=model if force_provider else None,
+                sampling=body.sampling_dict(),
+                response_format=body.response_format,
             )
         except LLMError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
 
-        return chat_completion_response(text=text, model=model or "auto")
+        return chat_completion_response_from_result(result)
 
     return app

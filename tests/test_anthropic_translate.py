@@ -6,8 +6,11 @@ import json
 from unittest.mock import MagicMock
 
 from llm_gateway.providers._anthropic_translate import (
+    STRUCTURED_OUTPUT_TOOL_NAME,
     from_anthropic_response,
     to_anthropic_messages,
+    to_anthropic_sampling,
+    to_anthropic_structured_output_tool,
     to_anthropic_tool_choice,
     to_anthropic_tools,
 )
@@ -241,3 +244,46 @@ def test_json_roundtrip_sanity():
         ]
     )
     assert msgs[0]["content"][0]["input"] == args
+
+
+class TestToAnthropicSampling:
+    def test_empty_when_no_sampling(self):
+        assert to_anthropic_sampling(None) == {}
+        assert to_anthropic_sampling({}) == {}
+
+    def test_temperature_and_top_p_passthrough(self):
+        assert to_anthropic_sampling({"temperature": 0.0, "top_p": 0.9}) == {
+            "temperature": 0.0,
+            "top_p": 0.9,
+        }
+
+    def test_stop_string_wrapped_in_list(self):
+        assert to_anthropic_sampling({"stop": "\n"}) == {"stop_sequences": ["\n"]}
+
+    def test_stop_list_passthrough(self):
+        assert to_anthropic_sampling({"stop": ["\n", "END"]}) == {"stop_sequences": ["\n", "END"]}
+
+    def test_seed_and_penalties_silently_dropped(self):
+        # No Anthropic equivalent — must not raise, must not appear in output.
+        result = to_anthropic_sampling(
+            {"seed": 42, "presence_penalty": 0.5, "frequency_penalty": 0.5}
+        )
+        assert result == {}
+
+    def test_none_values_omitted(self):
+        assert to_anthropic_sampling({"temperature": None, "top_p": 0.5}) == {"top_p": 0.5}
+
+
+class TestToAnthropicStructuredOutputTool:
+    def test_none_when_not_json_schema(self):
+        assert to_anthropic_structured_output_tool(None) is None
+        assert to_anthropic_structured_output_tool({"type": "json_object"}) is None
+
+    def test_converts_json_schema_to_forced_tool(self):
+        response_format = {
+            "type": "json_schema",
+            "json_schema": {"name": "weather", "schema": {"type": "object", "properties": {}}},
+        }
+        tool = to_anthropic_structured_output_tool(response_format)
+        assert tool["name"] == STRUCTURED_OUTPUT_TOOL_NAME
+        assert tool["input_schema"] == {"type": "object", "properties": {}}

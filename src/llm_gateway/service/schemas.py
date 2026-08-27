@@ -36,38 +36,34 @@ class ChatCompletionRequest(BaseModel):
     max_tokens: int = 2000
     tools: list[dict] | None = None
     tool_choice: str | dict | None = None
+    response_format: dict | None = None
 
-    def as_system_and_prompt(self) -> tuple[str, str]:
-        """Single-turn extraction for the no-tools text-only path."""
-        system = "\n".join(m.content or "" for m in self.messages if m.role == "system")
-        user_messages = [m.content or "" for m in self.messages if m.role == "user"]
-        if not user_messages:
-            raise ValueError("messages must include at least one role='user' entry")
-        return system, user_messages[-1]
+    # OpenAI-named sampling params. Previously silently dropped (Pydantic's
+    # default extra="ignore" swallowed any field not declared here) — a real
+    # bug, since e.g. LangChain's ChatOpenAI(temperature=0) is extremely
+    # common for deterministic agent behavior. Each has a provider-specific
+    # translation (or is dropped where a provider has no equivalent) — see
+    # providers/base.py:openai_sampling_kwargs and
+    # providers/_anthropic_translate.py:to_anthropic_sampling.
+    temperature: float | None = None
+    top_p: float | None = None
+    stop: str | list[str] | None = None
+    seed: int | None = None
+    presence_penalty: float | None = None
+    frequency_penalty: float | None = None
 
     def as_message_dicts(self) -> list[dict]:
-        """Full multi-turn history for the tool-calling chat() path."""
         return [m.to_dict() for m in self.messages]
 
-
-def chat_completion_response(*, text: str, model: str) -> dict:
-    return {
-        "id": f"chatcmpl-{uuid.uuid4().hex[:24]}",
-        "object": "chat.completion",
-        "created": int(time.time()),
-        "model": model,
-        "choices": [
-            {
-                "index": 0,
-                "message": {"role": "assistant", "content": text},
-                "finish_reason": "stop",
-            }
-        ],
-        # complete() intentionally returns text only, not token counts — usage
-        # is captured in the OTel span (gen_ai.usage.*) instead, not surfaced
-        # here. An empty dict is valid per the OpenAI response shape.
-        "usage": {},
-    }
+    def sampling_dict(self) -> dict:
+        return {
+            "temperature": self.temperature,
+            "top_p": self.top_p,
+            "stop": self.stop,
+            "seed": self.seed,
+            "presence_penalty": self.presence_penalty,
+            "frequency_penalty": self.frequency_penalty,
+        }
 
 
 def chat_completion_response_from_result(result: ChatResult) -> dict:

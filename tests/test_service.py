@@ -5,6 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from llm_gateway import GatewayConfig, reset_circuit_breakers
+from llm_gateway.providers.base import ChatResult, ToolCall
 from llm_gateway.service import create_app
 from llm_gateway.service.rate_limit import reset as reset_rate_limits
 
@@ -23,6 +24,12 @@ def _client(**config_overrides) -> TestClient:
     defaults.update(config_overrides)
     app = create_app(GatewayConfig(**defaults))
     return TestClient(app)
+
+
+def _result(content: str, **overrides) -> ChatResult:
+    defaults = dict(content=content, model="test-model", input_tokens=1, output_tokens=1)
+    defaults.update(overrides)
+    return ChatResult(**defaults)
 
 
 def test_health_requires_no_auth():
@@ -63,7 +70,9 @@ def test_chat_completions_rejects_wrong_key():
 
 def test_chat_completions_success_with_valid_key():
     client = _client(gateway_api_keys="secret-key")
-    with patch("llm_gateway.service.app.complete", AsyncMock(return_value="Hello there!")):
+    with patch(
+        "llm_gateway.service.app.chat_engine", AsyncMock(return_value=_result("Hello there!"))
+    ):
         resp = client.post(
             "/v1/chat/completions",
             json={"messages": [{"role": "user", "content": "hi"}]},
@@ -78,7 +87,7 @@ def test_chat_completions_success_with_valid_key():
 def test_chat_completions_open_when_no_keys_configured():
     # gateway_api_keys unset — deliberately open (documented behavior).
     client = _client()
-    with patch("llm_gateway.service.app.complete", AsyncMock(return_value="ok")):
+    with patch("llm_gateway.service.app.chat_engine", AsyncMock(return_value=_result("ok"))):
         resp = client.post(
             "/v1/chat/completions",
             json={"messages": [{"role": "user", "content": "hi"}]},
@@ -88,8 +97,8 @@ def test_chat_completions_open_when_no_keys_configured():
 
 def test_chat_completions_forces_provider_from_model_prefix():
     client = _client(gateway_api_keys="secret-key")
-    mock_complete = AsyncMock(return_value="forced")
-    with patch("llm_gateway.service.app.complete", mock_complete):
+    mock_chat = AsyncMock(return_value=_result("forced"))
+    with patch("llm_gateway.service.app.chat_engine", mock_chat):
         resp = client.post(
             "/v1/chat/completions",
             json={
@@ -99,8 +108,8 @@ def test_chat_completions_forces_provider_from_model_prefix():
             headers={"Authorization": "Bearer secret-key"},
         )
     assert resp.status_code == 200
-    assert mock_complete.await_args.kwargs["force_provider"] == "anthropic"
-    assert mock_complete.await_args.kwargs["model"] == "claude-sonnet-4-6"
+    assert mock_chat.await_args.kwargs["force_provider"] == "anthropic"
+    assert mock_chat.await_args.kwargs["model"] == "claude-sonnet-4-6"
 
 
 def test_models_endpoint_lists_configured_models():
@@ -151,7 +160,7 @@ def test_chat_completions_rejects_max_tokens_above_ceiling():
         headers={"Authorization": "Bearer secret-key"},
     )
     assert resp.status_code == 400
-    assert "max_tokens" in resp.json()["detail"]
+    assert "max_tokens" in resp.json()["error"]["message"]
 
 
 def test_chat_completions_rejects_oversized_prompt():
@@ -162,12 +171,12 @@ def test_chat_completions_rejects_oversized_prompt():
         headers={"Authorization": "Bearer secret-key"},
     )
     assert resp.status_code == 400
-    assert "exceeds" in resp.json()["detail"]
+    assert "exceeds" in resp.json()["error"]["message"]
 
 
 def test_chat_completions_rate_limits_per_key():
     client = _client(gateway_api_keys="secret-key", rate_limit_per_minute=2)
-    with patch("llm_gateway.service.app.complete", AsyncMock(return_value="ok")):
+    with patch("llm_gateway.service.app.chat_engine", AsyncMock(return_value=_result("ok"))):
         for _ in range(2):
             resp = client.post(
                 "/v1/chat/completions",
@@ -187,7 +196,7 @@ def test_chat_completions_rate_limits_per_key():
 
 def test_rate_limit_is_isolated_per_key():
     client = _client(gateway_api_keys="key-a,key-b", rate_limit_per_minute=1)
-    with patch("llm_gateway.service.app.complete", AsyncMock(return_value="ok")):
+    with patch("llm_gateway.service.app.chat_engine", AsyncMock(return_value=_result("ok"))):
         resp_a = client.post(
             "/v1/chat/completions",
             json={"messages": [{"role": "user", "content": "hi"}]},
@@ -205,7 +214,7 @@ def test_rate_limit_is_isolated_per_key():
 
 def test_rate_limit_disabled_when_zero():
     client = _client(gateway_api_keys="secret-key", rate_limit_per_minute=0)
-    with patch("llm_gateway.service.app.complete", AsyncMock(return_value="ok")):
+    with patch("llm_gateway.service.app.chat_engine", AsyncMock(return_value=_result("ok"))):
         for _ in range(5):
             resp = client.post(
                 "/v1/chat/completions",
@@ -215,12 +224,82 @@ def test_rate_limit_disabled_when_zero():
             assert resp.status_code == 200
 
 
+def test_error_responses_are_openai_shaped():
+    client = _client(gateway_api_keys="secret-key")
+    resp = client.post(
+        "/v1/chat/completions",
+        json={"messages": [{"role": "user", "content": "hi"}]},
+    )
+    assert resp.status_code == 401
+    body = resp.json()
+    assert "detail" not in body
+    assert body["error"]["type"] == "authentication_error"
+    assert body["error"]["code"] == 401
+    assert isinstance(body["error"]["message"], str)
+
+
+# ─── Sampling params & response_format ────────────────────────────────────────
+
+
+def test_sampling_params_reach_chat_engine():
+    client = _client(gateway_api_keys="secret-key")
+    mock_chat = AsyncMock(return_value=_result("ok"))
+    with patch("llm_gateway.service.app.chat_engine", mock_chat):
+        client.post(
+            "/v1/chat/completions",
+            json={
+                "messages": [{"role": "user", "content": "hi"}],
+                "temperature": 0.0,
+                "top_p": 0.9,
+                "stop": ["\n"],
+                "seed": 42,
+            },
+            headers={"Authorization": "Bearer secret-key"},
+        )
+    sampling = mock_chat.await_args.kwargs["sampling"]
+    assert sampling["temperature"] == 0.0
+    assert sampling["top_p"] == 0.9
+    assert sampling["stop"] == ["\n"]
+    assert sampling["seed"] == 42
+
+
+def test_unset_sampling_params_are_none_not_dropped():
+    # Distinguishing "not sent" from "sent as null" isn't needed here — both
+    # should just resolve to None so the provider layer omits them cleanly.
+    client = _client(gateway_api_keys="secret-key")
+    mock_chat = AsyncMock(return_value=_result("ok"))
+    with patch("llm_gateway.service.app.chat_engine", mock_chat):
+        client.post(
+            "/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "hi"}]},
+            headers={"Authorization": "Bearer secret-key"},
+        )
+    assert mock_chat.await_args.kwargs["sampling"]["temperature"] is None
+
+
+def test_response_format_reaches_chat_engine():
+    client = _client(gateway_api_keys="secret-key")
+    mock_chat = AsyncMock(return_value=_result('{"ok": true}'))
+    response_format = {
+        "type": "json_schema",
+        "json_schema": {"name": "x", "schema": {"type": "object"}},
+    }
+    with patch("llm_gateway.service.app.chat_engine", mock_chat):
+        client.post(
+            "/v1/chat/completions",
+            json={
+                "messages": [{"role": "user", "content": "hi"}],
+                "response_format": response_format,
+            },
+            headers={"Authorization": "Bearer secret-key"},
+        )
+    assert mock_chat.await_args.kwargs["response_format"] == response_format
+
+
 # ─── Tool calling ─────────────────────────────────────────────────────────────
 
 
 def test_chat_completions_with_tools_routes_to_chat_engine_and_returns_tool_calls():
-    from llm_gateway.providers.base import ChatResult, ToolCall
-
     client = _client(gateway_api_keys="secret-key")
     result = ChatResult(
         content=None,
@@ -258,17 +337,12 @@ def test_chat_completions_with_tools_routes_to_chat_engine_and_returns_tool_call
     tool_call = body["choices"][0]["message"]["tool_calls"][0]
     assert tool_call["function"]["name"] == "get_weather"
     assert json.loads(tool_call["function"]["arguments"]) == {"city": "Warsaw"}
-    # Full message history (not just system+last-user) is what reaches chat_engine.
     assert mock_chat.await_args.kwargs["tools"][0]["function"]["name"] == "get_weather"
 
 
 def test_chat_completions_sends_full_multiturn_history_to_chat_engine():
-    from llm_gateway.providers.base import ChatResult
-
     client = _client(gateway_api_keys="secret-key")
-    mock_chat = AsyncMock(
-        return_value=ChatResult(content="done", model="x", input_tokens=0, output_tokens=0)
-    )
+    mock_chat = AsyncMock(return_value=_result("done"))
     with patch("llm_gateway.service.app.chat_engine", mock_chat):
         client.post(
             "/v1/chat/completions",
@@ -298,15 +372,10 @@ def test_chat_completions_sends_full_multiturn_history_to_chat_engine():
     assert sent_messages[2]["tool_call_id"] == "t1"
 
 
-def test_chat_completions_without_tools_still_uses_text_only_path():
-    # No `tools` in the request — must not touch chat_engine at all.
+def test_chat_completions_without_tools_passes_none_to_chat_engine():
     client = _client(gateway_api_keys="secret-key")
-    with (
-        patch(
-            "llm_gateway.service.app.complete", AsyncMock(return_value="hi there")
-        ) as mock_complete,
-        patch("llm_gateway.service.app.chat_engine", AsyncMock(side_effect=AssertionError)),
-    ):
+    mock_chat = AsyncMock(return_value=_result("hi there"))
+    with patch("llm_gateway.service.app.chat_engine", mock_chat):
         resp = client.post(
             "/v1/chat/completions",
             json={"messages": [{"role": "user", "content": "hi"}]},
@@ -314,4 +383,4 @@ def test_chat_completions_without_tools_still_uses_text_only_path():
         )
     assert resp.status_code == 200
     assert resp.json()["choices"][0]["message"]["content"] == "hi there"
-    mock_complete.assert_awaited_once()
+    assert mock_chat.await_args.kwargs["tools"] is None

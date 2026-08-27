@@ -16,6 +16,28 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
+# OpenAI-named sampling params accepted on requests. OpenAI/Groq accept these
+# verbatim (same param names); Anthropic needs translation — see
+# _anthropic_translate.to_anthropic_sampling for which of these it actually
+# supports (seed, presence_penalty, frequency_penalty have no equivalent
+# there and are silently dropped, not errored).
+OPENAI_SAMPLING_KEYS = (
+    "temperature",
+    "top_p",
+    "stop",
+    "seed",
+    "presence_penalty",
+    "frequency_penalty",
+)
+
+
+def openai_sampling_kwargs(sampling: dict | None) -> dict:
+    """Filter to only the set (non-None) sampling keys — safe to **-expand
+    directly into an OpenAI-compatible SDK call (OpenAI, Groq)."""
+    if not sampling:
+        return {}
+    return {k: v for k, v in sampling.items() if k in OPENAI_SAMPLING_KEYS and v is not None}
+
 
 @dataclass(frozen=True)
 class ProviderResult:

@@ -31,6 +31,8 @@ async def chat(
     config: GatewayConfig | None = None,
     force_provider: str | None = None,
     model: str | None = None,
+    sampling: dict | None = None,
+    response_format: dict | None = None,
 ) -> ChatResult:
     """Return a ChatResult (text and/or tool_calls), trying providers in
     `config.provider_order` — same fallback/circuit-breaker semantics as
@@ -65,7 +67,14 @@ async def chat(
 
             try:
                 result = await call(
-                    config, messages, tools, max_tokens, model_override, tool_choice
+                    config,
+                    messages,
+                    tools,
+                    max_tokens,
+                    model=model_override,
+                    tool_choice=tool_choice,
+                    sampling=sampling,
+                    response_format=response_format,
                 )
             except Exception as e:  # noqa: BLE001 — any provider failure tries the next
                 breaker.record_failure(

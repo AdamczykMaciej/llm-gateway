@@ -1,7 +1,7 @@
 from openai import AsyncOpenAI
 
 from ..config import GatewayConfig
-from .base import ChatResult, ProviderResult, parse_openai_style_response
+from .base import ChatResult, ProviderResult, openai_sampling_kwargs, parse_openai_style_response
 
 _clients: dict[tuple[str, bool], AsyncOpenAI] = {}
 
@@ -61,15 +61,20 @@ async def chat(
     messages: list[dict],
     tools: list[dict] | None,
     max_tokens: int,
+    *,
     model: str | None = None,
     tool_choice: object = None,
+    sampling: dict | None = None,
+    response_format: dict | None = None,
 ) -> ChatResult:
     model = model or default_model(config)
-    kwargs: dict = {}
+    kwargs: dict = openai_sampling_kwargs(sampling)
     if tools:
         kwargs["tools"] = tools
         if tool_choice is not None:
             kwargs["tool_choice"] = tool_choice
+    if response_format is not None:
+        kwargs["response_format"] = response_format
     resp = await _client(config).chat.completions.create(
         model=model, max_tokens=max_tokens, messages=messages, **kwargs
     )

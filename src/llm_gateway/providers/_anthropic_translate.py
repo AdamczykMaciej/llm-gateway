@@ -102,6 +102,43 @@ def to_anthropic_tool_choice(tool_choice: Any) -> dict | None:
     return None
 
 
+def to_anthropic_sampling(sampling: dict | None) -> dict:
+    """Best-effort mapping of OpenAI-named sampling params. `seed`,
+    `presence_penalty`, and `frequency_penalty` have no Anthropic equivalent
+    and are silently dropped, not errored."""
+    if not sampling:
+        return {}
+    out: dict = {}
+    if sampling.get("temperature") is not None:
+        out["temperature"] = sampling["temperature"]
+    if sampling.get("top_p") is not None:
+        out["top_p"] = sampling["top_p"]
+    stop = sampling.get("stop")
+    if stop:
+        out["stop_sequences"] = stop if isinstance(stop, list) else [stop]
+    return out
+
+
+# Anthropic has no native `response_format` (json_schema/json_object) the way
+# OpenAI does — the only way to get schema-constrained output is to force a
+# single tool call and treat its `input` as the structured result. This name
+# is purely an internal implementation detail; from_anthropic_response()
+# never surfaces it as a real tool call to the caller (see anthropic.py's
+# chat(), which unwraps it back into plain `content` before returning).
+STRUCTURED_OUTPUT_TOOL_NAME = "__llm_gateway_structured_output"
+
+
+def to_anthropic_structured_output_tool(response_format: dict | None) -> dict | None:
+    if not response_format or response_format.get("type") != "json_schema":
+        return None
+    schema = response_format["json_schema"]["schema"]
+    return {
+        "name": STRUCTURED_OUTPUT_TOOL_NAME,
+        "description": "Provide the response matching the required schema.",
+        "input_schema": schema,
+    }
+
+
 def from_anthropic_response(resp: Any, model: str) -> ChatResult:
     text_parts: list[str] = []
     tool_calls: list[ToolCall] = []
