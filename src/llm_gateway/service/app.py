@@ -14,6 +14,8 @@ from ..config import GatewayConfig
 from ..providers import CONFIGURED
 from ..router import LLMError
 from ..streaming import stream_chat as stream_engine
+from . import usage as usage_store
+from .auth import require_api_key
 from .rate_limit import enforce_rate_limit
 from .schemas import (
     SSE_DONE,
@@ -39,6 +41,7 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
     config = config or GatewayConfig()
     app = FastAPI(title="llm-gateway", version="0.1.0")
     rate_limit_dep = enforce_rate_limit(config)
+    auth_dep = require_api_key(config)
 
     @app.exception_handler(HTTPException)
     async def openai_shaped_error(request: Request, exc: HTTPException) -> JSONResponse:
@@ -88,8 +91,17 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
             )
         return {"object": "list", "data": data}
 
-    @app.post("/v1/chat/completions", dependencies=[Depends(rate_limit_dep)])
-    async def chat_completions(body: ChatCompletionRequest) -> dict:
+    @app.get("/v1/usage")
+    async def get_usage(api_key: str = Depends(auth_dep)) -> dict:
+        """Cumulative usage for the calling key only — a key can't see any
+        other key's usage. In-process and ephemeral (see usage.py); not a
+        billing system, just cost visibility."""
+        return usage_store.get(api_key)
+
+    @app.post("/v1/chat/completions")
+    async def chat_completions(
+        body: ChatCompletionRequest, api_key: str = Depends(rate_limit_dep)
+    ) -> dict:
         if not any(m.role != "system" for m in body.messages):
             raise HTTPException(
                 status_code=400,
@@ -102,7 +114,7 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
                 detail=f"max_tokens {body.max_tokens} exceeds the configured ceiling "
                 f"of {config.max_tokens_ceiling}",
             )
-        total_chars = sum(len(m.content or "") for m in body.messages)
+        total_chars = sum(m.text_length() for m in body.messages)
         if config.max_prompt_chars > 0 and total_chars > config.max_prompt_chars:
             raise HTTPException(
                 status_code=400,
@@ -139,8 +151,11 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
             async def _sse():
                 chunk_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
                 created = int(time.time())
+                input_tokens = output_tokens = 0
                 try:
                     async for delta in stream_engine(**engine_kwargs):
+                        if delta.usage:
+                            input_tokens, output_tokens = delta.usage
                         for line in stream_chunk_sse(delta, chunk_id=chunk_id, created=created):
                             yield line
                 except LLMError as exc:
@@ -149,6 +164,9 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
                     # this point, so emit an error event instead of crashing
                     # the connection. See schemas.sse_error_event.
                     yield sse_error_event(str(exc))
+                finally:
+                    if input_tokens or output_tokens:
+                        usage_store.record(api_key, input_tokens, output_tokens)
                 yield SSE_DONE
 
             return StreamingResponse(_sse(), media_type="text/event-stream")
@@ -158,6 +176,7 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
         except LLMError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
 
+        usage_store.record(api_key, result.input_tokens, result.output_tokens)
         return chat_completion_response_from_result(result)
 
     return app

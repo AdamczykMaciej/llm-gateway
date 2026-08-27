@@ -11,14 +11,43 @@ which is structurally different in every direction:
 - Tool definitions use `input_schema`, not `function.parameters`.
 
 Scope: single-round-trip tool calling — enough for a ReAct-style agent loop.
-Not handling: image/multi-modal content blocks, parallel-tool-call edge
-cases beyond what falls out naturally, or every `tool_choice` variant.
+Not handling: parallel-tool-call edge cases beyond what falls out
+naturally, or every `tool_choice` variant.
 """
 
 import json
 from typing import Any
 
 from .base import ChatResult, ToolCall
+
+
+def _translate_image_url(url: str) -> dict:
+    """OpenAI's `image_url.url` is either a data: URI or an https:// URL —
+    Anthropic wants a `source` block naming which kind explicitly."""
+    if url.startswith("data:"):
+        header, _, data = url.partition(",")
+        media_type = header.removeprefix("data:").split(";")[0] or "image/png"
+        return {
+            "type": "image",
+            "source": {"type": "base64", "media_type": media_type, "data": data},
+        }
+    return {"type": "image", "source": {"type": "url", "url": url}}
+
+
+def _translate_content(content: str | list[dict] | None) -> str | list[dict]:
+    """Plain string content passes through unchanged. OpenAI's multi-part
+    content list (text + image_url parts, for multi-modal messages) is
+    translated block-by-block — everything but image_url is already
+    Anthropic-shaped (`{"type": "text", "text": ...}` is identical in both)."""
+    if not isinstance(content, list):
+        return content or ""
+    blocks = []
+    for part in content:
+        if part.get("type") == "image_url":
+            blocks.append(_translate_image_url(part["image_url"]["url"]))
+        else:
+            blocks.append(part)
+    return blocks
 
 
 def to_anthropic_messages(messages: list[dict]) -> tuple[str, list[dict]]:
@@ -56,7 +85,11 @@ def to_anthropic_messages(messages: list[dict]) -> tuple[str, list[dict]]:
         if role == "assistant" and m.get("tool_calls"):
             content: list[dict] = []
             if m.get("content"):
-                content.append({"type": "text", "text": m["content"]})
+                translated = _translate_content(m["content"])
+                if isinstance(translated, list):
+                    content.extend(translated)
+                else:
+                    content.append({"type": "text", "text": translated})
             for tc in m["tool_calls"]:
                 content.append(
                     {
@@ -69,7 +102,7 @@ def to_anthropic_messages(messages: list[dict]) -> tuple[str, list[dict]]:
             anthropic_messages.append({"role": "assistant", "content": content})
             continue
 
-        anthropic_messages.append({"role": role, "content": m.get("content") or ""})
+        anthropic_messages.append({"role": role, "content": _translate_content(m.get("content"))})
 
     return system, anthropic_messages
 

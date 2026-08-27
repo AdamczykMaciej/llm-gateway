@@ -17,7 +17,11 @@ from ..providers.base import ChatResult, StreamDelta
 
 class ChatMessage(BaseModel):
     role: str
-    content: str | None = None
+    # A plain string, or OpenAI's multi-part content list for multi-modal
+    # messages (`[{"type": "text", "text": ...}, {"type": "image_url",
+    # "image_url": {"url": ...}}]`) — passed through as-is for OpenAI/Groq,
+    # translated for Anthropic (see providers/_anthropic_translate.py).
+    content: str | list[dict] | None = None
     tool_calls: list[dict] | None = None  # present on an assistant message requesting tool calls
     tool_call_id: str | None = None  # present on a role="tool" message (the result)
 
@@ -28,6 +32,16 @@ class ChatMessage(BaseModel):
         if self.tool_call_id is not None:
             d["tool_call_id"] = self.tool_call_id
         return d
+
+    def text_length(self) -> int:
+        """Length used for the max_prompt_chars guardrail — text only,
+        images aren't charged against it (they have their own natural size
+        limit via the HTTP request body)."""
+        if isinstance(self.content, str):
+            return len(self.content)
+        if isinstance(self.content, list):
+            return sum(len(p.get("text", "")) for p in self.content if p.get("type") == "text")
+        return 0
 
 
 class ChatCompletionRequest(BaseModel):

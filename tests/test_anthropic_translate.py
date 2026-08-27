@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 
 from llm_gateway.providers._anthropic_translate import (
     STRUCTURED_OUTPUT_TOOL_NAME,
+    _translate_content,
     from_anthropic_response,
     to_anthropic_messages,
     to_anthropic_sampling,
@@ -126,6 +127,60 @@ class TestToAnthropicMessages:
         )
         assert system == "You are an agent."
         assert [m["role"] for m in msgs] == ["user", "assistant", "user"]
+
+
+class TestMultiModalContent:
+    def test_plain_string_content_unchanged(self):
+        assert _translate_content("hello") == "hello"
+
+    def test_none_becomes_empty_string(self):
+        assert _translate_content(None) == ""
+
+    def test_text_part_passthrough(self):
+        result = _translate_content([{"type": "text", "text": "hi"}])
+        assert result == [{"type": "text", "text": "hi"}]
+
+    def test_data_uri_image_translated_to_base64_source(self):
+        content = [
+            {"type": "text", "text": "What's in this image?"},
+            {
+                "type": "image_url",
+                "image_url": {"url": "data:image/png;base64,AAAABBBB"},
+            },
+        ]
+        result = _translate_content(content)
+        assert result[0] == {"type": "text", "text": "What's in this image?"}
+        assert result[1] == {
+            "type": "image",
+            "source": {"type": "base64", "media_type": "image/png", "data": "AAAABBBB"},
+        }
+
+    def test_https_url_image_translated_to_url_source(self):
+        content = [{"type": "image_url", "image_url": {"url": "https://example.com/cat.jpg"}}]
+        result = _translate_content(content)
+        assert result[0] == {
+            "type": "image",
+            "source": {"type": "url", "url": "https://example.com/cat.jpg"},
+        }
+
+    def test_multimodal_user_message_reaches_anthropic_messages(self):
+        _, msgs = to_anthropic_messages(
+            [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "Describe this"},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "data:image/jpeg;base64,ZZZZ"},
+                        },
+                    ],
+                }
+            ]
+        )
+        assert msgs[0]["content"][0] == {"type": "text", "text": "Describe this"}
+        assert msgs[0]["content"][1]["type"] == "image"
+        assert msgs[0]["content"][1]["source"]["media_type"] == "image/jpeg"
 
 
 class TestToAnthropicTools:

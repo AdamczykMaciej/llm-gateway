@@ -8,15 +8,18 @@ from llm_gateway import GatewayConfig, LLMError, reset_circuit_breakers
 from llm_gateway.providers.base import ChatResult, ToolCall
 from llm_gateway.service import create_app
 from llm_gateway.service.rate_limit import reset as reset_rate_limits
+from llm_gateway.service.usage import reset as reset_usage
 
 
 @pytest.fixture(autouse=True)
 def _reset_breakers():
     reset_circuit_breakers()
     reset_rate_limits()
+    reset_usage()
     yield
     reset_circuit_breakers()
     reset_rate_limits()
+    reset_usage()
 
 
 def _client(**config_overrides) -> TestClient:
@@ -438,3 +441,98 @@ def test_stream_provider_failure_before_any_chunk_emits_error_event_then_done():
     assert lines[-1] == "data: [DONE]"
     error_payload = json.loads(lines[0].removeprefix("data: "))
     assert error_payload["error"]["code"] == 503
+
+
+# ─── Usage metering ────────────────────────────────────────────────────────────
+
+
+def test_usage_starts_at_zero():
+    client = _client(gateway_api_keys="secret-key")
+    resp = client.get("/v1/usage", headers={"Authorization": "Bearer secret-key"})
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "requests": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "since": None,
+    }
+
+
+def test_usage_requires_auth():
+    client = _client(gateway_api_keys="secret-key")
+    resp = client.get("/v1/usage")
+    assert resp.status_code == 401
+
+
+def test_usage_accumulates_after_non_streaming_completion():
+    client = _client(gateway_api_keys="secret-key")
+    result = _result("hi", input_tokens=10, output_tokens=5)
+    with patch("llm_gateway.service.app.chat_engine", AsyncMock(return_value=result)):
+        client.post(
+            "/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "hi"}]},
+            headers={"Authorization": "Bearer secret-key"},
+        )
+        client.post(
+            "/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "hi"}]},
+            headers={"Authorization": "Bearer secret-key"},
+        )
+    resp = client.get("/v1/usage", headers={"Authorization": "Bearer secret-key"})
+    body = resp.json()
+    assert body["requests"] == 2
+    assert body["input_tokens"] == 20
+    assert body["output_tokens"] == 10
+    assert body["total_tokens"] == 30
+    assert body["since"] is not None
+
+
+def test_usage_accumulates_after_streaming_completion():
+    from llm_gateway.providers.base import StreamDelta
+
+    async def fake_stream(**kwargs):
+        yield StreamDelta(content="hi", model="x")
+        yield StreamDelta(finish_reason="stop", model="x", usage=(7, 3))
+
+    client = _client(gateway_api_keys="secret-key")
+    with patch("llm_gateway.service.app.stream_engine", fake_stream):
+        client.post(
+            "/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "hi"}], "stream": True},
+            headers={"Authorization": "Bearer secret-key"},
+        )
+    resp = client.get("/v1/usage", headers={"Authorization": "Bearer secret-key"})
+    body = resp.json()
+    assert body["requests"] == 1
+    assert body["input_tokens"] == 7
+    assert body["output_tokens"] == 3
+
+
+def test_usage_is_isolated_per_key():
+    client = _client(gateway_api_keys="key-a,key-b")
+    with patch(
+        "llm_gateway.service.app.chat_engine",
+        AsyncMock(return_value=_result("hi", input_tokens=5, output_tokens=2)),
+    ):
+        client.post(
+            "/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "hi"}]},
+            headers={"Authorization": "Bearer key-a"},
+        )
+    a_usage = client.get("/v1/usage", headers={"Authorization": "Bearer key-a"}).json()
+    b_usage = client.get("/v1/usage", headers={"Authorization": "Bearer key-b"}).json()
+    assert a_usage["requests"] == 1
+    assert b_usage["requests"] == 0
+
+
+def test_failed_completion_does_not_record_usage():
+    client = _client(gateway_api_keys="secret-key")
+    with patch("llm_gateway.service.app.chat_engine", AsyncMock(side_effect=LLMError("down"))):
+        client.post(
+            "/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "hi"}]},
+            headers={"Authorization": "Bearer secret-key"},
+        )
+    resp = client.get("/v1/usage", headers={"Authorization": "Bearer secret-key"})
+    assert resp.json()["requests"] == 0

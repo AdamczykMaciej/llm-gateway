@@ -182,11 +182,30 @@ Tool-call arguments stream as fragments the same way OpenAI's own API does
 text — so client-side aggregation code (e.g. LangChain's) works unmodified
 regardless of which provider actually served the request.
 
+### Multi-modal (images)
+
+OpenAI's multi-part content format works in messages —
+`"content": [{"type": "text", "text": "..."}, {"type": "image_url", "image_url": {"url": "..."}}]`
+— for both `data:` URIs and plain `https://` URLs. Passed through as-is for
+OpenAI/Groq; translated to Anthropic's `image`/`source` block format
+internally. Images aren't counted against `MAX_PROMPT_CHARS` (only text
+parts are — images have their own natural size limit via the HTTP body).
+
+### Usage metering
+
+`GET /v1/usage` (authenticated) returns the *calling key's own* cumulative
+usage — request count, input/output tokens, and when tracking started. A
+key can only ever see its own usage. In-process and ephemeral (resets on
+restart, not shared across Cloud Run replicas — same tradeoff as rate
+limiting); this is cost *visibility*, not a billing system, and a valid key
+still has unlimited spend within its rate-limit window.
+
 ## Known v1 limitations
 
-- No multi-modal content (images) in messages.
-- No per-key usage metering beyond the rate limit — a valid key has
-  unlimited spend within its rate-limit window.
+- No per-request retry-with-backoff on a single provider before failing
+  over — a transient error fails over to the next provider immediately.
+- Usage/rate-limit state doesn't survive a restart or scale-out beyond one
+  Cloud Run replica.
 
 ## Development
 
