@@ -18,6 +18,7 @@ from . import breaker
 from .config import GatewayConfig
 from .providers import CHAT_CALLS, CONFIGURED, DEFAULT_MODEL
 from .providers.base import ChatResult
+from .retry import call_with_retry
 from .router import LLMError
 from .tracing import get_tracer, set_chat_attributes
 
@@ -66,17 +67,21 @@ async def chat(
             resolved_model = model_override or DEFAULT_MODEL[provider](config)
 
             try:
-                result = await call(
-                    config,
-                    messages,
-                    tools,
-                    max_tokens,
-                    model=model_override,
-                    tool_choice=tool_choice,
-                    sampling=sampling,
-                    response_format=response_format,
+                result = await call_with_retry(
+                    lambda call=call: call(
+                        config,
+                        messages,
+                        tools,
+                        max_tokens,
+                        model=model_override,
+                        tool_choice=tool_choice,
+                        sampling=sampling,
+                        response_format=response_format,
+                    ),
+                    attempts=config.retry_attempts,
+                    base_delay_seconds=config.retry_base_delay_seconds,
                 )
-            except Exception as e:  # noqa: BLE001 — any provider failure tries the next
+            except Exception as e:  # noqa: BLE001 — any provider failure (after its retries) tries the next
                 breaker.record_failure(
                     provider,
                     threshold=config.breaker_failure_threshold,

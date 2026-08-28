@@ -9,6 +9,14 @@ here (pulling one item from the async generator before yielding anything)
 is what makes normal "provider N is down" fallback still work for the
 common case where a failure happens immediately (auth, connection, rate
 limit) rather than mid-generation.
+
+Unlike router.py/chat.py, this module doesn't use retry.call_with_retry on
+the pre-flight pull: a retry that itself fails partway through opening the
+stream would need the same "can we still cleanly restart" reasoning as
+fallback does, and pre-flight failures are already the case the plain
+provider-order loop below handles. Not worth the added complexity for a
+"short" retry layer — revisit if pre-flight failures turn out to be common
+enough in practice to matter.
 """
 
 import time

@@ -20,6 +20,10 @@ def _config(**overrides) -> GatewayConfig:
         anthropic_api_key="test-anthropic-key",
         groq_api_key="test-groq-key",
         openai_api_key="test-openai-key",
+        # No retry by default — keeps these tests fast and deterministic;
+        # retry behavior itself is covered by test_retry.py and TestRetry
+        # in test_router.py.
+        retry_attempts=1,
     )
     defaults.update(overrides)
     return GatewayConfig(**defaults)

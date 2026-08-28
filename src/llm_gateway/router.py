@@ -11,6 +11,7 @@ from opentelemetry.trace import StatusCode
 from . import breaker
 from .config import GatewayConfig
 from .providers import CALLS, CONFIGURED, DEFAULT_MODEL
+from .retry import call_with_retry
 from .tracing import get_tracer, set_call_attributes
 
 
@@ -63,8 +64,12 @@ async def complete(
             resolved_model = model_override or DEFAULT_MODEL[provider](config)
 
             try:
-                result = await call(config, system, prompt, max_tokens, model_override)
-            except Exception as e:  # noqa: BLE001 — any provider failure tries the next
+                result = await call_with_retry(
+                    lambda call=call: call(config, system, prompt, max_tokens, model_override),
+                    attempts=config.retry_attempts,
+                    base_delay_seconds=config.retry_base_delay_seconds,
+                )
+            except Exception as e:  # noqa: BLE001 — any provider failure (after its retries) tries the next
                 breaker.record_failure(
                     provider,
                     threshold=config.breaker_failure_threshold,

@@ -22,6 +22,9 @@ def _config(**overrides) -> GatewayConfig:
         openai_api_key="test-openai-key",
         breaker_failure_threshold=3,
         breaker_cooldown_seconds=60.0,
+        # No retry by default — keeps these tests fast and deterministic;
+        # retry behavior itself is covered by TestRetry below.
+        retry_attempts=1,
     )
     defaults.update(overrides)
     return GatewayConfig(**defaults)
@@ -45,6 +48,50 @@ async def test_falls_back_to_second_provider_on_failure():
     assert text == "from groq"
     anthropic_call.assert_awaited_once()
     groq_call.assert_awaited_once()
+
+
+async def test_retries_the_same_provider_before_falling_over():
+    # First call fails, second (the retry) succeeds — groq must never be tried.
+    anthropic_call = AsyncMock(
+        side_effect=[RuntimeError("blip"), ProviderResult("recovered", "claude-x", 1, 1)]
+    )
+    groq_call = AsyncMock(side_effect=AssertionError("groq should not have been called"))
+    with (
+        patch("llm_gateway.router.CALLS", {"anthropic": anthropic_call, "groq": groq_call}),
+        patch("llm_gateway.retry.asyncio.sleep", AsyncMock()),
+    ):
+        text = await complete(
+            system="s",
+            prompt="p",
+            config=_config(provider_order="anthropic,groq", retry_attempts=2),
+        )
+    assert text == "recovered"
+    assert anthropic_call.await_count == 2
+    groq_call.assert_not_called()
+
+
+async def test_retry_exhaustion_still_only_counts_as_one_breaker_failure():
+    # retry_attempts=2 means 2 calls to anthropic per logical request, but
+    # the breaker should still trip after breaker_failure_threshold *requests*,
+    # not *attempts* — retries are invisible to the breaker.
+    anthropic_call = AsyncMock(side_effect=RuntimeError("down"))
+    groq_result = ProviderResult(text="ok", model="llama", input_tokens=1, output_tokens=1)
+    groq_call = AsyncMock(return_value=groq_result)
+    config = _config(provider_order="anthropic,groq", retry_attempts=2, breaker_failure_threshold=1)
+
+    with (
+        patch("llm_gateway.router.CALLS", {"anthropic": anthropic_call, "groq": groq_call}),
+        patch("llm_gateway.retry.asyncio.sleep", AsyncMock()),
+    ):
+        text = await complete(system="s", prompt="p", config=config)
+        assert text == "ok"
+        assert anthropic_call.await_count == 2  # both retry attempts used
+
+        # Breaker threshold is 1 request-level failure — already tripped, so
+        # a second call must skip anthropic entirely (no further attempts).
+        text = await complete(system="s", prompt="p", config=config)
+        assert text == "ok"
+        assert anthropic_call.await_count == 2
 
 
 async def test_provider_order_is_configurable():

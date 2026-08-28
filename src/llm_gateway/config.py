@@ -30,6 +30,14 @@ class GatewayConfig(BaseSettings):
     breaker_failure_threshold: int = 3
     breaker_cooldown_seconds: float = 60.0
 
+    # Short retry-with-backoff on a single provider before falling over to
+    # the next one — see retry.py. retry_attempts=1 means no retry (the
+    # original behavior); the breaker only sees a failure once every
+    # attempt for that provider is exhausted, so this doesn't change how
+    # quickly a genuinely-down provider trips its breaker.
+    retry_attempts: int = 2
+    retry_base_delay_seconds: float = 0.2
+
     # ── Tracing ───────────────────────────────────────────────────────────
     # Prompts are never traced unless this is explicitly enabled, and even
     # then they're PII-masked first (see pii.mask_pii). Off by default.

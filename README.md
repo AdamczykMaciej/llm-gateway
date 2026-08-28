@@ -110,6 +110,21 @@ Error responses are OpenAI-shaped (`{"error": {"message", "type", "code"}}`),
 not FastAPI's default `{"detail": "..."}` — so the openai-python SDK (and
 therefore LangChain) can parse them the way it expects to.
 
+### Retries
+
+Before falling over to the next provider, a failed call is retried against
+the *same* provider up to `RETRY_ATTEMPTS` times total (default `2` — one
+retry), with a short doubling delay (`RETRY_BASE_DELAY_SECONDS`, default
+`0.2`s) between attempts. This absorbs a dropped connection or a momentary
+5xx without paying for a full failover — and its cold-start latency on the
+next provider — for something that would have succeeded on the very next
+try. Deliberately minimal: every exception is treated as retryable, no
+jitter. The circuit breaker only ever sees one failure per request (after
+all retries for that provider are exhausted), not one per attempt, so this
+doesn't change how quickly a genuinely-down provider trips its breaker.
+Set `RETRY_ATTEMPTS=1` to disable retries entirely. Not applied to
+streaming's pre-flight pull — see `streaming.py`'s module docstring for why.
+
 ## Environment variables
 
 | Variable | Default | Purpose |
@@ -123,6 +138,8 @@ therefore LangChain) can parse them the way it expects to.
 | `PROVIDER_ORDER` | `anthropic,groq,openai` | Comma-separated, tried in order |
 | `BREAKER_FAILURE_THRESHOLD` | `3` | Consecutive failures before a provider is skipped |
 | `BREAKER_COOLDOWN_SECONDS` | `60` | How long a tripped provider is skipped |
+| `RETRY_ATTEMPTS` | `2` | Total attempts on one provider before failing over. `1` disables retries. |
+| `RETRY_BASE_DELAY_SECONDS` | `0.2` | Delay before a retry; doubles each attempt. |
 | `TRACE_INCLUDE_PROMPTS` | `false` | Include (PII-masked) prompt text in traces |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | — | Any OTLP collector (Langfuse, Grafana Cloud, ...) |
 | `OTEL_EXPORTER_OTLP_HEADERS` | — | Comma-separated `key=value` pairs |
@@ -211,8 +228,6 @@ still has unlimited spend within its rate-limit window.
 
 ## Known v1 limitations
 
-- No per-request retry-with-backoff on a single provider before failing
-  over — a transient error fails over to the next provider immediately.
 - Usage/rate-limit state doesn't survive a restart or scale-out beyond one
   Cloud Run replica.
 - `GATEWAY_API_KEYS` is a flat, static list — no per-key labels, expiry, or
