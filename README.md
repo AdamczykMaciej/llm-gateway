@@ -67,7 +67,8 @@ client.chat.completions.create(model="auto", messages=[{"role": "user", "content
 - `"<provider>/<model>"`, e.g. `"anthropic/claude-sonnet-4-6"` — calls that
   provider directly, no fallback.
 
-Endpoints: `POST /v1/chat/completions`, `GET /v1/models`, `GET /health` (no auth).
+Endpoints: `POST /v1/chat/completions`, `GET /v1/models`, `GET /v1/usage` (all
+bearer-key auth when `GATEWAY_API_KEYS` is set); `GET /health` (no auth, always).
 Note: `/healthz` is deliberately not used — it's reserved platform-wide on
 Cloud Run and 404s for external callers regardless of app routing.
 
@@ -129,6 +130,7 @@ therefore LangChain) can parse them the way it expects to.
 | `RATE_LIMIT_PER_MINUTE` | `60` | Per-key request cap, in-process. `0` disables it. |
 | `MAX_TOKENS_CEILING` | `4000` | Reject a request if `max_tokens` exceeds this. `0` disables it. |
 | `MAX_PROMPT_CHARS` | `32000` | Reject a request if total message content exceeds this many characters. `0` disables it. |
+| `MAX_IMAGE_BYTES` | `10000000` | Reject a request if the total decoded size of all `data:` URI images exceeds this. `0` disables it. |
 
 ## PII masking
 
@@ -145,12 +147,16 @@ What the gateway does:
   `max_instances × RATE_LIMIT_PER_MINUTE`, not an exact global limit. Good
   enough for basic abuse protection on a single-tenant gateway; a shared
   store (Redis) would be needed for an exact cross-replica limit.
-- **Request size ceilings** (`MAX_TOKENS_CEILING`, `MAX_PROMPT_CHARS`) —
-  reject obviously-abusive payloads before they reach a provider.
+- **Request size ceilings** (`MAX_TOKENS_CEILING`, `MAX_PROMPT_CHARS`,
+  `MAX_IMAGE_BYTES`) — reject obviously-abusive payloads before they reach
+  a provider.
 - **PII-masked tracing** — see above.
 - **`GET /v1/models` availability** reflects real state: whether a
   provider's key is configured and whether its circuit breaker is
-  currently open, not just a static list.
+  currently open, not just a static list. Requires the same bearer auth as
+  every other endpoint when `GATEWAY_API_KEYS` is set — it used to be
+  reachable without a key even then, which leaked provider-configuration
+  state to unauthenticated callers; fixed.
 
 What it does *not* do, on purpose:
 - **Prompt injection defense.** There is no technical fix for this at a
@@ -189,7 +195,10 @@ OpenAI's multi-part content format works in messages —
 — for both `data:` URIs and plain `https://` URLs. Passed through as-is for
 OpenAI/Groq; translated to Anthropic's `image`/`source` block format
 internally. Images aren't counted against `MAX_PROMPT_CHARS` (only text
-parts are — images have their own natural size limit via the HTTP body).
+parts are); the decoded size of `data:` URI images is instead bounded
+separately by `MAX_IMAGE_BYTES` — `https://` URLs aren't counted there
+either, since the gateway never fetches them itself (the provider does), so
+there's no local payload to bound.
 
 ### Usage metering
 
@@ -206,11 +215,16 @@ still has unlimited spend within its rate-limit window.
   over — a transient error fails over to the next provider immediately.
 - Usage/rate-limit state doesn't survive a restart or scale-out beyond one
   Cloud Run replica.
+- `GATEWAY_API_KEYS` is a flat, static list — no per-key labels, expiry, or
+  revocation short of editing the secret and redeploying. Fine for a
+  handful of consuming apps; would need real key-management (a store +
+  admin API) beyond that.
 
 ## Development
 
 ```bash
 python3.12 -m venv .venv && .venv/bin/pip install -e ".[dev]"
+.venv/bin/pip install pip-audit && .venv/bin/pip-audit
 .venv/bin/ruff check . && .venv/bin/ruff format --check .
 .venv/bin/pytest -q
 ```

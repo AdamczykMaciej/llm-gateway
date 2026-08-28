@@ -35,13 +35,30 @@ class ChatMessage(BaseModel):
 
     def text_length(self) -> int:
         """Length used for the max_prompt_chars guardrail — text only,
-        images aren't charged against it (they have their own natural size
-        limit via the HTTP request body)."""
+        images are charged separately (see image_bytes)."""
         if isinstance(self.content, str):
             return len(self.content)
         if isinstance(self.content, list):
             return sum(len(p.get("text", "")) for p in self.content if p.get("type") == "text")
         return 0
+
+    def image_bytes(self) -> int:
+        """Estimated decoded size of any `data:` URI images, for the
+        max_image_bytes guardrail. `https://` image URLs aren't counted —
+        the gateway never fetches them itself, the provider does, so there's
+        no local payload size to bound (only the URL string, which is
+        already small)."""
+        if not isinstance(self.content, list):
+            return 0
+        total = 0
+        for part in self.content:
+            if part.get("type") != "image_url":
+                continue
+            url = part.get("image_url", {}).get("url", "")
+            if url.startswith("data:"):
+                _, _, b64_data = url.partition(",")
+                total += len(b64_data) * 3 // 4
+        return total
 
 
 class ChatCompletionRequest(BaseModel):

@@ -48,6 +48,13 @@ class GatewayConfig(BaseSettings):
     rate_limit_per_minute: int = 60
     max_tokens_ceiling: int = 4000
     max_prompt_chars: int = 32000
+    # Total decoded size of all data: URI images in one request. Unlike
+    # max_prompt_chars (text only), image content had no ceiling at all
+    # before this — a caller within their rate limit could still send
+    # arbitrarily large base64 images every request. 10 MB comfortably
+    # covers a real photo/screenshot while blocking abuse; both Anthropic's
+    # (5 MB/image) and OpenAI's own per-image limits are well under it.
+    max_image_bytes: int = 10_000_000
 
     # Set to false only behind a corporate SSL-inspection proxy.
     ssl_verify: bool = True

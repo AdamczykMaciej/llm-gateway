@@ -64,7 +64,7 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
         return {"status": "ok"}
 
     @app.get("/v1/models")
-    async def models() -> dict:
+    async def models(api_key: str = Depends(auth_dep)) -> dict:
         provider_models = {
             "anthropic": config.claude_model,
             "groq": config.groq_model,
@@ -120,6 +120,13 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
                 status_code=400,
                 detail=f"Total message content ({total_chars} chars) exceeds the "
                 f"configured ceiling of {config.max_prompt_chars}",
+            )
+        total_image_bytes = sum(m.image_bytes() for m in body.messages)
+        if config.max_image_bytes > 0 and total_image_bytes > config.max_image_bytes:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Total image content (~{total_image_bytes} bytes) exceeds the "
+                f"configured ceiling of {config.max_image_bytes} bytes",
             )
 
         force_provider = None

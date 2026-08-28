@@ -115,9 +115,25 @@ def test_chat_completions_forces_provider_from_model_prefix():
     assert mock_chat.await_args.kwargs["model"] == "claude-sonnet-4-6"
 
 
-def test_models_endpoint_lists_configured_models():
+def test_models_endpoint_rejects_missing_auth():
+    # Previously unauthenticated even with gateway_api_keys set — a real
+    # info-disclosure gap (reveals which providers are configured and
+    # whether their breakers are open to anyone, no key required).
     client = _client(gateway_api_keys="secret-key")
     resp = client.get("/v1/models")
+    assert resp.status_code == 401
+
+
+def test_models_endpoint_open_when_no_keys_configured():
+    # gateway_api_keys unset — deliberately open, same as chat completions.
+    client = _client()
+    resp = client.get("/v1/models")
+    assert resp.status_code == 200
+
+
+def test_models_endpoint_lists_configured_models():
+    client = _client(gateway_api_keys="secret-key")
+    resp = client.get("/v1/models", headers={"Authorization": "Bearer secret-key"})
     assert resp.status_code == 200
     ids = [m["id"] for m in resp.json()["data"]]
     assert "auto" in ids
@@ -127,7 +143,7 @@ def test_models_endpoint_reports_availability():
     # Fixture config only sets anthropic_api_key — groq/openai should show
     # configured=False, available=False; anthropic should be available.
     client = _client(gateway_api_keys="secret-key")
-    resp = client.get("/v1/models")
+    resp = client.get("/v1/models", headers={"Authorization": "Bearer secret-key"})
     by_id = {m["id"]: m for m in resp.json()["data"] if m["id"] != "auto"}
     assert by_id["anthropic/claude-haiku-4-5-20251001"]["available"] is True
     assert by_id["groq/llama-3.3-70b-versatile"]["configured"] is False
@@ -139,7 +155,7 @@ def test_models_endpoint_reflects_open_circuit_breaker():
 
     client = _client(gateway_api_keys="secret-key")
     breaker.record_failure("anthropic", threshold=1, cooldown_seconds=60.0)
-    resp = client.get("/v1/models")
+    resp = client.get("/v1/models", headers={"Authorization": "Bearer secret-key"})
     by_id = {m["id"]: m for m in resp.json()["data"]}
     assert by_id["anthropic/claude-haiku-4-5-20251001"]["available"] is False
     assert by_id["auto"]["available"] is False
@@ -175,6 +191,82 @@ def test_chat_completions_rejects_oversized_prompt():
     )
     assert resp.status_code == 400
     assert "exceeds" in resp.json()["error"]["message"]
+
+
+def test_chat_completions_rejects_oversized_image():
+    # A caller within their rate limit could previously send an unbounded
+    # base64 image every request — max_prompt_chars only ever covered text.
+    client = _client(gateway_api_keys="secret-key", max_image_bytes=100)
+    oversized_b64 = "A" * 1000  # decodes to ~750 bytes, over the 100-byte ceiling
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "describe this"},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/png;base64,{oversized_b64}"},
+                        },
+                    ],
+                }
+            ]
+        },
+        headers={"Authorization": "Bearer secret-key"},
+    )
+    assert resp.status_code == 400
+    assert "exceeds" in resp.json()["error"]["message"]
+
+
+def test_chat_completions_allows_image_under_ceiling():
+    client = _client(gateway_api_keys="secret-key", max_image_bytes=100)
+    with patch("llm_gateway.service.app.chat_engine", AsyncMock(return_value=_result("ok"))):
+        resp = client.post(
+            "/v1/chat/completions",
+            json={
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": "data:image/png;base64,AAAA"},
+                            }
+                        ],
+                    }
+                ]
+            },
+            headers={"Authorization": "Bearer secret-key"},
+        )
+    assert resp.status_code == 200
+
+
+def test_chat_completions_does_not_count_https_image_urls_toward_ceiling():
+    # The gateway never fetches https:// image URLs itself (the provider
+    # does) — there's no local payload to bound, so these must never trip
+    # the byte ceiling no matter how low it's set.
+    client = _client(gateway_api_keys="secret-key", max_image_bytes=1)
+    with patch("llm_gateway.service.app.chat_engine", AsyncMock(return_value=_result("ok"))):
+        resp = client.post(
+            "/v1/chat/completions",
+            json={
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": "https://example.com/cat.jpg"},
+                            }
+                        ],
+                    }
+                ]
+            },
+            headers={"Authorization": "Bearer secret-key"},
+        )
+    assert resp.status_code == 200
 
 
 def test_chat_completions_rate_limits_per_key():
