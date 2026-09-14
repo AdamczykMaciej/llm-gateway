@@ -10,7 +10,8 @@ failed provider call, so the rules below are the whole policy:
 | `TIMEOUT`         | SDK `APITimeoutError`, per-attempt timeout     | no    | counts  |
 | `RATE_LIMITED`    | 429                                            | no    | counts  |
 | `AUTH`            | 401, 403; `ProviderAuthError` (e.g. no Entra   | no    | counts  |
-|                   | token for Azure)                               |       |         |
+|                   | token for Azure, a google-auth refresh error   |       |         |
+|                   | or a missing extra for Vertex)                 |       |         |
 | `INVALID_REQUEST` | 400, 404, 413, 422 and every other 4xx,        | no    | ignored |
 |                   | including Azure's 400 `content_filter`         |       |         |
 | `INVALID_OUTPUT`  | no text, a refusal, or structured output that  | no    | ignored |
@@ -23,6 +24,11 @@ failed provider call, so the rules below are the whole policy:
 | `POLICY_VIOLATION`| `PolicyViolationError`: no provider satisfies  | no    | ignored |
 |                   | the routing policy (raised by the gateway      |       |         |
 |                   | before a call, never by a provider)            |       |         |
+
+Vertex AI errors arrive as ordinary anthropic SDK status errors (429
+`RESOURCE_EXHAUSTED` is `RATE_LIMITED`, 5xx `TRANSIENT`, 400/404
+`INVALID_REQUEST`). A Google-style error body inside a 200 stream is
+classified by its `status` (see `_GOOGLE_RPC_STATUSES`).
 
 Every provider-failure kind fails over to the next provider in the chain.
 `POLICY_VIOLATION` is not a provider failure: it ends the call, because
@@ -200,12 +206,36 @@ def _classify_status(status: int) -> ErrorKind:
     return ErrorKind.INVALID_REQUEST
 
 
+# Google API error `status` values (google.rpc.Code names), for a Vertex AI
+# error body without an Anthropic `type`: `{"error": {"code": 429,
+# "status": "RESOURCE_EXHAUSTED", ...}}`. Only consulted when there is no
+# usable HTTP status, i.e. inside a 200 stream.
+_GOOGLE_RPC_STATUSES: dict[str, ErrorKind] = {
+    "RESOURCE_EXHAUSTED": ErrorKind.RATE_LIMITED,
+    "UNAVAILABLE": ErrorKind.TRANSIENT,
+    "INTERNAL": ErrorKind.TRANSIENT,
+    "DEADLINE_EXCEEDED": ErrorKind.TRANSIENT,
+    "ABORTED": ErrorKind.TRANSIENT,
+    "UNAUTHENTICATED": ErrorKind.AUTH,
+    "PERMISSION_DENIED": ErrorKind.AUTH,
+    "INVALID_ARGUMENT": ErrorKind.INVALID_REQUEST,
+    "FAILED_PRECONDITION": ErrorKind.INVALID_REQUEST,
+    "NOT_FOUND": ErrorKind.INVALID_REQUEST,
+    "OUT_OF_RANGE": ErrorKind.INVALID_REQUEST,
+}
+
+
 def _classify_body(body: object) -> ErrorKind:
     if not isinstance(body, dict):
         return ErrorKind.UNKNOWN
     nested = body.get("error")
     error_type = nested.get("type") if isinstance(nested, dict) else body.get("type")
-    return _BODY_ERROR_TYPES.get(error_type, ErrorKind.UNKNOWN) if error_type else ErrorKind.UNKNOWN
+    if error_type:
+        return _BODY_ERROR_TYPES.get(error_type, ErrorKind.UNKNOWN)
+    status = nested.get("status") if isinstance(nested, dict) else None
+    if not isinstance(status, str):
+        return ErrorKind.UNKNOWN
+    return _GOOGLE_RPC_STATUSES.get(status, ErrorKind.UNKNOWN)
 
 
 # Error codes sent with an HTTP 400 that mean "the model's output failed the

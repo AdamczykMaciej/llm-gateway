@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "llm-gateway"
-version = "0.5.0"
-description = "Self-hosted multi-provider LLM gateway (Anthropic, Azure AI Foundry, Groq, OpenAI): fallback chain, circuit breaker, PII-masked tracing — as a library or an OpenAI-compatible HTTP service."
+version = "0.6.0"
+description = "Self-hosted multi-provider LLM gateway (Anthropic, Claude on Google Vertex AI, Azure AI Foundry, Groq, OpenAI): fallback chain, circuit breaker, PII-masked tracing — as a library or an OpenAI-compatible HTTP service."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
@@ -24,6 +24,11 @@ service = ["fastapi>=0.110,<1.0", "uvicorn[standard]>=0.27,<1.0"]
 # Microsoft Entra ID auth for the azure provider (azure_auth="entra"). The
 # async credentials need aiohttp as their HTTP transport.
 azure = ["azure-identity>=1.25.3", "aiohttp>=3.14"]
+# Claude on Google Vertex AI (the vertex provider): the SDK's Vertex extra
+# (google-auth with its requests transport). google-auth 2.29.0 added the
+# custom subject-token suppliers used for Workload Identity Federation from an
+# Azure managed identity, which additionally needs the `azure` extra.
+vertex = ["anthropic[vertex]>=1.5.0,<2", "google-auth[requests]>=2.29.0,<3"]
 dev = [
   "pytest>=8",
   "pytest-asyncio>=0.24",

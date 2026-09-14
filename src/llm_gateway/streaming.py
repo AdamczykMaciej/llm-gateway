@@ -223,7 +223,8 @@ async def stream_chat(
                 raise plan.violation()
             raise LLMError(
                 "No LLM provider available. Set ANTHROPIC_API_KEY, GROQ_API_KEY, "
-                "OPENAI_API_KEY, or AZURE_ENDPOINT and AZURE_MODEL, matching provider_order."
+                "OPENAI_API_KEY, AZURE_ENDPOINT and AZURE_MODEL, or VERTEX_PROJECT_ID, "
+                "matching provider_order."
             )
         raise LLMError(
             f"All configured providers failed. Last error: {last_error}{plan.failure_note()}"

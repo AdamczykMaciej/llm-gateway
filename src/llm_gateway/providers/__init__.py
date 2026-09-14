@@ -1,4 +1,4 @@
-from . import anthropic, azure, groq, openai
+from . import anthropic, azure, groq, openai, vertex
 from .base import ChatResult, ProviderResult, StreamDelta, ToolCall, Usage
 
 CALLS = {
@@ -6,6 +6,7 @@ CALLS = {
     "azure": azure.call,
     "groq": groq.call,
     "openai": openai.call,
+    "vertex": vertex.call,
 }
 
 CHAT_CALLS = {
@@ -13,6 +14,7 @@ CHAT_CALLS = {
     "azure": azure.chat,
     "groq": groq.chat,
     "openai": openai.chat,
+    "vertex": vertex.chat,
 }
 
 STREAM_CALLS = {
@@ -20,6 +22,7 @@ STREAM_CALLS = {
     "azure": azure.stream_chat,
     "groq": groq.stream_chat,
     "openai": openai.stream_chat,
+    "vertex": vertex.stream_chat,
 }
 
 CONFIGURED = {
@@ -27,6 +30,7 @@ CONFIGURED = {
     "azure": azure.configured,
     "groq": groq.configured,
     "openai": openai.configured,
+    "vertex": vertex.configured,
 }
 
 DEFAULT_MODEL = {
@@ -34,6 +38,7 @@ DEFAULT_MODEL = {
     "azure": azure.default_model,
     "groq": groq.default_model,
     "openai": openai.default_model,
+    "vertex": vertex.default_model,
 }
 
 __all__ = [

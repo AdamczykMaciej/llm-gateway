@@ -189,7 +189,9 @@ def plan_chain(
         default_model = DEFAULT_MODEL.get(provider)
         model = model_override or (default_model(config) if default_model else "")
         estimate = worst_case_cost_usd(
-            lookup_price(provider, model, config.model_prices),
+            lookup_price(
+                provider, model, config.model_prices, vertex_location=config.vertex_location
+            ),
             input_chars=profile.input_chars,
             max_output_tokens=profile.max_output_tokens,
         )
@@ -200,7 +202,11 @@ def plan_chain(
         for reason in compliance_reasons(effective, provider, metadata):
             plan._exclude(provider, _POLICY, reason)
         for reason in missing_capabilities(
-            provider, model, profile.features, require_parameters=effective.require_parameters
+            provider,
+            model,
+            profile.features,
+            require_parameters=effective.require_parameters,
+            vertex_structured_outputs=config.vertex_structured_outputs,
         ):
             plan._exclude(provider, _CAPABILITY, reason)
         cap = effective.max_cost_usd

@@ -270,7 +270,15 @@ async def complete_with_usage(
                 usage.output_tokens,
                 usage.reasoning_tokens,
             )
-            cost = cost_usd(lookup_price(provider, result.model, config.model_prices), usage)
+            cost = cost_usd(
+                lookup_price(
+                    provider,
+                    result.model,
+                    config.model_prices,
+                    vertex_location=config.vertex_location,
+                ),
+                usage,
+            )
             record_cost(span, cost)
             return Completion(
                 text=result.text,
@@ -294,7 +302,8 @@ async def complete_with_usage(
                 raise plan.violation()
             raise LLMError(
                 "No LLM provider available. Set ANTHROPIC_API_KEY, GROQ_API_KEY, "
-                "OPENAI_API_KEY, or AZURE_ENDPOINT and AZURE_MODEL, matching provider_order."
+                "OPENAI_API_KEY, AZURE_ENDPOINT and AZURE_MODEL, or VERTEX_PROJECT_ID, "
+                "matching provider_order."
             )
         raise LLMError(
             f"All configured providers failed. Last error: {last_error}{plan.failure_note()}"
