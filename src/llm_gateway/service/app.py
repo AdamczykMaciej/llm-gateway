@@ -16,6 +16,7 @@ from ..config import GatewayConfig
 from ..errors import PolicyViolationError
 from ..providers import CONFIGURED
 from ..providers import azure as azure_provider
+from ..providers import vertex as vertex_provider
 from ..router import LLMError
 from ..streaming import stream_chat as stream_engine
 from . import usage as usage_store
@@ -47,10 +48,11 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         yield
-        # Entra credentials hold their own HTTP sessions.
+        # Entra and managed-identity credentials hold their own HTTP sessions.
         await azure_provider.aclose()
+        await vertex_provider.aclose()
 
-    app = FastAPI(title="llm-gateway", version="0.5.0", lifespan=lifespan)
+    app = FastAPI(title="llm-gateway", version="0.6.0", lifespan=lifespan)
     rate_limit_dep = enforce_rate_limit(config)
     auth_dep = require_api_key(config)
 
@@ -81,6 +83,7 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
             "azure": config.azure_model,
             "groq": config.groq_model,
             "openai": config.openai_model,
+            "vertex": config.vertex_model,
         }
         data = [
             {

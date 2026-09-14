@@ -93,6 +93,19 @@ def _anthropic(model: str) -> ModelCapabilities:
     )
 
 
+def _vertex(model: str) -> ModelCapabilities:
+    """Claude on Vertex AI: the same answers as `_anthropic` for the same model
+    family. Google lists function calling, prompt caching and streaming for
+    Claude Haiku 4.5, and structured outputs for every Claude 4.5 and later
+    model
+    (https://docs.cloud.google.com/vertex-ai/generative-ai/docs/partner-models/claude/structured-outputs),
+    though an organization policy (`constraints/vertexai.allowedPartnerModelFeatures`)
+    disables structured outputs until it allows them. Vertex ids carry a
+    `@version` suffix, which the prefix match covers. Image input is base64
+    only: Vertex doesn't accept URL image sources."""
+    return _anthropic(model)
+
+
 def _openai(model: str) -> ModelCapabilities:
     current = model.startswith(_OPENAI_CURRENT_MODELS) and not any(
         marker in model for marker in _OPENAI_NON_CHAT_MARKERS
@@ -122,6 +135,7 @@ _TABLES: dict[str, Callable[[str], ModelCapabilities]] = {
     "azure": _azure,
     "openai": _openai,
     "groq": _groq,
+    "vertex": _vertex,
 }
 
 

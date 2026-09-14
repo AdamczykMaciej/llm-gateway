@@ -1,5 +1,7 @@
 """Configuration for the gateway, generic across any consuming application."""
 
+import json
+import re
 from typing import Literal
 
 from pydantic import field_validator, model_validator
@@ -11,6 +13,69 @@ from .pricing import ModelPrice, validate_price_table
 AZURE_AUTH_MODES = ("entra", "api_key")
 AZURE_REASONING_EFFORTS = ("", "low", "medium", "high")
 AZURE_MAX_TOKENS_PARAMS = ("max_completion_tokens", "max_tokens")
+
+# Vertex AI locations: the global endpoint, a multi-region ("us", "eu") or a
+# region such as europe-west1.
+VERTEX_MULTI_REGIONS = ("us", "eu")
+_VERTEX_LOCATION = re.compile(r"global|us|eu|[a-z]+-[a-z]+[0-9]+")
+# Google Cloud project ids, optionally domain-scoped ("example.com:my-project").
+_GCP_PROJECT_ID = re.compile(r"(?:[a-z0-9.-]+:)?[a-z][a-z0-9-]{4,28}[a-z0-9]")
+_GCP_SERVICE_ACCOUNT = re.compile(r"[a-z0-9._-]+@[a-z0-9.-]+\.gserviceaccount\.com")
+# Credential configuration types accepted in vertex_credentials_file. A
+# "service_account" key file is refused: it is a long-lived secret.
+VERTEX_CREDENTIAL_TYPES = (
+    "external_account",
+    "external_account_authorized_user",
+    "authorized_user",
+    "impersonated_service_account",
+)
+
+
+def read_vertex_credentials_file(path: str) -> dict:
+    """The parsed credential configuration at `path`. Raises `ValueError`
+    for an unreadable file, invalid JSON, a service-account key or another
+    unsupported type. Messages never include the file's content."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            info = json.load(f)
+    except OSError as e:
+        raise ValueError(
+            f"vertex_credentials_file {path!r} can't be read ({type(e).__name__})"
+        ) from None
+    except ValueError:
+        raise ValueError(f"vertex_credentials_file {path!r} is not valid JSON") from None
+    if not isinstance(info, dict):
+        raise ValueError(f"vertex_credentials_file {path!r} must hold a JSON object")
+    kind = info.get("type")
+    source = info.get("source_credentials")
+    if kind == "service_account" or (
+        kind == "impersonated_service_account"
+        and isinstance(source, dict)
+        and source.get("type") == "service_account"
+    ):
+        raise ValueError(
+            "vertex_credentials_file is a service account key, which is not accepted. Use "
+            "Workload Identity Federation (an external_account credential configuration "
+            "from `gcloud iam workload-identity-pools create-cred-config`) or leave it "
+            "unset for Application Default Credentials."
+        )
+    if kind not in VERTEX_CREDENTIAL_TYPES:
+        raise ValueError(
+            f"vertex_credentials_file type must be one of {', '.join(VERTEX_CREDENTIAL_TYPES)}"
+        )
+    return info
+
+
+def service_account_impersonation_url(email: str) -> str:
+    return (
+        "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/"
+        f"{email}:generateAccessToken"
+    )
+
+
+def azure_app_id_uri_scope(app_id_uri: str) -> str:
+    """The Microsoft Entra scope for an application ID URI."""
+    return f"{app_id_uri.rstrip('/')}/.default"
 
 
 class GatewayConfig(BaseSettings):
@@ -59,6 +124,29 @@ class GatewayConfig(BaseSettings):
     # suits reasoning deployments (gpt-oss, o-series); set "max_tokens" for a
     # deployment that rejects it. Per-deployment acceptance isn't verified.
     azure_max_tokens_param: str = "max_completion_tokens"
+
+    # ── Anthropic Claude on Google Cloud Vertex AI ───────────────────────
+    # Configured when vertex_project_id and vertex_model are set. Needs the
+    # `vertex` extra. See providers/vertex.py and the README.
+    vertex_project_id: str = ""
+    # "global", a multi-region ("eu", "us") or a region. Claude Haiku 4.5 is
+    # offered regionally in europe-west1 (ML processing inside the EU) but
+    # not on the eu multi-region endpoint.
+    vertex_location: str = "europe-west1"
+    vertex_model: str = "claude-haiku-4-5@20251001"
+    # A credential configuration file (e.g. an external_account config for
+    # Workload Identity Federation; it holds no key). Empty = Application
+    # Default Credentials. Service-account key files are rejected.
+    vertex_credentials_file: str = ""
+    # A Google service account to impersonate, e.g. llm@proj.iam.gserviceaccount.com.
+    vertex_impersonate_service_account: str = ""
+    # Workload Identity Federation from an Azure managed identity: the Entra
+    # application ID URI the pool provider accepts as audience. Needs an
+    # external_account vertex_credentials_file and the `azure` extra.
+    vertex_azure_app_id_uri: str = ""
+    # With vertex_azure_app_id_uri: a user-assigned managed identity's client
+    # id. Empty = the system-assigned identity.
+    vertex_azure_managed_identity_client_id: str = ""
 
     # ── Routing ───────────────────────────────────────────────────────────
     # Comma-separated provider names, tried in order. A provider is skipped
@@ -179,6 +267,84 @@ class GatewayConfig(BaseSettings):
                 f"azure_max_tokens_param must be one of: {', '.join(AZURE_MAX_TOKENS_PARAMS)}"
             )
         return normalized
+
+    @field_validator(
+        "vertex_project_id",
+        "vertex_model",
+        "vertex_credentials_file",
+        "vertex_impersonate_service_account",
+        "vertex_azure_app_id_uri",
+        "vertex_azure_managed_identity_client_id",
+    )
+    @classmethod
+    def _strip_vertex_setting(cls, value: str) -> str:
+        return value.strip()
+
+    @field_validator("vertex_project_id")
+    @classmethod
+    def _check_vertex_project_id(cls, value: str) -> str:
+        if value and not _GCP_PROJECT_ID.fullmatch(value):
+            raise ValueError("vertex_project_id must be a Google Cloud project id, e.g. my-project")
+        return value
+
+    @field_validator("vertex_location")
+    @classmethod
+    def _check_vertex_location(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if not _VERTEX_LOCATION.fullmatch(normalized):
+            raise ValueError(
+                "vertex_location must be 'global', a multi-region ('eu', 'us') or a region "
+                "such as 'europe-west1'"
+            )
+        return normalized
+
+    @field_validator("vertex_impersonate_service_account")
+    @classmethod
+    def _check_vertex_impersonation(cls, value: str) -> str:
+        if value and not _GCP_SERVICE_ACCOUNT.fullmatch(value.lower()):
+            raise ValueError(
+                "vertex_impersonate_service_account must be a service account email "
+                "(...@<project>.iam.gserviceaccount.com)"
+            )
+        return value
+
+    @model_validator(mode="after")
+    def _check_vertex_auth(self) -> "GatewayConfig":
+        # Fail at startup, not on the first call, for unusable Vertex auth settings.
+        info = (
+            read_vertex_credentials_file(self.vertex_credentials_file)
+            if self.vertex_credentials_file
+            else None
+        )
+        kind = info.get("type") if info else None
+        if self.vertex_azure_app_id_uri:
+            if kind != "external_account":
+                raise ValueError(
+                    "vertex_azure_app_id_uri needs vertex_credentials_file to be an "
+                    "external_account credential configuration"
+                )
+            if "environment_id" in (info.get("credential_source") or {}):
+                raise ValueError(
+                    "vertex_azure_app_id_uri can't be used with an AWS credential configuration"
+                )
+        if self.vertex_azure_managed_identity_client_id and not self.vertex_azure_app_id_uri:
+            raise ValueError(
+                "vertex_azure_managed_identity_client_id needs vertex_azure_app_id_uri"
+            )
+        impersonate = self.vertex_impersonate_service_account
+        if impersonate and info:
+            if kind == "impersonated_service_account":
+                raise ValueError(
+                    "vertex_impersonate_service_account can't be combined with an "
+                    "impersonated_service_account credential file, which already impersonates"
+                )
+            existing = info.get("service_account_impersonation_url")
+            if existing and existing != service_account_impersonation_url(impersonate):
+                raise ValueError(
+                    "vertex_impersonate_service_account differs from the service account "
+                    "in vertex_credentials_file's service_account_impersonation_url"
+                )
+        return self
 
     @property
     def provider_order_list(self) -> list[str]:

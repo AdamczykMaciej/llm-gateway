@@ -6,9 +6,16 @@ as the HTTP service's `model` field). `GatewayConfig.model_prices`
 override replaces one model's whole entry and a new key adds a model.
 
 The defaults cover only the gateway's default models, at list price. They
-don't know about negotiated discounts, batch pricing, regional or data-zone
-premiums (for example Anthropic's 1.1x `inference_geo="us"` multiplier) or
-1-hour cache writes: override the table when any of those apply.
+don't know about negotiated discounts, batch pricing, data-zone premiums (for
+example Anthropic's 1.1x `inference_geo="us"` multiplier) or 1-hour cache
+writes: override the table when any of those apply.
+
+One regional premium is applied: Vertex AI charges 10% more for Claude
+Sonnet 4.5 and newer (Haiku 4.5 included) on regional and multi-region
+endpoints than on the global endpoint. `lookup_price(..., vertex_location=)`
+multiplies a *default* `vertex/...` price by `VERTEX_REGIONAL_PREMIUM` when
+the location isn't "global". A `MODEL_PRICES` override is used as given,
+since it states the price for the location you actually call.
 """
 
 import json
@@ -52,9 +59,25 @@ _CLAUDE_HAIKU_4_5 = ModelPrice(
     cached_input_per_mtok=0.10,
     cache_write_per_mtok=1.25,
 )
+# https://cloud.google.com/vertex-ai/generative-ai/pricing ("Anthropic's Claude
+# models", Global tab: input $1.00, output $5.00, 5m cache write $1.25, cache
+# hit $0.10). The europe-west1 / us-east5 tabs list the same model at 1.1x.
+_CLAUDE_HAIKU_4_5_VERTEX_GLOBAL = ModelPrice(
+    input_per_mtok=1.00,
+    output_per_mtok=5.00,
+    cached_input_per_mtok=0.10,
+    cache_write_per_mtok=1.25,
+)
+# Regional and multi-region Vertex endpoints vs. the global endpoint, for
+# Claude Sonnet 4.5 and newer models.
+VERTEX_REGIONAL_PREMIUM = 1.1
+
 DEFAULT_PRICES: dict[str, ModelPrice] = {
     "anthropic/claude-haiku-4-5-20251001": _CLAUDE_HAIKU_4_5,
     "anthropic/claude-haiku-4-5": _CLAUDE_HAIKU_4_5,
+    # Global-endpoint prices; see VERTEX_REGIONAL_PREMIUM.
+    "vertex/claude-haiku-4-5@20251001": _CLAUDE_HAIKU_4_5_VERTEX_GLOBAL,
+    "vertex/claude-haiku-4-5": _CLAUDE_HAIKU_4_5_VERTEX_GLOBAL,
     # https://developers.openai.com/api/docs/pricing (Standard tier)
     "openai/gpt-4o-mini": ModelPrice(
         input_per_mtok=0.15, output_per_mtok=0.60, cached_input_per_mtok=0.075
@@ -77,13 +100,35 @@ def validate_price_table(prices: Mapping[str, ModelPrice]) -> dict[str, ModelPri
     return dict(prices)
 
 
+def _scaled(price: ModelPrice, factor: float) -> ModelPrice:
+    def scale(rate: float | None) -> float | None:
+        return None if rate is None else round(rate * factor, 6)
+
+    return ModelPrice(
+        input_per_mtok=scale(price.input_per_mtok),
+        output_per_mtok=scale(price.output_per_mtok),
+        cached_input_per_mtok=scale(price.cached_input_per_mtok),
+        cache_write_per_mtok=scale(price.cache_write_per_mtok),
+    )
+
+
 def lookup_price(
-    provider: str, model: str, overrides: Mapping[str, ModelPrice] | None = None
+    provider: str,
+    model: str,
+    overrides: Mapping[str, ModelPrice] | None = None,
+    *,
+    vertex_location: str = "global",
 ) -> ModelPrice | None:
+    """The price for `provider/model`: an override as given, else the default,
+    with `VERTEX_REGIONAL_PREMIUM` applied to a default vertex price when
+    `vertex_location` isn't "global"."""
     key = f"{provider}/{model}"
     if overrides and key in overrides:
         return overrides[key]
-    return DEFAULT_PRICES.get(key)
+    price = DEFAULT_PRICES.get(key)
+    if price is not None and provider == "vertex" and vertex_location != "global":
+        return _scaled(price, VERTEX_REGIONAL_PREMIUM)
+    return price
 
 
 def cost_usd(price: ModelPrice | None, usage: "Usage") -> float | None:
