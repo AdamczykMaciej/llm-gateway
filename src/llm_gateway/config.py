@@ -5,6 +5,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 AZURE_AUTH_MODES = ("entra", "api_key")
 AZURE_REASONING_EFFORTS = ("", "low", "medium", "high")
+AZURE_MAX_TOKENS_PARAMS = ("max_completion_tokens", "max_tokens")
 
 
 class GatewayConfig(BaseSettings):
@@ -49,6 +50,10 @@ class GatewayConfig(BaseSettings):
     # gpt-oss deployment. Set "" for a deployment of a non-reasoning model,
     # which may reject the parameter.
     azure_reasoning_effort: str = "low"
+    # The request field that carries the token budget. max_completion_tokens
+    # suits reasoning deployments (gpt-oss, o-series); set "max_tokens" for a
+    # deployment that rejects it. Per-deployment acceptance isn't verified.
+    azure_max_tokens_param: str = "max_completion_tokens"
 
     # ── Routing ───────────────────────────────────────────────────────────
     # Comma-separated provider names, tried in order. A provider is skipped
@@ -134,6 +139,16 @@ class GatewayConfig(BaseSettings):
         normalized = value.strip().lower()
         if normalized not in AZURE_REASONING_EFFORTS:
             raise ValueError('azure_reasoning_effort must be "" (omit it), low, medium or high')
+        return normalized
+
+    @field_validator("azure_max_tokens_param")
+    @classmethod
+    def _check_azure_max_tokens_param(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized not in AZURE_MAX_TOKENS_PARAMS:
+            raise ValueError(
+                f"azure_max_tokens_param must be one of: {', '.join(AZURE_MAX_TOKENS_PARAMS)}"
+            )
         return normalized
 
     @property

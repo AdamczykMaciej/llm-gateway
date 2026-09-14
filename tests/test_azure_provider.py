@@ -72,6 +72,7 @@ _ENV = (
     "AZURE_AUTH",
     "AZURE_MANAGED_IDENTITY_CLIENT_ID",
     "AZURE_REASONING_EFFORT",
+    "AZURE_MAX_TOKENS_PARAM",
 )
 
 
@@ -325,6 +326,7 @@ def test_defaults_env_names_and_normalisation(monkeypatch):
     assert (defaults.azure_endpoint, defaults.azure_model, defaults.azure_api_key) == ("", "", "")
     assert (defaults.azure_auth, defaults.azure_reasoning_effort) == ("entra", "low")
     assert defaults.azure_managed_identity_client_id == ""
+    assert defaults.azure_max_tokens_param == "max_completion_tokens"
 
     monkeypatch.setenv("AZURE_ENDPOINT", ENDPOINT)
     monkeypatch.setenv("AZURE_MODEL", DEPLOYMENT)
@@ -332,6 +334,7 @@ def test_defaults_env_names_and_normalisation(monkeypatch):
     monkeypatch.setenv("AZURE_API_KEY", API_KEY)
     monkeypatch.setenv("AZURE_MANAGED_IDENTITY_CLIENT_ID", "client-id")
     monkeypatch.setenv("AZURE_REASONING_EFFORT", "High")
+    monkeypatch.setenv("AZURE_MAX_TOKENS_PARAM", " MAX_TOKENS ")
     config = GatewayConfig(_env_file=None)
     assert (config.azure_endpoint, config.azure_model, config.azure_api_key) == (
         ENDPOINT,
@@ -340,6 +343,7 @@ def test_defaults_env_names_and_normalisation(monkeypatch):
     )
     assert (config.azure_auth, config.azure_reasoning_effort) == ("api_key", "high")
     assert config.azure_managed_identity_client_id == "client-id"
+    assert config.azure_max_tokens_param == "max_tokens"
 
 
 @pytest.mark.parametrize("value", ["", "aad", "key", "managed_identity", "API-KEY"])
@@ -412,6 +416,35 @@ async def test_reasoning_effort_follows_config_on_every_engine(effort):
         else:
             # "" omits the parameter, for deployments that reject it.
             assert "reasoning_effort" not in body
+
+
+@pytest.mark.parametrize(
+    ("param", "absent"),
+    [
+        (None, "max_tokens"),  # the default
+        ("max_completion_tokens", "max_tokens"),
+        ("max_tokens", "max_completion_tokens"),
+    ],
+)
+async def test_token_budget_field_follows_config_on_every_engine(param, absent):
+    wire = _Wire(_json_or_stream)
+    config = _config() if param is None else _config(azure_max_tokens_param=param)
+    expected = param or "max_completion_tokens"
+    messages = [{"role": "user", "content": "hi"}]
+    with _azure(wire):
+        await complete(system="s", prompt="p", max_tokens=111, config=config)
+        await chat(messages=messages, max_tokens=222, config=config)
+        [d async for d in stream_chat(messages=messages, max_tokens=333, config=config)]
+
+    assert [body[expected] for body in wire.bodies] == [111, 222, 333]
+    assert all(absent not in body for body in wire.bodies)
+    assert wire.bodies[2]["stream"] is True
+
+
+@pytest.mark.parametrize("value", ["", "max_output_tokens", "maxTokens", "tokens"])
+def test_invalid_azure_max_tokens_param_is_rejected(value):
+    with pytest.raises(pydantic.ValidationError, match="azure_max_tokens_param must be one of"):
+        GatewayConfig(_env_file=None, azure_max_tokens_param=value)
 
 
 async def test_structured_output_uses_strict_json_schema():

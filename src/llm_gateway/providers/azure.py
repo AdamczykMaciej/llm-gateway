@@ -214,9 +214,16 @@ def _request_kwargs(
     return kwargs
 
 
-# `max_completion_tokens`, not the deprecated `max_tokens`: Azure documents it
-# as the limit for reasoning models (it covers reasoning and visible tokens),
-# and the v1 API accepts it for every chat-completions deployment.
+def token_budget_kwargs(config: GatewayConfig, max_tokens: int) -> dict:
+    """The token budget under `GatewayConfig.azure_max_tokens_param`.
+
+    The default, `max_completion_tokens`, suits reasoning deployments: gpt-oss
+    and the o-series need it, and it covers reasoning plus visible tokens.
+    Set `max_tokens` for a deployment that rejects it (a rejection is a 400,
+    which fails over without tripping the breaker, so it would otherwise cost
+    a wasted round trip on every call). Which field each deployment accepts
+    isn't verified here."""
+    return {config.azure_max_tokens_param: max_tokens}
 
 
 async def call(
@@ -237,11 +244,11 @@ async def call(
         kwargs["response_format"] = output_schema.openai_response_format()
     resp = await _client(config).chat.completions.create(
         model=model,
-        max_completion_tokens=max_tokens,
         messages=[
             {"role": "system", "content": system},
             {"role": "user", "content": prompt},
         ],
+        **token_budget_kwargs(config, max_tokens),
         **kwargs,
     )
     return provider_result_from_openai_style(resp, model, provider=PROVIDER)
@@ -261,7 +268,10 @@ async def chat(
     model = model or default_model(config)
     kwargs = _request_kwargs(config, tools, tool_choice, sampling, response_format)
     resp = await _client(config).chat.completions.create(
-        model=model, max_completion_tokens=max_tokens, messages=messages, **kwargs
+        model=model,
+        messages=messages,
+        **token_budget_kwargs(config, max_tokens),
+        **kwargs,
     )
     return parse_openai_style_response(resp, model, provider=PROVIDER)
 
@@ -281,10 +291,10 @@ async def _stream_chat(
     kwargs = _request_kwargs(config, tools, tool_choice, sampling, response_format)
     stream = await _client(config).chat.completions.create(
         model=model,
-        max_completion_tokens=max_tokens,
         messages=messages,
         stream=True,
         stream_options={"include_usage": True},
+        **token_budget_kwargs(config, max_tokens),
         **kwargs,
         **stream_request_options(config),
     )

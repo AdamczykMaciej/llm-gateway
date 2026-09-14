@@ -283,6 +283,7 @@ config = GatewayConfig(
 | `azure_api_key` | — | The resource key. Used only with `azure_auth=api_key`. |
 | `azure_managed_identity_client_id` | — | Entra only: the client id of a user-assigned managed identity. Unset means `DefaultAzureCredential`. |
 | `azure_reasoning_effort` | `low` | Sent as `reasoning_effort` on every azure request. `low`, `medium`, `high`, or `""` to omit the parameter. |
+| `azure_max_tokens_param` | `max_completion_tokens` | The request field that carries the token budget: `max_completion_tokens` or `max_tokens`. Any other value fails config validation. |
 
 The provider counts as configured when `azure_endpoint` and `azure_model` are
 set, and, for `api_key` auth, `azure_api_key`. With Entra auth nothing is
@@ -324,9 +325,11 @@ strict `json_schema` ([Azure structured outputs][az-so]). Streams request
 `prompt_tokens`, `completion_tokens`,
 `completion_tokens_details.reasoning_tokens` and
 `prompt_tokens_details.cached_tokens`, under provider `azure`. The token
-budget is sent as `max_completion_tokens`, not the deprecated `max_tokens`:
-Azure documents it as the limit for reasoning models, covering reasoning and
-visible tokens.
+budget goes in the field named by `azure_max_tokens_param`. The default,
+`max_completion_tokens`, suits reasoning deployments: gpt-oss and the o-series
+need it, and it covers reasoning plus visible tokens. Set `max_tokens` if a
+deployment rejects it. The gateway doesn't verify which field a given
+deployment accepts.
 
 **`reasoning_effort`.** Same reason as Groq: at a reasoning model's default
 effort, a small `max_tokens` can go entirely to reasoning and leave empty
@@ -352,6 +355,14 @@ deployment of a non-reasoning model, which may reject the parameter.
   the breaker, like any other empty reply. A stream that ends that way before
   any text fails over too. A stream the filter cuts off after text has
   already reached the caller just ends with `finish_reason: "content_filter"`.
+
+**Troubleshooting: repeated 400 failovers.** If the logs show repeated `azure`
+`INVALID_REQUEST` (400) failovers right after you enable the provider, the
+likely cause is `azure_reasoning_effort` or `azure_max_tokens_param` not
+matching the deployment's model. Set `AZURE_REASONING_EFFORT=""` and/or
+`AZURE_MAX_TOKENS_PARAM=max_tokens`. A 400 never trips the breaker, so a
+mismatch doesn't take azure out of rotation: every call pays a failed Azure
+round trip before failing over.
 
 **Data residency.** The deployment's SKU decides where inference is
 processed. gpt-oss-120b is currently offered only as GlobalStandard
@@ -538,6 +549,7 @@ Worst case for one call with the default three-provider chain:
 | `AZURE_API_KEY` | — | Azure resource key, for `AZURE_AUTH=api_key` |
 | `AZURE_MANAGED_IDENTITY_CLIENT_ID` | — | User-assigned managed identity for Entra auth; unset uses `DefaultAzureCredential` |
 | `AZURE_REASONING_EFFORT` | `low` | `reasoning_effort` on every azure request; `""` omits it |
+| `AZURE_MAX_TOKENS_PARAM` | `max_completion_tokens` | Token-budget field for azure requests: `max_completion_tokens` or `max_tokens` |
 | `CLAUDE_MODEL` | `claude-haiku-4-5-20251001` | |
 | `GROQ_MODEL` | `openai/gpt-oss-120b` | Groq retired `llama-3.3-70b-versatile` on 2026-08-16 |
 | `OPENAI_MODEL` | `gpt-4o-mini` | |
