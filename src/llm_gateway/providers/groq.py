@@ -10,13 +10,16 @@ from .base import (
     openai_sampling_kwargs,
     parse_openai_style_chunk,
     parse_openai_style_response,
+    sdk_client_cache_key,
+    sdk_client_options,
+    stream_request_options,
 )
 
-_clients: dict[tuple[str, bool], AsyncOpenAI] = {}
+_clients: dict[tuple, AsyncOpenAI] = {}
 
 
 def _client(config: GatewayConfig) -> AsyncOpenAI:
-    key = (config.groq_api_key, config.ssl_verify)
+    key = sdk_client_cache_key(config.groq_api_key, config)
     client = _clients.get(key)
     if client is None:
         # openai>=3.0 is httpx2-based; plain httpx clients are only a
@@ -26,6 +29,7 @@ def _client(config: GatewayConfig) -> AsyncOpenAI:
             api_key=config.groq_api_key,
             base_url="https://api.groq.com/openai/v1",
             http_client=http_client,
+            **sdk_client_options(config),
         )
         _clients[key] = client
     return client
@@ -116,6 +120,7 @@ async def stream_chat(
         stream=True,
         stream_options={"include_usage": True},
         **kwargs,
+        **stream_request_options(config),
     )
     async for chunk in stream:
         yield parse_openai_style_chunk(chunk, model)

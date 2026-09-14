@@ -8,7 +8,10 @@ so a removed parameter, a rejected http_client, a renamed exception, or a
 changed response/stream model fails here.
 """
 
+import asyncio
+import contextlib
 import json
+import time
 from unittest.mock import AsyncMock, patch
 
 import anthropic as anthropic_sdk
@@ -16,7 +19,17 @@ import httpx2
 import openai as openai_sdk
 import pytest
 
-from llm_gateway import GatewayConfig, LLMError, complete, reset_circuit_breakers
+from llm_gateway import (
+    GatewayConfig,
+    LLMDeadlineExceeded,
+    LLMError,
+    breaker,
+    chat,
+    complete,
+    reset_circuit_breakers,
+    stream_chat,
+)
+from llm_gateway.errors import ErrorKind, classify
 from llm_gateway.providers import anthropic, groq, openai
 from llm_gateway.providers.base import ProviderResult
 
@@ -283,18 +296,27 @@ async def test_openai_stream_chat_with_usage_chunk_through_real_sdk():
 
 
 @pytest.mark.parametrize(
-    ("status", "anthropic_error", "openai_error"),
+    ("status", "anthropic_error", "openai_error", "kind"),
     [
-        (400, "BadRequestError", "BadRequestError"),
-        (401, "AuthenticationError", "AuthenticationError"),
-        (429, "RateLimitError", "RateLimitError"),
-        (500, "InternalServerError", "InternalServerError"),
-        (529, "OverloadedError", "InternalServerError"),
+        (400, "BadRequestError", "BadRequestError", ErrorKind.INVALID_REQUEST),
+        (401, "AuthenticationError", "AuthenticationError", ErrorKind.AUTH),
+        (403, "PermissionDeniedError", "PermissionDeniedError", ErrorKind.AUTH),
+        (404, "NotFoundError", "NotFoundError", ErrorKind.INVALID_REQUEST),
+        (408, "APIStatusError", "APIStatusError", ErrorKind.TRANSIENT),
+        (413, "RequestTooLargeError", "APIStatusError", ErrorKind.INVALID_REQUEST),
+        (422, "UnprocessableEntityError", "UnprocessableEntityError", ErrorKind.INVALID_REQUEST),
+        (429, "RateLimitError", "RateLimitError", ErrorKind.RATE_LIMITED),
+        (500, "InternalServerError", "InternalServerError", ErrorKind.TRANSIENT),
+        (503, "InternalServerError", "InternalServerError", ErrorKind.TRANSIENT),
+        (529, "OverloadedError", "InternalServerError", ErrorKind.TRANSIENT),
     ],
 )
-async def test_status_errors_keep_their_sdk_class_names(status, anthropic_error, openai_error):
+async def test_status_errors_keep_their_sdk_class_names_and_classify(
+    status, anthropic_error, openai_error, kind
+):
     """The router records `type(e).__name__` as the span's error_code, so the
-    SDK exception class names are part of the gateway's observable output."""
+    SDK exception class names are part of the gateway's observable output.
+    Both SDKs' errors for the same status must land in the same ErrorKind."""
     recorder = _Recorder(
         lambda req: httpx2.Response(status, request=req, json={"error": {"message": "nope"}})
     )
@@ -311,16 +333,18 @@ async def test_status_errors_keep_their_sdk_class_names(status, anthropic_error,
             await openai.call(config, "s", "p", 10)
     assert type(o_exc.value).__name__ == openai_error
     assert o_exc.value.status_code == status
+    assert classify(a_exc.value) is kind
+    assert classify(o_exc.value) is kind
 
 
 @pytest.mark.parametrize(
-    ("transport_error", "expected"),
+    ("transport_error", "expected", "kind"),
     [
-        (httpx2.ConnectError("refused"), "APIConnectionError"),
-        (httpx2.ReadTimeout("slow"), "APITimeoutError"),
+        (httpx2.ConnectError("refused"), "APIConnectionError", ErrorKind.TRANSIENT),
+        (httpx2.ReadTimeout("slow"), "APITimeoutError", ErrorKind.TIMEOUT),
     ],
 )
-async def test_transport_errors_are_wrapped_by_both_sdks(transport_error, expected):
+async def test_transport_errors_are_wrapped_by_both_sdks(transport_error, expected, kind):
     def boom(request):
         raise transport_error
 
@@ -333,6 +357,8 @@ async def test_transport_errors_are_wrapped_by_both_sdks(transport_error, expect
             await openai.call(config, "s", "p", 10)
     assert type(a_exc.value).__name__ == expected
     assert type(o_exc.value).__name__ == expected
+    assert classify(a_exc.value) is kind
+    assert classify(o_exc.value) is kind
 
 
 async def test_real_sdk_5xx_is_retried_then_fails_over_and_trips_breaker_once():
@@ -376,3 +402,366 @@ async def test_all_real_sdk_providers_failing_raises_llm_error():
         with pytest.raises(LLMError) as exc:
             await complete(system="s", prompt="p", config=config)
     assert isinstance(exc.value.__cause__, anthropic_sdk.OverloadedError)
+
+
+# ─── Retry / failover / breaker policy, end to end through the real SDKs ───
+#
+# Anthropic is the primary and Groq (openai SDK) the fallback in every test
+# below; both are genuine SDK clients over in-memory transports, and each
+# policy is exercised through all three engines.
+
+_ENGINES = ["complete", "chat", "stream_chat"]
+_MESSAGES = [{"role": "user", "content": "p"}]
+
+
+def _openai_ok(request: httpx2.Request) -> httpx2.Response:
+    """A successful Groq/OpenAI reply saying "from groq", streamed or not."""
+    if json.loads(request.content or b"{}").get("stream"):
+        base = {"id": "c1", "object": "chat.completion.chunk", "created": 0, "model": "llama"}
+        chunks = [
+            {**base, "choices": [{"index": 0, "delta": {"content": "from groq"}}]},
+            {**base, "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]},
+        ]
+        return httpx2.Response(
+            200,
+            request=request,
+            headers={"content-type": "text/event-stream"},
+            content=_sse(chunks, named=False),
+        )
+    completion = {
+        "id": "chatcmpl-1",
+        "object": "chat.completion",
+        "created": 0,
+        "model": "llama",
+        "choices": [
+            {
+                "index": 0,
+                "finish_reason": "stop",
+                "message": {"role": "assistant", "content": "from groq"},
+            }
+        ],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+    }
+    return httpx2.Response(200, request=request, json=completion)
+
+
+def _status(status: int, **headers: str):
+    return lambda req: httpx2.Response(
+        status, request=req, headers=headers, json={"error": {"message": f"status {status}"}}
+    )
+
+
+def _connection_refused(request: httpx2.Request) -> httpx2.Response:
+    raise httpx2.ConnectError("refused")
+
+
+async def _never_responds(request: httpx2.Request) -> httpx2.Response:
+    await asyncio.sleep(3600)
+    raise AssertionError("unreachable")
+
+
+def _chain_config(**overrides) -> GatewayConfig:
+    settings = dict(
+        anthropic_api_key="k",
+        groq_api_key="k",
+        provider_order="anthropic,groq",
+        retry_attempts=2,
+        breaker_failure_threshold=1,
+    )
+    settings.update(overrides)
+    return GatewayConfig(**settings)
+
+
+@contextlib.contextmanager
+def _real_sdk_providers(**recorders: _Recorder):
+    """Route each named provider through a real SDK client over its recorder."""
+    builders = {"anthropic": _anthropic_client, "groq": _openai_client, "openai": _openai_client}
+    modules = {"anthropic": anthropic, "groq": groq, "openai": openai}
+    with contextlib.ExitStack() as stack:
+        for name, recorder in recorders.items():
+            stack.enter_context(
+                patch.object(modules[name], "_client", return_value=builders[name](recorder))
+            )
+        yield
+
+
+async def _run(engine: str, config: GatewayConfig) -> str:
+    if engine == "complete":
+        return await complete(system="s", prompt="p", config=config)
+    if engine == "chat":
+        return (await chat(messages=_MESSAGES, config=config)).content
+    return "".join([d.content or "" async for d in stream_chat(messages=_MESSAGES, config=config)])
+
+
+@pytest.mark.parametrize("engine", _ENGINES)
+@pytest.mark.parametrize("status", [401, 403])
+async def test_auth_error_is_not_retried_fails_over_and_counts_for_breaker(engine, status):
+    primary, fallback = _Recorder(_status(status)), _Recorder(_openai_ok)
+    with (
+        _real_sdk_providers(anthropic=primary, groq=fallback),
+        patch("llm_gateway.retry.asyncio.sleep", AsyncMock()) as sleep,
+    ):
+        assert await _run(engine, _chain_config()) == "from groq"
+    assert len(primary.bodies) == 1
+    sleep.assert_not_awaited()
+    assert breaker.is_open("anthropic")
+
+
+@pytest.mark.parametrize("engine", _ENGINES)
+@pytest.mark.parametrize("status", [400, 404, 413, 422])
+async def test_request_error_is_not_retried_fails_over_and_never_trips_breaker(engine, status):
+    """Documented decision: a 4xx other than 401/403/429 still fails over.
+    The gateway translates each request per provider (sampling params,
+    images, tools, structured output) and providers differ in context
+    windows, model names and content policy, so "invalid here" does not
+    mean "invalid everywhere" — and the extra call is cheap because it is
+    never retried. It must not count toward the breaker: it's the caller's
+    request, not the provider's health."""
+    primary, fallback = _Recorder(_status(status)), _Recorder(_openai_ok)
+    config = _chain_config()
+    with (
+        _real_sdk_providers(anthropic=primary, groq=fallback),
+        patch("llm_gateway.retry.asyncio.sleep", AsyncMock()) as sleep,
+    ):
+        for _ in range(3):
+            assert await _run(engine, config) == "from groq"
+    # Threshold is 1, yet all three calls still reached anthropic exactly once.
+    assert len(primary.bodies) == 3
+    sleep.assert_not_awaited()
+    assert not breaker.is_open("anthropic")
+
+
+@pytest.mark.parametrize("engine", _ENGINES)
+@pytest.mark.parametrize(
+    "respond",
+    [_status(500), _status(503), _status(529), _connection_refused],
+    ids=["500", "503", "529-overloaded", "connection-error"],
+)
+async def test_transient_error_is_retried_once_then_fails_over(engine, respond):
+    primary, fallback = _Recorder(respond), _Recorder(_openai_ok)
+    config = _chain_config()
+    with (
+        _real_sdk_providers(anthropic=primary, groq=fallback),
+        patch("llm_gateway.retry.asyncio.sleep", AsyncMock()) as sleep,
+    ):
+        assert await _run(engine, config) == "from groq"
+    assert len(primary.bodies) == 2
+    sleep.assert_awaited_once_with(config.retry_base_delay_seconds)
+    assert breaker.is_open("anthropic")
+
+
+@pytest.mark.parametrize("engine", _ENGINES)
+async def test_rate_limit_fails_over_immediately_and_counts_for_breaker(engine):
+    """The router has no provider-429 handling beyond the fallback chain
+    (service/rate_limit.py only limits *inbound* callers). Retrying a
+    throttled provider 0.2 s later almost always 429s again, so a 429 fails
+    over at once and, like before, counts toward the breaker."""
+    primary, fallback = _Recorder(_status(429, **{"retry-after": "1"})), _Recorder(_openai_ok)
+    with (
+        _real_sdk_providers(anthropic=primary, groq=fallback),
+        patch("llm_gateway.retry.asyncio.sleep", AsyncMock()) as sleep,
+    ):
+        assert await _run(engine, _chain_config()) == "from groq"
+    assert len(primary.bodies) == 1
+    sleep.assert_not_awaited()
+    assert breaker.is_open("anthropic")
+
+
+async def test_breaker_ignores_bad_requests_between_real_failures():
+    statuses = iter([400, 500, 400, 422, 500])
+    primary = _Recorder(lambda req: _status(next(statuses))(req))
+    config = _chain_config(retry_attempts=1, breaker_failure_threshold=2)
+    with _real_sdk_providers(anthropic=primary, groq=_Recorder(_openai_ok)):
+        for expected_open in (False, False, False, False, True):
+            await complete(system="s", prompt="p", config=config)
+            assert breaker.is_open("anthropic") is expected_open
+    assert len(primary.bodies) == 5
+
+
+@pytest.mark.parametrize(
+    ("provider", "body", "kind"),
+    [
+        (
+            anthropic,
+            {"type": "error", "error": {"type": "overloaded_error", "message": "busy"}},
+            ErrorKind.TRANSIENT,
+        ),
+        (
+            anthropic,
+            {"type": "error", "error": {"type": "invalid_request_error", "message": "bad"}},
+            ErrorKind.INVALID_REQUEST,
+        ),
+        (openai, {"error": {"type": "server_error", "message": "oops"}}, ErrorKind.TRANSIENT),
+        (
+            openai,
+            {"error": {"type": "invalid_request_error", "message": "bad"}},
+            ErrorKind.INVALID_REQUEST,
+        ),
+    ],
+)
+async def test_errors_arriving_inside_a_200_stream_are_classified_by_body(provider, body, kind):
+    named = provider is anthropic
+    prefix = "event: error\n" if named else ""
+    payload = f"{prefix}data: {json.dumps(body)}\n\n".encode()
+    recorder = _Recorder(
+        lambda req: httpx2.Response(
+            200, request=req, headers={"content-type": "text/event-stream"}, content=payload
+        )
+    )
+    build = _anthropic_client if named else _openai_client
+    config = GatewayConfig(anthropic_api_key="k", openai_api_key="k")
+    with patch.object(provider, "_client", return_value=build(recorder)):
+        with pytest.raises(Exception) as exc:  # noqa: B017 — the SDK-specific class is the point
+            async for _ in provider.stream_chat(config, _MESSAGES, None, 10):
+                pass
+    assert classify(exc.value) is kind
+
+
+# ─── Timeouts and the overall call deadline ────────────────────────────────
+
+
+@pytest.mark.parametrize("provider", [anthropic, openai, groq])
+async def test_provider_clients_get_gateway_timeout_and_sdk_retries(provider):
+    keys = dict(anthropic_api_key="k", openai_api_key="k", groq_api_key="k")
+    provider._clients.clear()
+    try:
+        default = provider._client(GatewayConfig(**keys))
+        assert default.max_retries == 0
+        assert (default.timeout.read, default.timeout.connect) == (45.0, 5.0)
+
+        tuned = provider._client(
+            GatewayConfig(**keys, request_timeout_seconds=12, sdk_max_retries=1)
+        )
+        assert tuned is not default  # settings are part of the client cache key
+        assert (tuned.max_retries, tuned.timeout.read) == (1, 12.0)
+
+        # 0 disables the gateway bound: the SDK's own default timeout applies.
+        unbounded = provider._client(GatewayConfig(**keys, request_timeout_seconds=0))
+        assert unbounded.timeout.read == 600
+    finally:
+        provider._clients.clear()
+
+
+@pytest.mark.parametrize("engine", ["complete", "chat"])
+async def test_never_responding_provider_hits_per_attempt_timeout_and_fails_over(engine):
+    primary, fallback = _Recorder(_never_responds), _Recorder(_openai_ok)
+    config = _chain_config(request_timeout_seconds=0.2)
+    started = time.monotonic()
+    with _real_sdk_providers(anthropic=primary, groq=fallback):
+        assert await _run(engine, config) == "from groq"
+    elapsed = time.monotonic() - started
+    assert 0.2 <= elapsed < 2.0
+    # A timeout is not retried on the same provider: a second attempt would
+    # spend another full timeout that the next provider could use instead.
+    assert len(primary.bodies) == 1
+    assert breaker.is_open("anthropic")
+
+
+@contextlib.asynccontextmanager
+async def _silent_server():
+    """A real localhost TCP server that accepts requests and never answers —
+    unlike MockTransport, this exercises the SDK's own httpx timeouts."""
+
+    async def swallow(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        while await reader.read(65536):
+            pass
+        writer.close()
+
+    server = await asyncio.start_server(swallow, "127.0.0.1", 0)
+    host, port = server.sockets[0].getsockname()[:2]
+    try:
+        yield f"http://{host}:{port}"
+    finally:
+        server.close()
+
+
+@pytest.mark.parametrize("provider", [anthropic, openai])
+@pytest.mark.parametrize("streaming", [False, True], ids=["request", "stream"])
+async def test_silent_provider_trips_the_sdk_timeout(provider, streaming):
+    config = GatewayConfig(
+        anthropic_api_key="k",
+        openai_api_key="k",
+        # Only the timeout for the mode under test is short, which proves
+        # streaming uses its own per-request timeout, not the client's.
+        request_timeout_seconds=30.0 if streaming else 0.3,
+        stream_idle_timeout_seconds=0.3 if streaming else 30.0,
+    )
+    provider._clients.clear()
+    try:
+        async with _silent_server() as base_url:
+            client = provider._client(config).with_options(base_url=base_url)
+            started = time.monotonic()
+            with patch.object(provider, "_client", return_value=client):
+                with pytest.raises(Exception) as exc:  # noqa: B017 — SDK-specific class
+                    if streaming:
+                        async for _ in provider.stream_chat(config, _MESSAGES, None, 10):
+                            pass
+                    else:
+                        await provider.call(config, "s", "p", 10)
+            elapsed = time.monotonic() - started
+    finally:
+        provider._clients.clear()
+    assert type(exc.value).__name__ == "APITimeoutError"
+    assert classify(exc.value) is ErrorKind.TIMEOUT
+    assert elapsed < 5.0
+
+
+@pytest.mark.parametrize("engine", ["complete", "chat"])
+async def test_call_deadline_stops_the_chain(engine):
+    primary, secondary, last = (
+        _Recorder(_never_responds),
+        _Recorder(_never_responds),
+        _Recorder(_openai_ok),
+    )
+    config = _chain_config(
+        openai_api_key="k",
+        provider_order="anthropic,groq,openai",
+        request_timeout_seconds=0.3,
+        call_deadline_seconds=0.5,
+    )
+    started = time.monotonic()
+    with _real_sdk_providers(anthropic=primary, groq=secondary, openai=last):
+        with pytest.raises(LLMDeadlineExceeded) as exc:
+            await _run(engine, config)
+    assert time.monotonic() - started < 2.0
+    assert isinstance(exc.value, LLMError)  # callers keep a single error path
+    assert (len(primary.bodies), len(secondary.bodies), len(last.bodies)) == (1, 1, 0)
+    # Anthropic hit its own per-attempt timeout; groq was only cut short by
+    # the deadline, which says nothing about groq's health.
+    assert breaker.is_open("anthropic")
+    assert not breaker.is_open("groq")
+
+
+async def test_call_deadline_bounds_stream_preflight():
+    primary = _Recorder(_never_responds)
+    config = _chain_config(provider_order="anthropic", call_deadline_seconds=0.3)
+    started = time.monotonic()
+    with _real_sdk_providers(anthropic=primary):
+        with pytest.raises(LLMDeadlineExceeded):
+            await _run("stream_chat", config)
+    assert time.monotonic() - started < 2.0
+    assert not breaker.is_open("anthropic")
+
+
+async def test_call_deadline_ends_a_stream_that_stalls_after_starting():
+    base = {"id": "c1", "object": "chat.completion.chunk", "created": 0, "model": "gpt"}
+    first = {**base, "choices": [{"index": 0, "delta": {"content": "Hel"}}]}
+
+    async def stalls(request: httpx2.Request) -> httpx2.Response:
+        async def body():
+            yield f"data: {json.dumps(first)}\n\n".encode()
+            await asyncio.sleep(3600)
+
+        return httpx2.Response(
+            200, request=request, headers={"content-type": "text/event-stream"}, content=body()
+        )
+
+    config = GatewayConfig(openai_api_key="k", provider_order="openai", call_deadline_seconds=0.3)
+    received: list[str] = []
+    started = time.monotonic()
+    with _real_sdk_providers(openai=_Recorder(stalls)):
+        with pytest.raises(LLMDeadlineExceeded):
+            async for delta in stream_chat(messages=_MESSAGES, config=config):
+                received.append(delta.content)
+    assert time.monotonic() - started < 2.0
+    assert received == ["Hel"]

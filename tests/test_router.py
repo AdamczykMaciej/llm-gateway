@@ -1,11 +1,20 @@
 from unittest.mock import AsyncMock, patch
 
+import anthropic
+import httpx2
 import pytest
 
 from llm_gateway import GatewayConfig, LLMError, complete, reset_circuit_breakers
 from llm_gateway.providers.base import ProviderResult
 
 pytestmark = pytest.mark.asyncio
+
+
+def _transient(message: str) -> anthropic.APIConnectionError:
+    """A connection error — the kind of failure the gateway retries."""
+    return anthropic.APIConnectionError(
+        message=message, request=httpx2.Request("POST", "https://api.example.test")
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -53,7 +62,7 @@ async def test_falls_back_to_second_provider_on_failure():
 async def test_retries_the_same_provider_before_falling_over():
     # First call fails, second (the retry) succeeds — groq must never be tried.
     anthropic_call = AsyncMock(
-        side_effect=[RuntimeError("blip"), ProviderResult("recovered", "claude-x", 1, 1)]
+        side_effect=[_transient("blip"), ProviderResult("recovered", "claude-x", 1, 1)]
     )
     groq_call = AsyncMock(side_effect=AssertionError("groq should not have been called"))
     with (
@@ -74,7 +83,7 @@ async def test_retry_exhaustion_still_only_counts_as_one_breaker_failure():
     # retry_attempts=2 means 2 calls to anthropic per logical request, but
     # the breaker should still trip after breaker_failure_threshold *requests*,
     # not *attempts* — retries are invisible to the breaker.
-    anthropic_call = AsyncMock(side_effect=RuntimeError("down"))
+    anthropic_call = AsyncMock(side_effect=_transient("down"))
     groq_result = ProviderResult(text="ok", model="llama", input_tokens=1, output_tokens=1)
     groq_call = AsyncMock(return_value=groq_result)
     config = _config(provider_order="anthropic,groq", retry_attempts=2, breaker_failure_threshold=1)
@@ -92,6 +101,25 @@ async def test_retry_exhaustion_still_only_counts_as_one_breaker_failure():
         text = await complete(system="s", prompt="p", config=config)
         assert text == "ok"
         assert anthropic_call.await_count == 2
+
+
+async def test_unclassified_errors_fail_over_without_a_retry():
+    # A non-SDK exception (e.g. a response-parsing bug) is not known to be
+    # transient, so it goes straight to the next provider.
+    anthropic_call = AsyncMock(side_effect=RuntimeError("bug"))
+    groq_call = AsyncMock(return_value=ProviderResult("from groq", "llama", 1, 1))
+    with (
+        patch("llm_gateway.router.CALLS", {"anthropic": anthropic_call, "groq": groq_call}),
+        patch("llm_gateway.retry.asyncio.sleep", AsyncMock()) as sleep,
+    ):
+        text = await complete(
+            system="s",
+            prompt="p",
+            config=_config(provider_order="anthropic,groq", retry_attempts=2),
+        )
+    assert text == "from groq"
+    anthropic_call.assert_awaited_once()
+    sleep.assert_not_awaited()
 
 
 async def test_provider_order_is_configurable():

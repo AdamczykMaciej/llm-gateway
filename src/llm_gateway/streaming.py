@@ -10,24 +10,31 @@ is what makes normal "provider N is down" fallback still work for the
 common case where a failure happens immediately (auth, connection, rate
 limit) rather than mid-generation.
 
-Unlike router.py/chat.py, this module doesn't use retry.call_with_retry on
-the pre-flight pull: a retry that itself fails partway through opening the
-stream would need the same "can we still cleanly restart" reasoning as
-fallback does, and pre-flight failures are already the case the plain
-provider-order loop below handles. Not worth the added complexity for a
-"short" retry layer — revisit if pre-flight failures turn out to be common
-enough in practice to matter.
+The pre-flight pull goes through retry.call_with_retry like the other
+engines: nothing has reached the caller yet, so re-opening the stream on a
+transient error is exactly as safe as falling over to the next provider.
+That matters now that the SDKs' own retries are off (sdk_max_retries=0).
+
+Time bounds: the SDK's read timeout (stream_idle_timeout_seconds) caps the
+wait for the stream to start and every stall inside it; the gateway itself
+adds no per-attempt bound, because a provider may legitimately withhold the
+first normalized chunk until generation ends (Anthropic's structured-output
+emulation does). call_deadline_seconds bounds the whole call — including a
+stream that has already started, which then ends with LLMDeadlineExceeded.
 """
 
+import asyncio
 import time
 
 from opentelemetry.trace import StatusCode
 
 from . import breaker
 from .config import GatewayConfig
+from .errors import LLMError, deadline_exceeded
 from .providers import CONFIGURED, DEFAULT_MODEL, STREAM_CALLS
 from .providers.base import StreamDelta
-from .router import LLMError
+from .retry import Deadline, call_with_retry
+from .router import record_provider_failure
 from .tracing import get_tracer, set_chat_attributes
 
 
@@ -49,6 +56,7 @@ async def stream_chat(
 
     tracer = get_tracer()
     start = time.monotonic() * 1000
+    deadline = Deadline(config.call_deadline_seconds)
     attempted_any = False
     last_error: Exception | None = None
 
@@ -63,32 +71,38 @@ async def stream_chat(
                 continue
             if not force_provider and breaker.is_open(provider):
                 continue
+            if deadline.expired:
+                break
 
             attempted_any = True
             is_fallback = index > 0
             resolved_model = model_override or DEFAULT_MODEL[provider](config)
-            generator = stream_fn(
-                config,
-                messages,
-                tools,
-                max_tokens,
-                model=model_override,
-                tool_choice=tool_choice,
-                sampling=sampling,
-                response_format=response_format,
-            )
+
+            async def open_stream(stream_fn=stream_fn):
+                generator = stream_fn(
+                    config,
+                    messages,
+                    tools,
+                    max_tokens,
+                    model=model_override,
+                    tool_choice=tool_choice,
+                    sampling=sampling,
+                    response_format=response_format,
+                )
+                try:
+                    return generator, await generator.__anext__()
+                except StopAsyncIteration:
+                    return generator, None
 
             try:
-                first_delta = await generator.__anext__()
-            except StopAsyncIteration:
-                breaker.record_success(provider)
-                return
-            except Exception as e:  # noqa: BLE001 — pre-flight failure tries the next provider
-                breaker.record_failure(
-                    provider,
-                    threshold=config.breaker_failure_threshold,
-                    cooldown_seconds=config.breaker_cooldown_seconds,
+                generator, first_delta = await call_with_retry(
+                    open_stream,
+                    attempts=config.retry_attempts,
+                    base_delay_seconds=config.retry_base_delay_seconds,
+                    deadline=deadline,
                 )
+            except Exception as e:  # noqa: BLE001 — pre-flight failure tries the next provider
+                record_provider_failure(provider, e, config=config, deadline=deadline)
                 last_error = e
                 latency = time.monotonic() * 1000 - start
                 set_chat_attributes(
@@ -106,6 +120,8 @@ async def stream_chat(
 
             # Committed to this provider — no more silent fallback past this point.
             breaker.record_success(provider)
+            if first_delta is None:
+                return
             input_tokens = output_tokens = 0
             finish_reason = "stop"
             tool_call_count = 0
@@ -119,9 +135,16 @@ async def stream_chat(
                     finish_reason = delta.finish_reason
                 yield delta
                 try:
-                    delta = await generator.__anext__()
+                    async with asyncio.timeout(deadline.remaining()):
+                        delta = await generator.__anext__()
                 except StopAsyncIteration:
                     delta = None
+                except TimeoutError as e:
+                    if not deadline.expired:
+                        raise
+                    await generator.aclose()
+                    span.set_status(StatusCode.ERROR, "call deadline exceeded")
+                    raise deadline_exceeded(config.call_deadline_seconds, e) from e
 
             latency = time.monotonic() * 1000 - start
             set_chat_attributes(
@@ -138,6 +161,9 @@ async def stream_chat(
             )
             return
 
+        if deadline.expired:
+            span.set_status(StatusCode.ERROR, "call deadline exceeded")
+            raise deadline_exceeded(config.call_deadline_seconds, last_error) from last_error
         span.set_status(
             StatusCode.ERROR,
             str(last_error) if last_error else "No provider available",

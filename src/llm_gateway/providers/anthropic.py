@@ -13,20 +13,31 @@ from ._anthropic_translate import (
     to_anthropic_tool_choice,
     to_anthropic_tools,
 )
-from .base import ChatResult, ProviderResult, StreamDelta
+from .base import (
+    ChatResult,
+    ProviderResult,
+    StreamDelta,
+    sdk_client_cache_key,
+    sdk_client_options,
+    stream_request_options,
+)
 
-_clients: dict[tuple[str, bool], AsyncAnthropic] = {}
+_clients: dict[tuple, AsyncAnthropic] = {}
 
 
 def _client(config: GatewayConfig) -> AsyncAnthropic:
-    key = (config.anthropic_api_key, config.ssl_verify)
+    key = sdk_client_cache_key(config.anthropic_api_key, config)
     client = _clients.get(key)
     if client is None:
         # anthropic>=1.0 only accepts httpx2 clients (a plain httpx.AsyncClient
         # raises TypeError). The SDK's own factory is httpx2-backed and keeps
         # its default connection limits/redirect handling.
         http_client = DefaultAsyncHttpxClient(verify=False) if not config.ssl_verify else None
-        client = AsyncAnthropic(api_key=config.anthropic_api_key, http_client=http_client)
+        client = AsyncAnthropic(
+            api_key=config.anthropic_api_key,
+            http_client=http_client,
+            **sdk_client_options(config),
+        )
         _clients[key] = client
     return client
 
@@ -184,6 +195,7 @@ async def stream_chat(
         system=system,
         messages=anthropic_messages,
         **kwargs,
+        **stream_request_options(config),
     ) as stream:
         async for event in stream:
             if event.type == "message_start":

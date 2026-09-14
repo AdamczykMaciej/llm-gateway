@@ -16,6 +16,15 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
+# The same class as anthropic.Timeout — both SDKs re-export httpx2.Timeout.
+from openai import Timeout
+
+from ..config import GatewayConfig
+
+# Kept at the SDKs' own default: a TCP connect that takes longer than this
+# is not going to succeed, however long the request timeout is.
+CONNECT_TIMEOUT_SECONDS = 5.0
+
 # OpenAI-named sampling params accepted on requests. OpenAI/Groq accept these
 # verbatim (same param names); Anthropic needs translation — see
 # _anthropic_translate.to_anthropic_sampling for which of these it actually
@@ -37,6 +46,42 @@ def openai_sampling_kwargs(sampling: dict | None) -> dict:
     if not sampling:
         return {}
     return {k: v for k, v in sampling.items() if k in OPENAI_SAMPLING_KEYS and v is not None}
+
+
+def _sdk_timeout(seconds: float) -> Timeout | None:
+    if seconds <= 0:
+        return None
+    return Timeout(seconds, connect=min(CONNECT_TIMEOUT_SECONDS, seconds))
+
+
+def sdk_client_options(config: GatewayConfig) -> dict:
+    """Constructor kwargs shared by every provider's SDK client: the
+    per-attempt request timeout and the SDK's own retry count (see
+    GatewayConfig.sdk_max_retries for why that is 0 by default). An
+    omitted `timeout` keeps the SDK default — passing None would disable
+    timeouts entirely."""
+    options: dict = {"max_retries": max(config.sdk_max_retries, 0)}
+    timeout = _sdk_timeout(config.request_timeout_seconds)
+    if timeout is not None:
+        options["timeout"] = timeout
+    return options
+
+
+def sdk_client_cache_key(api_key: str, config: GatewayConfig) -> tuple:
+    return (
+        api_key,
+        config.ssl_verify,
+        config.request_timeout_seconds,
+        config.sdk_max_retries,
+    )
+
+
+def stream_request_options(config: GatewayConfig) -> dict:
+    """Per-request kwargs for a streaming SDK call: an httpx read timeout
+    bounds the wait for the response to start and every gap between chunks,
+    without capping how long a steadily-flowing stream may run."""
+    timeout = _sdk_timeout(config.stream_idle_timeout_seconds)
+    return {"timeout": timeout} if timeout is not None else {}
 
 
 @dataclass(frozen=True)
