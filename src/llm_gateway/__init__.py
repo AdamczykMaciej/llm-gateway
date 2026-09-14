@@ -21,7 +21,7 @@ just point `ChatOpenAI(base_url=...)` at it.
 from .breaker import reset as reset_circuit_breakers
 from .chat import chat
 from .config import GatewayConfig
-from .errors import LLMDeadlineExceeded
+from .errors import EmptyCompletionError, LLMDeadlineExceeded
 from .pii import mask_pii
 from .providers.base import ChatResult, StreamDelta, ToolCall
 from .router import LLMError, complete
@@ -36,6 +36,7 @@ __all__ = [
     "ToolCall",
     "LLMError",
     "LLMDeadlineExceeded",
+    "EmptyCompletionError",
     "GatewayConfig",
     "mask_pii",
     "reset_circuit_breakers",

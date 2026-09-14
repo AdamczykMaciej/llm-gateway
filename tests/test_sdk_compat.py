@@ -11,6 +11,7 @@ changed response/stream model fails here.
 import asyncio
 import contextlib
 import json
+import logging
 import time
 from unittest.mock import AsyncMock, patch
 
@@ -29,7 +30,7 @@ from llm_gateway import (
     reset_circuit_breakers,
     stream_chat,
 )
-from llm_gateway.errors import ErrorKind, classify
+from llm_gateway.errors import EmptyCompletionError, ErrorKind, ErrorPolicy, classify, policy_for
 from llm_gateway.providers import anthropic, groq, openai
 from llm_gateway.providers.base import ProviderResult
 
@@ -50,9 +51,11 @@ class _Recorder:
     def __init__(self, respond):
         self.respond = respond
         self.bodies: list[dict] = []
+        self.urls: list[str] = []
 
     def __call__(self, request: httpx2.Request) -> httpx2.Response:
         self.bodies.append(json.loads(request.content or b"{}"))
+        self.urls.append(str(request.url))
         return self.respond(request)
 
 
@@ -765,3 +768,319 @@ async def test_call_deadline_ends_a_stream_that_stalls_after_starting():
                 received.append(delta.content)
     assert time.monotonic() - started < 2.0
     assert received == ["Hel"]
+
+
+# ─── Reasoning models and empty completions (0.3.1) ────────────────────────
+#
+# Groq's reasoning models (openai/gpt-oss-*) spend completion tokens on hidden
+# reasoning first. When that uses up max_tokens, Groq answers 200 with
+# finish_reason="length", the reasoning in `message.reasoning` and an empty
+# `content`. 0.3.0 returned that "" to the caller as a successful completion.
+
+_GROQ_BASE_URL = "https://api.groq.com/openai/v1"
+_SECRET_PROMPT = "PROMPT-TEXT-MUST-NOT-BE-LOGGED"
+_SECRET_REASONING = "REASONING-TEXT-MUST-NOT-BE-LOGGED"
+_LOOKUP_TOOL = [{"type": "function", "function": {"name": "lookup", "parameters": {}}}]
+
+
+def _groq_client(recorder: _Recorder) -> openai_sdk.AsyncOpenAI:
+    """A real openai SDK client on Groq's base URL, as groq._client builds it."""
+    return openai_sdk.AsyncOpenAI(
+        api_key="test-key",
+        base_url=_GROQ_BASE_URL,
+        max_retries=0,
+        http_client=httpx2.AsyncClient(transport=httpx2.MockTransport(recorder)),
+    )
+
+
+def _completion(
+    model: str,
+    *,
+    content: str | None,
+    finish_reason: str = "stop",
+    reasoning: str | None = None,
+    reasoning_tokens: int | None = None,
+    tool_calls: list[dict] | None = None,
+) -> dict:
+    message: dict = {"role": "assistant", "content": content}
+    if reasoning is not None:
+        message["reasoning"] = reasoning
+    if tool_calls is not None:
+        message["tool_calls"] = tool_calls
+    usage: dict = {"prompt_tokens": 20, "completion_tokens": 64, "total_tokens": 84}
+    if reasoning_tokens is not None:
+        usage["completion_tokens_details"] = {"reasoning_tokens": reasoning_tokens}
+    return {
+        "id": "chatcmpl-r1",
+        "object": "chat.completion",
+        "created": 0,
+        "model": model,
+        "choices": [{"index": 0, "finish_reason": finish_reason, "message": message}],
+        "usage": usage,
+    }
+
+
+def _reply(payload: dict):
+    """Answer a non-streamed request with `payload`, a streamed one with its text."""
+
+    def respond(request: httpx2.Request) -> httpx2.Response:
+        if not json.loads(request.content or b"{}").get("stream"):
+            return httpx2.Response(200, request=request, json=payload)
+        base = {"id": "c1", "object": "chat.completion.chunk", "created": 0, "model": "m"}
+        text = payload["choices"][0]["message"]["content"]
+        chunks = [
+            {**base, "choices": [{"index": 0, "delta": {"content": text}}]},
+            {**base, "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]},
+        ]
+        return httpx2.Response(
+            200,
+            request=request,
+            headers={"content-type": "text/event-stream"},
+            content=_sse(chunks, named=False),
+        )
+
+    return respond
+
+
+_REASONING_EXHAUSTED = _completion(
+    "openai/gpt-oss-120b",
+    content="",
+    finish_reason="length",
+    reasoning=_SECRET_REASONING,
+    reasoning_tokens=64,
+)
+
+
+def _gateway_records(caplog, level: int) -> list[logging.LogRecord]:
+    return [r for r in caplog.records if r.name.startswith("llm_gateway") and r.levelno == level]
+
+
+@pytest.mark.parametrize("engine", ["complete", "chat"])
+async def test_groq_reasoning_empty_reply_fails_over_is_not_retried_and_trips_breaker(
+    engine, caplog
+):
+    caplog.set_level(logging.DEBUG, logger="llm_gateway")
+    groq_rec = _Recorder(_reply(_REASONING_EXHAUSTED))
+    openai_rec = _Recorder(_reply(_completion("gpt-4o-mini", content="from openai")))
+    config = GatewayConfig(
+        groq_api_key="k",
+        openai_api_key="k",
+        groq_model="openai/gpt-oss-120b",
+        provider_order="groq,openai",
+        retry_attempts=3,  # would retry twice if the error were retryable
+        breaker_failure_threshold=1,
+    )
+    with (
+        patch.object(groq, "_client", return_value=_groq_client(groq_rec)),
+        patch.object(openai, "_client", return_value=_openai_client(openai_rec)),
+        patch("llm_gateway.retry.asyncio.sleep", AsyncMock()) as sleep,
+    ):
+        if engine == "complete":
+            out = await complete(system="s", prompt=_SECRET_PROMPT, config=config)
+        else:
+            messages = [{"role": "user", "content": _SECRET_PROMPT}]
+            out = (await chat(messages=messages, config=config)).content
+
+    assert out == "from openai"
+    assert groq_rec.urls == [f"{_GROQ_BASE_URL}/chat/completions"]
+    assert len(groq_rec.bodies) == 1  # not retried on the same provider
+    sleep.assert_not_awaited()
+    assert breaker.is_open("groq")
+    assert len(openai_rec.bodies) == 1
+
+    (warning,) = _gateway_records(caplog, logging.WARNING)
+    assert warning.getMessage() == (
+        "Empty completion from groq "
+        "(model=openai/gpt-oss-120b, finish_reason=length, reasoning_tokens=64)"
+    )
+    assert _SECRET_PROMPT not in caplog.text
+    assert _SECRET_REASONING not in caplog.text
+
+
+async def test_empty_completion_error_carries_metadata_only_and_is_classified():
+    recorder = _Recorder(_reply(_REASONING_EXHAUSTED))
+    config = GatewayConfig(groq_api_key="k", groq_model="openai/gpt-oss-120b")
+    with patch.object(groq, "_client", return_value=_groq_client(recorder)):
+        with pytest.raises(EmptyCompletionError) as exc:
+            await groq.call(config, "s", _SECRET_PROMPT, 64)
+
+    error = exc.value
+    assert (error.provider, error.model, error.finish_reason, error.reasoning_tokens) == (
+        "groq",
+        "openai/gpt-oss-120b",
+        "length",
+        64,
+    )
+    assert str(error) == (
+        "groq returned an empty completion "
+        "(model=openai/gpt-oss-120b, finish_reason=length, reasoning_tokens=64)"
+    )
+    assert _SECRET_PROMPT not in str(error) and _SECRET_REASONING not in str(error)
+    assert classify(error) is ErrorKind.EMPTY_COMPLETION
+    assert policy_for(error) == ErrorPolicy(retry=False, trips_breaker=True)
+
+
+async def test_empty_completion_on_every_provider_raises_llm_error_and_is_traced():
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    exporter = InMemorySpanExporter()
+    tracer_provider = TracerProvider()
+    tracer_provider.add_span_processor(SimpleSpanProcessor(exporter))
+    recorder = _Recorder(_reply(_REASONING_EXHAUSTED))
+    config = GatewayConfig(
+        groq_api_key="k", groq_model="openai/gpt-oss-120b", provider_order="groq"
+    )
+    with (
+        patch.object(groq, "_client", return_value=_groq_client(recorder)),
+        patch("llm_gateway.router.get_tracer", return_value=tracer_provider.get_tracer("t")),
+    ):
+        with pytest.raises(LLMError) as exc:
+            await complete(system="s", prompt="p", config=config)
+
+    assert isinstance(exc.value.__cause__, EmptyCompletionError)
+    (span,) = exporter.get_finished_spans()
+    assert span.attributes["llm_gateway.provider_finish_reason"] == "length"
+    assert span.attributes["llm_gateway.reasoning_tokens"] == 64
+    assert span.attributes["llm_gateway.error_code"] == "EmptyCompletionError"
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "openai/gpt-oss-120b",
+        "openai/gpt-oss-20b",
+        "gpt-oss-120b",
+        "qwen/qwen3.6-27b",
+        "qwen/qwen3.8-27b",
+    ],
+)
+async def test_groq_reasoning_model_gets_low_effort_and_its_reply_is_returned_as_is(model, caplog):
+    caplog.set_level(logging.DEBUG, logger="llm_gateway")
+    reply = '{"questions": [{"text": "Tell me about a hard bug."}]}'
+    recorder = _Recorder(
+        _reply(_completion(model, content=reply, reasoning=_SECRET_REASONING, reasoning_tokens=12))
+    )
+    config = GatewayConfig(groq_api_key="k", groq_model=model)
+    with patch.object(groq, "_client", return_value=_groq_client(recorder)):
+        plain = await groq.call(config, "s", _SECRET_PROMPT, 500)
+        result = await groq.chat(
+            config, _MESSAGES, None, 500, response_format={"type": "json_object"}
+        )
+        streamed = [d.content async for d in groq.stream_chat(config, _MESSAGES, None, 500)]
+
+    assert plain.text == reply
+    assert result.content == reply
+    assert "".join(c or "" for c in streamed) == reply
+    assert [body["model"] for body in recorder.bodies] == [model] * 3
+    assert [body.get("reasoning_effort") for body in recorder.bodies] == ["low"] * 3
+
+    debug = [
+        r.getMessage()
+        for r in _gateway_records(caplog, logging.DEBUG)
+        if r.getMessage().startswith("Completion from groq")
+    ]
+    expected = f"Completion from groq (model={model}, finish_reason=stop, reasoning_tokens=12)"
+    assert debug == [expected] * 2
+    assert _SECRET_PROMPT not in caplog.text
+    assert _SECRET_REASONING not in caplog.text
+    assert reply not in caplog.text
+    assert not _gateway_records(caplog, logging.WARNING)
+
+
+@pytest.mark.parametrize(
+    ("provider", "build", "model"),
+    [
+        (groq, _groq_client, "llama-3.1-8b-instant"),
+        (groq, _groq_client, "llama-3.3-70b-versatile"),
+        (groq, _groq_client, "groq/compound"),
+        (groq, _groq_client, "minimaxai/minimax-m2.7"),
+        (openai, _openai_client, "gpt-4o-mini"),
+        # The OpenAI provider never sends it, even for a gpt-oss-looking id.
+        (openai, _openai_client, "gpt-oss-120b"),
+    ],
+)
+async def test_non_reasoning_models_never_get_reasoning_effort(provider, build, model):
+    recorder = _Recorder(_reply(_completion(model, content="hello")))
+    config = GatewayConfig(
+        groq_api_key="k", openai_api_key="k", groq_model=model, openai_model=model
+    )
+    with patch.object(provider, "_client", return_value=build(recorder)):
+        assert (await provider.call(config, "s", "p", 50)).text == "hello"
+        assert (await provider.chat(config, _MESSAGES, None, 50)).content == "hello"
+        assert [d async for d in provider.stream_chat(config, _MESSAGES, None, 50)]
+
+    assert len(recorder.bodies) == 3
+    assert all("reasoning_effort" not in body for body in recorder.bodies)
+
+
+_BLANK_PROVIDERS = [(groq, _groq_client), (openai, _openai_client)]
+
+
+@pytest.mark.parametrize(("provider", "build"), _BLANK_PROVIDERS, ids=["groq", "openai"])
+@pytest.mark.parametrize("content", [" \n\t ", "", None], ids=["whitespace", "empty", "null"])
+async def test_blank_content_without_tool_calls_is_an_empty_completion(provider, build, content):
+    recorder = _Recorder(_reply(_completion("some-model", content=content)))
+    config = GatewayConfig(groq_api_key="k", openai_api_key="k")
+    with patch.object(provider, "_client", return_value=build(recorder)):
+        with pytest.raises(EmptyCompletionError) as call_exc:
+            await provider.call(config, "s", "p", 50)
+        with pytest.raises(EmptyCompletionError) as chat_exc:
+            await provider.chat(config, _MESSAGES, None, 50)
+
+    assert call_exc.value.finish_reason == chat_exc.value.finish_reason == "stop"
+    assert call_exc.value.reasoning_tokens is None
+    assert "reasoning_tokens" not in str(call_exc.value)
+
+
+async def test_whitespace_reply_fails_over_like_an_empty_one():
+    groq_rec = _Recorder(_reply(_completion("openai/gpt-oss-120b", content="  \n ")))
+    openai_rec = _Recorder(_reply(_completion("gpt-4o-mini", content="from openai")))
+    config = GatewayConfig(groq_api_key="k", openai_api_key="k", provider_order="groq,openai")
+    with (
+        patch.object(groq, "_client", return_value=_groq_client(groq_rec)),
+        patch.object(openai, "_client", return_value=_openai_client(openai_rec)),
+    ):
+        assert await complete(system="s", prompt="p", config=config) == "from openai"
+    assert len(groq_rec.bodies) == 1
+
+
+@pytest.mark.parametrize(("provider", "build"), _BLANK_PROVIDERS, ids=["groq", "openai"])
+async def test_tool_call_reply_with_null_content_is_not_an_empty_completion(provider, build):
+    tool_calls = [
+        {
+            "id": "call_1",
+            "type": "function",
+            "function": {"name": "lookup", "arguments": '{"q": "x"}'},
+        }
+    ]
+    recorder = _Recorder(
+        _reply(
+            _completion(
+                "openai/gpt-oss-120b",
+                content=None,
+                finish_reason="tool_calls",
+                reasoning="thinking",
+                reasoning_tokens=9,
+                tool_calls=tool_calls,
+            )
+        )
+    )
+    provider_name = provider.__name__.rsplit(".", 1)[-1]
+    config = GatewayConfig(
+        groq_api_key="k",
+        openai_api_key="k",
+        groq_model="openai/gpt-oss-120b",
+        provider_order=provider_name,
+        breaker_failure_threshold=1,
+    )
+    with patch.object(provider, "_client", return_value=build(recorder)):
+        direct = await provider.chat(config, _MESSAGES, _LOOKUP_TOOL, 50)
+        routed = await chat(messages=_MESSAGES, tools=_LOOKUP_TOOL, config=config)
+
+    for result in (direct, routed):
+        assert result.content is None
+        assert result.finish_reason == "tool_calls"
+        assert [(t.name, t.arguments) for t in result.tool_calls] == [("lookup", {"q": "x"})]
+    assert not breaker.is_open(provider_name)

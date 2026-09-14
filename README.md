@@ -115,6 +115,30 @@ Error responses are OpenAI-shaped (`{"error": {"message", "type", "code"}}`),
 not FastAPI's default `{"detail": "..."}` — so the openai-python SDK (and
 therefore LangChain) can parse them the way it expects to.
 
+### Reasoning models and empty replies
+
+Groq's reasoning models spend completion tokens on hidden reasoning before the
+visible answer. The gateway sends them `reasoning_effort="low"` so that
+reasoning does not use up `max_tokens`. This applies to `call`, `chat` and
+`stream_chat`, for model ids starting with `openai/gpt-oss-` or `gpt-oss-`
+and for `qwen/qwen3.6-27b` and `qwen/qwen3.8-27b`, which are the models
+[Groq's reasoning docs](https://console.groq.com/docs/reasoning) list as
+accepting `reasoning_effort`. Other models never get the parameter, because
+Groq rejects it for models that do not support it.
+
+A non-streamed OpenAI or Groq reply whose text is None, empty or whitespace
+and that has no tool calls raises `EmptyCompletionError`. This is what a
+reasoning model returns when it runs out of tokens mid-reasoning
+(`finish_reason="length"`). The error is not retried on the same provider,
+counts toward that provider's circuit breaker, and fails over to the next
+provider. Its message and the warning log carry the provider, model,
+`finish_reason` and reasoning token count, never prompt or reply text. A
+tool-call reply with null content is not empty. Every completion's
+`finish_reason` and `reasoning_tokens` are logged at debug level on the
+`llm_gateway.providers.base` logger and set on the engine span as
+`llm_gateway.provider_finish_reason` and `llm_gateway.reasoning_tokens`.
+Streams are not checked: they commit to a provider at the first chunk.
+
 ### Retries, failover and timeouts
 
 Every provider failure is classified once, in `llm_gateway/errors.py`, from
@@ -130,6 +154,7 @@ and — always — failing over to the next provider in `PROVIDER_ORDER`.
 | Rate limited | 429 | no | yes | yes |
 | Auth | 401, 403 | no | yes | yes |
 | Invalid request | 400, 404, 413, 422, any other 4xx | no | **no** | yes |
+| Empty completion | 200 reply with blank text and no tool calls (`EmptyCompletionError`) | no | yes | yes |
 | Unknown | anything else (e.g. a response-parsing bug) | no | yes | yes |
 
 Errors that arrive *inside* an already-open SSE stream carry no useful HTTP

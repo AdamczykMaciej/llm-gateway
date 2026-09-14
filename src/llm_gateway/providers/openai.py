@@ -7,6 +7,7 @@ from .base import (
     ChatResult,
     ProviderResult,
     StreamDelta,
+    check_openai_style_completion,
     openai_sampling_kwargs,
     parse_openai_style_chunk,
     parse_openai_style_response,
@@ -58,6 +59,7 @@ async def call(
             {"role": "user", "content": prompt},
         ],
     )
+    check_openai_style_completion(resp, provider="openai", model=model)
     input_tokens = resp.usage.prompt_tokens if resp.usage else 0
     output_tokens = resp.usage.completion_tokens if resp.usage else 0
     return ProviderResult(
@@ -90,6 +92,7 @@ async def chat(
     resp = await _client(config).chat.completions.create(
         model=model, max_tokens=max_tokens, messages=messages, **kwargs
     )
+    check_openai_style_completion(resp, provider="openai", model=model)
     return parse_openai_style_response(resp, model)
 
 
