@@ -18,6 +18,11 @@ Two ways to use it:
 pip install "llm-gateway @ git+https://github.com/AdamczykMaciej/llm-gateway.git"
 ```
 
+Requires Python 3.11+ and the current provider SDK majors: `anthropic>=1.5,<2`
+and `openai>=3.13,<4` (the OpenAI SDK also drives the Groq provider). Both are
+built on [`httpx2`](https://pypi.org/project/httpx2/) rather than `httpx` — an
+HTTP client you hand to either SDK yourself must be an `httpx2` client.
+
 ```python
 from llm_gateway import complete, GatewayConfig
 

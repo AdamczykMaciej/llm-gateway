@@ -142,8 +142,11 @@ async def test_sampling_params_reach_the_sdk_call():
             sampling={"temperature": 0.0, "top_p": 0.5, "stop": "STOP", "seed": 42},
         )
     kwargs = mock_create.call_args.kwargs
-    assert kwargs["temperature"] == 0.0
-    assert kwargs["top_p"] == 0.5
+    # anthropic>=1.0 removed temperature/top_p as named SDK kwargs (TypeError),
+    # so they must ride in extra_body; stop_sequences is still a named kwarg.
+    assert "temperature" not in kwargs
+    assert "top_p" not in kwargs
+    assert kwargs["extra_body"] == {"temperature": 0.0, "top_p": 0.5}
     assert kwargs["stop_sequences"] == ["STOP"]
     assert "seed" not in kwargs  # no Anthropic equivalent
 

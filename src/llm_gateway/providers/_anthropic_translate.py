@@ -138,7 +138,9 @@ def to_anthropic_tool_choice(tool_choice: Any) -> dict | None:
 def to_anthropic_sampling(sampling: dict | None) -> dict:
     """Best-effort mapping of OpenAI-named sampling params. `seed`,
     `presence_penalty`, and `frequency_penalty` have no Anthropic equivalent
-    and are silently dropped, not errored."""
+    and are silently dropped, not errored. Returns Messages-API field names;
+    providers/anthropic.py decides which of them go in `extra_body` (the
+    1.x SDK no longer takes temperature/top_p as named arguments)."""
     if not sampling:
         return {}
     out: dict = {}

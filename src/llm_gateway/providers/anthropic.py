@@ -1,7 +1,7 @@
 import json
 from collections.abc import AsyncIterator
 
-from anthropic import AsyncAnthropic
+from anthropic import AsyncAnthropic, DefaultAsyncHttpxClient
 
 from ..config import GatewayConfig
 from ._anthropic_translate import (
@@ -22,9 +22,10 @@ def _client(config: GatewayConfig) -> AsyncAnthropic:
     key = (config.anthropic_api_key, config.ssl_verify)
     client = _clients.get(key)
     if client is None:
-        import httpx
-
-        http_client = httpx.AsyncClient(verify=False) if not config.ssl_verify else None
+        # anthropic>=1.0 only accepts httpx2 clients (a plain httpx.AsyncClient
+        # raises TypeError). The SDK's own factory is httpx2-backed and keeps
+        # its default connection limits/redirect handling.
+        http_client = DefaultAsyncHttpxClient(verify=False) if not config.ssl_verify else None
         client = AsyncAnthropic(api_key=config.anthropic_api_key, http_client=http_client)
         _clients[key] = client
     return client
@@ -36,6 +37,23 @@ def configured(config: GatewayConfig) -> bool:
 
 def default_model(config: GatewayConfig) -> str:
     return config.claude_model
+
+
+# anthropic 1.0 removed these from messages.create()/messages.stream()'s
+# named keyword arguments (passing them raises TypeError), but the Messages
+# API still accepts them in the request body — so they travel via
+# `extra_body`. `stop_sequences` is still a named argument.
+_BODY_ONLY_SAMPLING_KEYS = ("temperature", "top_p")
+
+
+def _sampling_kwargs(sampling: dict | None) -> dict:
+    """SDK-call kwargs for translated sampling params. Shared by chat() and
+    stream_chat()."""
+    params = to_anthropic_sampling(sampling)
+    body = {k: params.pop(k) for k in _BODY_ONLY_SAMPLING_KEYS if k in params}
+    if body:
+        params["extra_body"] = body
+    return params
 
 
 def _resolve_tool_kwargs(
@@ -105,7 +123,7 @@ async def chat(
     tool_kwargs, emulating_structured_output = _resolve_tool_kwargs(
         tools, tool_choice, response_format
     )
-    kwargs: dict = {**to_anthropic_sampling(sampling), **tool_kwargs}
+    kwargs: dict = {**_sampling_kwargs(sampling), **tool_kwargs}
 
     resp = await _client(config).messages.create(
         model=model,
@@ -152,7 +170,7 @@ async def stream_chat(
     tool_kwargs, emulating_structured_output = _resolve_tool_kwargs(
         tools, tool_choice, response_format
     )
-    kwargs: dict = {**to_anthropic_sampling(sampling), **tool_kwargs}
+    kwargs: dict = {**_sampling_kwargs(sampling), **tool_kwargs}
 
     input_tokens = 0
     output_tokens = 0

@@ -1,6 +1,6 @@
 from collections.abc import AsyncIterator
 
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, DefaultAsyncHttpx2Client
 
 from ..config import GatewayConfig
 from .base import (
@@ -19,9 +19,9 @@ def _client(config: GatewayConfig) -> AsyncOpenAI:
     key = (config.openai_api_key, config.ssl_verify)
     client = _clients.get(key)
     if client is None:
-        import httpx
-
-        http_client = httpx.AsyncClient(verify=False) if not config.ssl_verify else None
+        # openai>=3.0 is httpx2-based; plain httpx clients are only a
+        # temporary legacy escape hatch there, so build an httpx2 one.
+        http_client = DefaultAsyncHttpx2Client(verify=False) if not config.ssl_verify else None
         client = AsyncOpenAI(api_key=config.openai_api_key, http_client=http_client)
         _clients[key] = client
     return client

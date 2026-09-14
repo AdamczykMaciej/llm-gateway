@@ -39,7 +39,7 @@ _OPENAI_ERROR_TYPES = {
 
 def create_app(config: GatewayConfig | None = None) -> FastAPI:
     config = config or GatewayConfig()
-    app = FastAPI(title="llm-gateway", version="0.1.0")
+    app = FastAPI(title="llm-gateway", version="0.2.0")
     rate_limit_dep = enforce_rate_limit(config)
     auth_dep = require_api_key(config)
 
