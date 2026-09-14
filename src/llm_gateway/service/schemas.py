@@ -9,9 +9,11 @@ this service by changing its base_url.
 import json
 import time
 import uuid
+from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
+from ..policy import ProviderPolicy
 from ..providers.base import ChatResult, StreamDelta
 
 
@@ -61,6 +63,39 @@ class ChatMessage(BaseModel):
         return total
 
 
+class PolicyRequest(BaseModel):
+    """The request's `policy` object: the same fields as the library's
+    `ProviderPolicy`, minus `budget_check`. It is merged with the server's
+    global policy and can only narrow it. Unknown fields are rejected, so a
+    misspelled requirement fails loudly instead of being silently ignored."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    residency: str | None = None
+    require_zero_retention: bool = False
+    forbid_training: bool = False
+    require_dpa: bool = False
+    only: list[str] | None = None
+    ignore: list[str] = Field(default_factory=list)
+    require_parameters: bool = False
+    max_cost_usd: float | None = Field(default=None, ge=0)
+    sort: Literal["order", "price"] | None = None
+
+    def to_policy(self) -> ProviderPolicy:
+        """Raises ValueError for an unknown provider id or a bad residency."""
+        return ProviderPolicy(
+            residency=self.residency,
+            require_zero_retention=self.require_zero_retention,
+            forbid_training=self.forbid_training,
+            require_dpa=self.require_dpa,
+            only=tuple(self.only) if self.only is not None else None,
+            ignore=tuple(self.ignore),
+            require_parameters=self.require_parameters,
+            max_cost_usd=self.max_cost_usd,
+            sort=self.sort,
+        )
+
+
 class ChatCompletionRequest(BaseModel):
     model: str = "auto"
     messages: list[ChatMessage] = Field(min_length=1)
@@ -69,6 +104,8 @@ class ChatCompletionRequest(BaseModel):
     tool_choice: str | dict | None = None
     response_format: dict | None = None
     stream: bool = False
+    # Gateway extension: per-request routing policy (see PolicyRequest).
+    policy: PolicyRequest | None = None
 
     # OpenAI-named sampling params. Previously silently dropped (Pydantic's
     # default extra="ignore" swallowed any field not declared here) — a real
@@ -178,11 +215,13 @@ def stream_chunk_sse(delta: StreamDelta, *, chunk_id: str, created: int) -> list
 SSE_DONE = "data: [DONE]\n\n"
 
 
-def sse_error_event(message: str) -> str:
+def sse_error_event(
+    message: str, *, error_type: str = "service_unavailable_error", code: int = 503
+) -> str:
     """A mid-or-pre-stream failure can't change the HTTP status code — the
     200 + SSE headers are already committed by the time a provider failure
     is known. This emits an OpenAI-error-shaped SSE event instead, followed
     by the caller sending SSE_DONE, so consumers see a clean end rather than
     a silently truncated connection."""
-    payload = {"error": {"message": message, "type": "service_unavailable_error", "code": 503}}
+    payload = {"error": {"message": message, "type": error_type, "code": code}}
     return f"data: {json.dumps(payload)}\n\n"

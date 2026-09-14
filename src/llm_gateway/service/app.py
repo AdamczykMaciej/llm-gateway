@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from .. import breaker
 from ..chat import chat as chat_engine
 from ..config import GatewayConfig
+from ..errors import PolicyViolationError
 from ..providers import CONFIGURED
 from ..providers import azure as azure_provider
 from ..router import LLMError
@@ -49,7 +50,7 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
         # Entra credentials hold their own HTTP sessions.
         await azure_provider.aclose()
 
-    app = FastAPI(title="llm-gateway", version="0.4.2", lifespan=lifespan)
+    app = FastAPI(title="llm-gateway", version="0.5.0", lifespan=lifespan)
     rate_limit_dep = enforce_rate_limit(config)
     auth_dep = require_api_key(config)
 
@@ -152,6 +153,13 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
             force_provider = provider_name
             model = upstream_model
 
+        # Merged with config.policy inside the engines, where it can only
+        # narrow the server's global policy, never loosen it.
+        try:
+            policy = body.policy.to_policy() if body.policy is not None else None
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid policy: {exc}") from exc
+
         engine_kwargs = dict(
             messages=body.as_message_dicts(),
             tools=body.tools,
@@ -163,6 +171,8 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
             sampling=body.sampling_dict(),
             response_format=body.response_format,
         )
+        if policy is not None:
+            engine_kwargs["policy"] = policy
 
         if body.stream:
 
@@ -176,6 +186,8 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
                             input_tokens, output_tokens = delta.usage
                         for line in stream_chunk_sse(delta, chunk_id=chunk_id, created=created):
                             yield line
+                except PolicyViolationError as exc:
+                    yield sse_error_event(str(exc), error_type="invalid_request_error", code=400)
                 except LLMError as exc:
                     # Headers (200 + SSE) are already committed by the time a
                     # provider failure is known — can't change status code at
@@ -191,6 +203,8 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
 
         try:
             result = await chat_engine(**engine_kwargs)
+        except PolicyViolationError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         except LLMError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
 

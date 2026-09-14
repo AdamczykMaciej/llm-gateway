@@ -1,7 +1,12 @@
 """Configuration for the gateway, generic across any consuming application."""
 
-from pydantic import field_validator
+from typing import Literal
+
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from .policy import ProviderMetadata, ProviderPolicy, validate_provider_metadata
+from .pricing import ModelPrice, validate_price_table
 
 AZURE_AUTH_MODES = ("entra", "api_key")
 AZURE_REASONING_EFFORTS = ("", "low", "medium", "high")
@@ -122,6 +127,30 @@ class GatewayConfig(BaseSettings):
     # (5 MB/image) and OpenAI's own per-image limits are well under it.
     max_image_bytes: int = 10_000_000
 
+    # ── Provider policy and cost controls (policy.py, routing.py) ────────
+    # Operator-asserted compliance facts per provider id, as JSON:
+    #   PROVIDER_METADATA='{"anthropic": {"region": "us", "retention": "zero",
+    #                       "trains_on_data": false, "dpa": true}}'
+    # A provider without an entry gets the conservative defaults (region and
+    # retention "unknown", trains_on_data true, dpa false), which fail every
+    # requirement below. The library never asserts these facts for a vendor.
+    provider_metadata: dict[str, ProviderMetadata] = {}
+    # The global policy. A per-call `policy=` (or the HTTP request's
+    # `policy` object) can only narrow it. All off by default.
+    policy_residency: str = ""
+    policy_require_zero_retention: bool = False
+    policy_forbid_training: bool = False
+    policy_require_dpa: bool = False
+    policy_only: str = ""  # comma-separated provider ids; empty = no restriction
+    policy_ignore: str = ""  # comma-separated provider ids
+    policy_require_parameters: bool = False
+    policy_max_cost_usd: float = 0.0  # estimated worst case per call; 0 disables
+    policy_sort: Literal["order", "price"] = "order"
+    # USD per 1M tokens by "provider/model", merged over pricing.DEFAULT_PRICES:
+    #   MODEL_PRICES='{"groq/openai/gpt-oss-120b": {"input_per_mtok": 0.15,
+    #                  "output_per_mtok": 0.6}}'
+    model_prices: dict[str, ModelPrice] = {}
+
     # Set to false only behind a corporate SSL-inspection proxy.
     ssl_verify: bool = True
 
@@ -158,3 +187,39 @@ class GatewayConfig(BaseSettings):
     @property
     def gateway_api_keys_list(self) -> list[str]:
         return [k.strip() for k in self.gateway_api_keys.split(",") if k.strip()]
+
+    @property
+    def policy(self) -> ProviderPolicy:
+        """The global routing policy built from the `policy_*` settings."""
+        return ProviderPolicy(
+            residency=self.policy_residency.strip() or None,
+            require_zero_retention=self.policy_require_zero_retention,
+            forbid_training=self.policy_forbid_training,
+            require_dpa=self.policy_require_dpa,
+            only=self.policy_only if self.policy_only.strip() else None,
+            ignore=self.policy_ignore,
+            require_parameters=self.policy_require_parameters,
+            max_cost_usd=self.policy_max_cost_usd if self.policy_max_cost_usd > 0 else None,
+            sort=self.policy_sort,
+        )
+
+    @field_validator("provider_metadata")
+    @classmethod
+    def _check_provider_metadata(
+        cls, value: dict[str, ProviderMetadata]
+    ) -> dict[str, ProviderMetadata]:
+        return validate_provider_metadata(value)
+
+    @field_validator("model_prices")
+    @classmethod
+    def _check_model_prices(cls, value: dict[str, ModelPrice]) -> dict[str, ModelPrice]:
+        return validate_price_table(value)
+
+    @model_validator(mode="after")
+    def _check_policy(self) -> "GatewayConfig":
+        # Fail at startup, not on the first call, for a bad POLICY_* value.
+        try:
+            _ = self.policy
+        except ValueError as exc:
+            raise ValueError(f"invalid POLICY_* setting: {exc}") from exc
+        return self

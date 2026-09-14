@@ -18,10 +18,12 @@ from opentelemetry.trace import StatusCode
 from . import breaker
 from .config import GatewayConfig
 from .errors import LLMError, deadline_exceeded
+from .policy import ProviderPolicy
 from .providers import CHAT_CALLS, CONFIGURED, DEFAULT_MODEL
 from .providers.base import ChatResult
 from .retry import Deadline, call_with_retry
 from .router import record_provider_failure
+from .routing import RequestProfile, plan_chain
 from .tracing import get_tracer, set_chat_attributes
 
 logger = logging.getLogger("llm_gateway")
@@ -38,6 +40,7 @@ async def chat(
     model: str | None = None,
     sampling: dict | None = None,
     response_format: dict | None = None,
+    policy: ProviderPolicy | None = None,
 ) -> ChatResult:
     """Return a ChatResult (text and/or tool_calls), trying providers in
     `config.provider_order` — same fallback/circuit-breaker semantics as
@@ -45,7 +48,8 @@ async def chat(
     dicts; each provider translates internally (see providers/anthropic.py
     for the one that actually needs translating). Raises `LLMError`, or its
     subclass `LLMDeadlineExceeded` when `config.call_deadline_seconds` runs
-    out first.
+    out first. `policy` narrows `config.policy` exactly as in
+    `complete_with_usage()`; `PolicyViolationError` when no provider is left.
     """
     config = config or GatewayConfig()
     order = [force_provider] if force_provider else config.provider_order_list
@@ -59,8 +63,23 @@ async def chat(
 
     with tracer.start_as_current_span("llm_gateway.chat") as span:
         span.set_attribute("llm_gateway.fallback", False)
+        plan = plan_chain(
+            order,
+            config=config,
+            policy=policy,
+            profile=RequestProfile.for_chat(
+                messages=messages,
+                tools=tools,
+                tool_choice=tool_choice,
+                max_tokens=max_tokens,
+                response_format=response_format,
+            ),
+            registry=CHAT_CALLS,
+            model_override=model_override,
+            span=span,
+        )
 
-        for index, provider in enumerate(order):
+        for index, provider in enumerate(plan.providers):
             call = CHAT_CALLS.get(provider)
             if call is None:
                 continue
@@ -70,6 +89,8 @@ async def chat(
                 continue
             if deadline.expired:
                 break
+            if not await plan.allows(provider, span):
+                continue
 
             attempted_any = True
             is_fallback = index > 0
@@ -145,8 +166,12 @@ async def chat(
             str(last_error) if last_error else "No provider available",
         )
         if not attempted_any:
+            if plan.denied:
+                raise plan.violation()
             raise LLMError(
                 "No LLM provider available. Set ANTHROPIC_API_KEY, GROQ_API_KEY, "
                 "OPENAI_API_KEY, or AZURE_ENDPOINT and AZURE_MODEL, matching provider_order."
             )
-        raise LLMError(f"All configured providers failed. Last error: {last_error}") from last_error
+        raise LLMError(
+            f"All configured providers failed. Last error: {last_error}{plan.failure_note()}"
+        ) from last_error

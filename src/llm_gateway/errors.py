@@ -20,8 +20,13 @@ failed provider call, so the rules below are the whole policy:
 |                   | or whitespace) and no tool calls, e.g. a       |       |         |
 |                   | reasoning model that spent its token budget    |       |         |
 | `UNKNOWN`         | anything else (e.g. a response-parsing bug)    | no    | counts  |
+| `POLICY_VIOLATION`| `PolicyViolationError`: no provider satisfies  | no    | ignored |
+|                   | the routing policy (raised by the gateway      |       |         |
+|                   | before a call, never by a provider)            |       |         |
 
-Every kind fails over to the next provider in the chain. See the README's
+Every provider-failure kind fails over to the next provider in the chain.
+`POLICY_VIOLATION` is not a provider failure: it ends the call, because
+every remaining provider has already been excluded (see routing.py). See the README's
 "Retries, failover and timeouts" section for why timeouts and 429s are not
 retried on the same provider, and why a 400/422 still fails over.
 
@@ -55,6 +60,26 @@ class LLMDeadlineExceeded(LLMError):
     """The call's overall deadline (`GatewayConfig.call_deadline_seconds`)
     ran out across retries and failovers. A subclass of `LLMError`, so
     callers that only catch `LLMError` keep working unchanged."""
+
+
+class PolicyViolationError(LLMError):
+    """No provider in the chain satisfies the call's routing policy
+    (residency, retention, training, DPA, only/ignore, capabilities, cost cap
+    or the budget hook). Raised *before* any network call to an excluded
+    provider: the gateway never falls back to a non-compliant one.
+
+    `exclusions` maps each excluded provider id to the reasons it was
+    excluded. Neither the message nor the reasons contain prompt content."""
+
+    def __init__(self, message: str, exclusions: dict[str, tuple[str, ...]] | None = None):
+        super().__init__(message)
+        self.exclusions: dict[str, tuple[str, ...]] = dict(exclusions or {})
+
+
+class UnsupportedCapabilityError(PolicyViolationError):
+    """Every provider was excluded only because its model can't serve a
+    feature the request uses (structured output, tools, images, streaming).
+    A subclass of `PolicyViolationError`, so one `except` covers both."""
 
 
 class InvalidOutputError(Exception):
@@ -114,6 +139,7 @@ class ErrorKind(StrEnum):
     INVALID_OUTPUT = "invalid_output"
     EMPTY_RESPONSE = "empty_response"
     UNKNOWN = "unknown"
+    POLICY_VIOLATION = "policy_violation"
 
 
 @dataclass(frozen=True)
@@ -133,6 +159,9 @@ POLICIES: dict[ErrorKind, ErrorPolicy] = {
     ErrorKind.INVALID_OUTPUT: ErrorPolicy(retry=False, trips_breaker=False),
     ErrorKind.EMPTY_RESPONSE: ErrorPolicy(retry=False, trips_breaker=True),
     ErrorKind.UNKNOWN: ErrorPolicy(retry=False, trips_breaker=True),
+    # A policy exclusion (including a budget_check denial) says nothing about
+    # the provider's health.
+    ErrorKind.POLICY_VIOLATION: ErrorPolicy(retry=False, trips_breaker=False),
 }
 
 # APITimeoutError subclasses APIConnectionError in both SDKs, so timeouts are
@@ -193,6 +222,8 @@ def _body_error_code(body: object) -> object:
 
 
 def classify(exc: BaseException) -> ErrorKind:
+    if isinstance(exc, PolicyViolationError):
+        return ErrorKind.POLICY_VIOLATION
     if isinstance(exc, InvalidOutputError):
         return ErrorKind.INVALID_OUTPUT
     if isinstance(exc, EmptyCompletionError):

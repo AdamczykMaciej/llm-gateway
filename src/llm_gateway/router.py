@@ -6,7 +6,7 @@ This is the engine — `llm_gateway.service` is a thin HTTP wrapper around it.
 
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from opentelemetry.trace import StatusCode
@@ -15,9 +15,12 @@ from pydantic import BaseModel
 from . import breaker
 from .config import GatewayConfig
 from .errors import LLMDeadlineExceeded, LLMError, deadline_exceeded
+from .policy import ProviderPolicy
+from .pricing import cost_usd, lookup_price
 from .providers import CALLS, CONFIGURED, DEFAULT_MODEL
 from .providers.base import Usage
 from .retry import Deadline, call_with_retry
+from .routing import RequestProfile, plan_chain, record_cost
 from .structured import OutputSchema
 from .tracing import get_tracer, set_call_attributes
 
@@ -61,7 +64,9 @@ class Completion:
     `Usage` for how cached tokens are counted). `stop_reason` is the
     provider's own value ("end_turn", "stop", "max_tokens", ...). `parsed` is
     set only when `output_schema` was given: the validated pydantic instance,
-    or the parsed JSON for a dict schema."""
+    or the parsed JSON for a dict schema. `cost_usd` is the cost of `usage`
+    at the model's price (pricing.py), or `None` when the model has no price;
+    it is derived data, so it is excluded from equality."""
 
     text: str
     provider: str
@@ -69,6 +74,7 @@ class Completion:
     usage: Usage
     stop_reason: str | None = None
     parsed: Any = None
+    cost_usd: float | None = field(default=None, compare=False)
 
 
 async def complete(
@@ -80,6 +86,7 @@ async def complete(
     force_provider: str | None = None,
     model: str | None = None,
     cache_system: bool = False,
+    policy: ProviderPolicy | None = None,
 ) -> str:
     """Return a text completion, trying providers in `config.provider_order`.
 
@@ -94,8 +101,10 @@ async def complete(
     Same as `(await complete_with_usage(...)).text`; use that to also get
     the serving provider, token usage, or structured output.
 
-    Raises `LLMError` when no provider succeeds, or its subclass
-    `LLMDeadlineExceeded` when `config.call_deadline_seconds` runs out first.
+    Raises `LLMError` when no provider succeeds, its subclass
+    `LLMDeadlineExceeded` when `config.call_deadline_seconds` runs out first,
+    or its subclass `PolicyViolationError` when no provider satisfies the
+    routing policy (see `complete_with_usage`).
     """
     completion = await complete_with_usage(
         system=system,
@@ -105,6 +114,7 @@ async def complete(
         force_provider=force_provider,
         model=model,
         cache_system=cache_system,
+        policy=policy,
     )
     return completion.text
 
@@ -120,6 +130,7 @@ async def complete_with_usage(
     output_schema: dict | type[BaseModel] | None = None,
     schema_name: str | None = None,
     cache_system: bool = False,
+    policy: ProviderPolicy | None = None,
 ) -> Completion:
     """`complete()`, returning a `Completion` instead of a string.
 
@@ -137,6 +148,12 @@ async def complete_with_usage(
     for the model's minimum cacheable length (providers/_anthropic_caching.py).
     OpenAI and Groq cache automatically, so there it changes nothing. Cache
     hits and writes are reported in `Completion.usage`.
+
+    `policy`: a `ProviderPolicy` merged with `config.policy`; it can only
+    narrow it. Providers that fail it, can't serve the request, or exceed
+    `max_cost_usd` are skipped before any call, and `PolicyViolationError` is
+    raised when none is left (routing.py). This applies to `force_provider`
+    too.
     """
     config = config or GatewayConfig()
     schema = (
@@ -160,8 +177,22 @@ async def complete_with_usage(
 
     with tracer.start_as_current_span("llm_gateway.complete") as span:
         span.set_attribute("llm_gateway.fallback", False)
+        plan = plan_chain(
+            order,
+            config=config,
+            policy=policy,
+            profile=RequestProfile.for_completion(
+                system=system,
+                prompt=prompt,
+                max_tokens=max_tokens,
+                output_schema=schema.json_schema if schema is not None else None,
+            ),
+            registry=CALLS,
+            model_override=model_override,
+            span=span,
+        )
 
-        for index, provider in enumerate(order):
+        for index, provider in enumerate(plan.providers):
             call = CALLS.get(provider)
             if call is None:
                 continue
@@ -171,6 +202,8 @@ async def complete_with_usage(
                 continue
             if deadline.expired:
                 break
+            if not await plan.allows(provider, span):
+                continue
 
             attempted_any = True
             is_fallback = index > 0
@@ -237,6 +270,8 @@ async def complete_with_usage(
                 usage.output_tokens,
                 usage.reasoning_tokens,
             )
+            cost = cost_usd(lookup_price(provider, result.model, config.model_prices), usage)
+            record_cost(span, cost)
             return Completion(
                 text=result.text,
                 provider=provider,
@@ -244,6 +279,7 @@ async def complete_with_usage(
                 usage=usage,
                 stop_reason=result.stop_reason,
                 parsed=parsed,
+                cost_usd=cost,
             )
 
         if deadline.expired:
@@ -254,8 +290,12 @@ async def complete_with_usage(
             str(last_error) if last_error else "No provider available",
         )
         if not attempted_any:
+            if plan.denied:
+                raise plan.violation()
             raise LLMError(
                 "No LLM provider available. Set ANTHROPIC_API_KEY, GROQ_API_KEY, "
                 "OPENAI_API_KEY, or AZURE_ENDPOINT and AZURE_MODEL, matching provider_order."
             )
-        raise LLMError(f"All configured providers failed. Last error: {last_error}") from last_error
+        raise LLMError(
+            f"All configured providers failed. Last error: {last_error}{plan.failure_note()}"
+        ) from last_error
