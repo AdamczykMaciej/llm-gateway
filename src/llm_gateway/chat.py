@@ -10,6 +10,7 @@ registries (`CONFIGURED`, `DEFAULT_MODEL`), so a provider tripped by one
 path is correctly skipped by the other too.
 """
 
+import logging
 import time
 
 from opentelemetry.trace import StatusCode
@@ -22,6 +23,8 @@ from .providers.base import ChatResult
 from .retry import Deadline, call_with_retry
 from .router import record_provider_failure
 from .tracing import get_tracer, set_chat_attributes
+
+logger = logging.getLogger("llm_gateway")
 
 
 async def chat(
@@ -121,6 +124,16 @@ async def chat(
                 finish_reason=result.finish_reason,
                 cache_read_input_tokens=result.cache_read_input_tokens,
                 cache_creation_input_tokens=result.cache_creation_input_tokens,
+                reasoning_tokens=result.reasoning_tokens,
+            )
+            logger.debug(
+                "llm_gateway served: provider=%s model=%s input_tokens=%s output_tokens=%s "
+                "reasoning_tokens=%s",
+                provider,
+                result.model,
+                result.input_tokens,
+                result.output_tokens,
+                result.reasoning_tokens,
             )
             return result
 

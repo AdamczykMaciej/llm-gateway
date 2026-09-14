@@ -52,11 +52,10 @@ which provider served the call and what it cost, call
 from llm_gateway import complete_with_usage
 
 result = await complete_with_usage(system="...", prompt="...", config=config)
-result.text         # the string complete() would have returned
-result.provider     # the provider that actually served, e.g. "groq" after a failover
-result.model        # that provider's model
-result.usage        # Usage(input_tokens, output_tokens,
-                    #       cache_read_input_tokens, cache_creation_input_tokens)
+result.text  # the string complete() would have returned
+result.provider  # the provider that actually served, e.g. "groq" after a failover
+result.model  # that provider's model
+result.usage  # Usage(input_tokens, output_tokens, cache_read_input_tokens, ...)
 result.stop_reason  # provider-native: "end_turn", "stop", "max_tokens", ...
 ```
 
@@ -93,6 +92,48 @@ record `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`,
 `gen_ai.usage.cache_read.input_tokens` and
 `gen_ai.usage.cache_creation.input_tokens`: counts only, never prompt text.
 
+### Reasoning models and empty replies (0.4.1)
+
+**Empty replies are provider failures.** A reply with no usable text (None,
+empty or whitespace content) and no tool calls raises `EmptyCompletionError`
+inside that provider's attempt. The error kind is `EMPTY_RESPONSE`: the call
+fails over to the next provider, isn't retried on the same one, and **does**
+count toward that provider's circuit breaker. An empty reply comes from a
+provider/model configuration, not from one caller's input, so the same budget
+fails the same way for everyone.
+
+- The error message and the warning log carry provider, model, finish reason
+  and reasoning tokens, never content.
+- Tool-call replies with null content are unaffected.
+- Streams are held back until the first chunk with text or a tool call. A
+  stream that ends without either raises before anything reaches the caller,
+  so `stream_chat()` can still fail over.
+- Before 0.4.1, `complete()` returned `""` for an OpenAI/Groq reply with empty
+  content.
+
+**Groq reasoning models get `reasoning_effort="low"`.** Groq's reasoning
+models return their reasoning in a separate `reasoning` field. The reasoning
+tokens are billed as output and count against the completion budget, so at
+Groq's default (medium) effort a small `max_tokens` can be spent entirely on
+reasoning. The reply then has empty content and `finish_reason="length"`.
+
+The gateway sends `reasoning_effort: "low"` in `complete()`, `chat()` and
+`stream_chat()` to models whose id starts with:
+
+- `openai/gpt-oss-` (and bare `gpt-oss-`), which accept low/medium/high;
+- `qwen/qwen3.8-27b`, which accepts none/default/low/medium/high.
+
+Both are listed in [Groq's reasoning docs](https://console.groq.com/docs/reasoning),
+checked 2026-09-14. Other models never get the parameter, including Qwen 3.6
+27B (none/default only) and MiniMax M2.7 (no effort values documented).
+
+**Reasoning tokens in usage.** `usage.reasoning_tokens` reports the reasoning
+share of `output_tokens` and is already included in it. It comes from
+OpenAI/Groq `completion_tokens_details.reasoning_tokens` or Anthropic
+`output_tokens_details.thinking_tokens`. Spans record it as
+`llm_gateway.usage.reasoning_tokens`, and each served call logs it at debug
+level on the `llm_gateway` logger.
+
 ### Structured output: `output_schema=`
 
 Pass a pydantic model class (or a JSON Schema dict) and get validated data
@@ -101,15 +142,17 @@ back:
 ```python
 from pydantic import BaseModel, Field
 
+
 class Verdict(BaseModel):
     score: int = Field(ge=0, le=100)
     summary: str
+
 
 result = await complete_with_usage(
     system="Score the answer.", prompt=answer, config=config, output_schema=Verdict
 )
 result.parsed  # Verdict(score=..., summary=...)
-result.text    # the raw JSON
+result.text  # the raw JSON
 ```
 
 Each provider is asked through its native mechanism:
@@ -155,7 +198,7 @@ result = await complete_with_usage(
     system=LONG_STATIC_INSTRUCTIONS, prompt=user_input, config=config, cache_system=True
 )
 result.usage.cache_creation_input_tokens  # > 0 on the first call
-result.usage.cache_read_input_tokens      # > 0 on later calls within the TTL
+result.usage.cache_read_input_tokens  # > 0 on later calls within the TTL
 ```
 
 On Anthropic, `system` is sent as one text block with

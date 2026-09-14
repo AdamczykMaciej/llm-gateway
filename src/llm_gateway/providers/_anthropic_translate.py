@@ -179,6 +179,7 @@ def usage_from_anthropic(
     output_tokens: object,
     cache_read_input_tokens: object = None,
     cache_creation_input_tokens: object = None,
+    reasoning_tokens: object = None,
 ) -> Usage:
     """Normalized Usage from Anthropic's usage fields.
 
@@ -192,6 +193,7 @@ def usage_from_anthropic(
         output_tokens=as_int(output_tokens),
         cache_read_input_tokens=cache_read,
         cache_creation_input_tokens=cache_creation,
+        reasoning_tokens=as_int(reasoning_tokens),
     )
 
 
@@ -203,7 +205,14 @@ def usage_from_anthropic_response(usage: Any) -> Usage:
         getattr(usage, "output_tokens", None),
         getattr(usage, "cache_read_input_tokens", None),
         getattr(usage, "cache_creation_input_tokens", None),
+        thinking_tokens(usage),
     )
+
+
+def thinking_tokens(usage: Any) -> object:
+    """`output_tokens_details.thinking_tokens` from an Anthropic usage object,
+    or None when absent."""
+    return getattr(getattr(usage, "output_tokens_details", None), "thinking_tokens", None)
 
 
 def text_blocks(content: Any) -> list[str]:
@@ -229,4 +238,5 @@ def from_anthropic_response(resp: Any, model: str) -> ChatResult:
         finish_reason="tool_calls" if tool_calls else "stop",
         cache_read_input_tokens=usage.cache_read_input_tokens,
         cache_creation_input_tokens=usage.cache_creation_input_tokens,
+        reasoning_tokens=usage.reasoning_tokens,
     )

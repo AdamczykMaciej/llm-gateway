@@ -1,5 +1,6 @@
 import json
 from collections.abc import AsyncIterator
+from contextlib import aclosing
 
 from anthropic import AsyncAnthropic, DefaultAsyncHttpxClient
 
@@ -11,6 +12,7 @@ from ._anthropic_translate import (
     STRUCTURED_OUTPUT_TOOL_NAME,
     from_anthropic_response,
     text_blocks,
+    thinking_tokens,
     to_anthropic_messages,
     to_anthropic_sampling,
     to_anthropic_structured_output_tool,
@@ -24,6 +26,8 @@ from .base import (
     ProviderResult,
     StreamDelta,
     as_int,
+    ensure_not_empty,
+    guard_empty_stream,
     sdk_client_cache_key,
     sdk_client_options,
     stream_request_options,
@@ -134,21 +138,25 @@ async def call(
         messages=[{"role": "user", "content": prompt}],
         **kwargs,
     )
-    texts = text_blocks(resp.content)
-    if not texts:
-        raise InvalidOutputError(
-            f"Anthropic returned no text content (stop_reason={resp.stop_reason})."
-        )
+    usage = usage_from_anthropic_response(resp.usage)
+    text = "".join(text_blocks(resp.content)).strip()
+    ensure_not_empty(
+        text,
+        provider="anthropic",
+        model=model,
+        finish_reason=resp.stop_reason,
+        reasoning_tokens=usage.reasoning_tokens,
+    )
     if output_schema is not None and resp.stop_reason == "refusal":
         raise InvalidOutputError("The model refused the request (stop_reason=refusal).")
-    usage = usage_from_anthropic_response(resp.usage)
     return ProviderResult(
-        text="".join(texts).strip(),
+        text=text,
         model=model,
         input_tokens=usage.input_tokens,
         output_tokens=usage.output_tokens,
         cache_read_input_tokens=usage.cache_read_input_tokens,
         cache_creation_input_tokens=usage.cache_creation_input_tokens,
+        reasoning_tokens=usage.reasoning_tokens,
         stop_reason=resp.stop_reason,
     )
 
@@ -189,11 +197,22 @@ async def chat(
             output_tokens=result.output_tokens,
             tool_calls=[],
             finish_reason="stop",
+            cache_read_input_tokens=result.cache_read_input_tokens,
+            cache_creation_input_tokens=result.cache_creation_input_tokens,
+            reasoning_tokens=result.reasoning_tokens,
         )
+    ensure_not_empty(
+        result.content,
+        has_tool_calls=bool(result.tool_calls),
+        provider="anthropic",
+        model=model,
+        finish_reason=resp.stop_reason,
+        reasoning_tokens=result.reasoning_tokens,
+    )
     return result
 
 
-async def stream_chat(
+async def _stream_chat(
     config: GatewayConfig,
     messages: list[dict],
     tools: list[dict] | None,
@@ -227,6 +246,7 @@ async def stream_chat(
         "cache_read_input_tokens": 0,
         "cache_creation_input_tokens": 0,
     }
+    reasoning_tokens: object = None
     stop_reason = "end_turn"
     structured_tool_index: int | None = None
     structured_output_parts: list[str] = []
@@ -279,6 +299,7 @@ async def stream_chat(
 
             elif event.type == "message_delta":
                 _update_usage(raw_usage, event.usage)
+                reasoning_tokens = thinking_tokens(event.usage) or reasoning_tokens
                 stop_reason = event.delta.stop_reason
 
     if structured_output_parts:
@@ -287,7 +308,7 @@ async def stream_chat(
     finish_reason = (
         "tool_calls" if (stop_reason == "tool_use" and not emulating_structured_output) else "stop"
     )
-    usage = usage_from_anthropic(**raw_usage)
+    usage = usage_from_anthropic(**raw_usage, reasoning_tokens=reasoning_tokens)
     yield StreamDelta(
         finish_reason=finish_reason,
         model=model,
@@ -301,3 +322,32 @@ def _update_usage(raw_usage: dict[str, int], sdk_usage: object) -> None:
         value = getattr(sdk_usage, name, None)
         if as_int(value) or value == 0:
             raw_usage[name] = as_int(value)
+
+
+async def stream_chat(
+    config: GatewayConfig,
+    messages: list[dict],
+    tools: list[dict] | None,
+    max_tokens: int,
+    *,
+    model: str | None = None,
+    tool_choice: object = None,
+    sampling: dict | None = None,
+    response_format: dict | None = None,
+) -> AsyncIterator[StreamDelta]:
+    """`_stream_chat()` behind `guard_empty_stream()`: a stream with no text
+    and no tool calls raises `EmptyCompletionError` before its first chunk."""
+    deltas = _stream_chat(
+        config,
+        messages,
+        tools,
+        max_tokens,
+        model=model,
+        tool_choice=tool_choice,
+        sampling=sampling,
+        response_format=response_format,
+    )
+    guarded = guard_empty_stream(deltas, provider="anthropic", model=model or default_model(config))
+    async with aclosing(guarded):
+        async for delta in guarded:
+            yield delta

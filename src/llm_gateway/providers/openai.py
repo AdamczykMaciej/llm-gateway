@@ -1,4 +1,5 @@
 from collections.abc import AsyncIterator
+from contextlib import aclosing
 
 from openai import AsyncOpenAI, DefaultAsyncHttpx2Client
 
@@ -8,6 +9,7 @@ from .base import (
     ChatResult,
     ProviderResult,
     StreamDelta,
+    guard_empty_stream,
     openai_sampling_kwargs,
     parse_openai_style_chunk,
     parse_openai_style_response,
@@ -69,7 +71,7 @@ async def call(
         ],
         **kwargs,
     )
-    return provider_result_from_openai_style(resp, model)
+    return provider_result_from_openai_style(resp, model, provider="openai")
 
 
 async def chat(
@@ -94,10 +96,10 @@ async def chat(
     resp = await _client(config).chat.completions.create(
         model=model, max_tokens=max_tokens, messages=messages, **kwargs
     )
-    return parse_openai_style_response(resp, model)
+    return parse_openai_style_response(resp, model, provider="openai")
 
 
-async def stream_chat(
+async def _stream_chat(
     config: GatewayConfig,
     messages: list[dict],
     tools: list[dict] | None,
@@ -127,3 +129,32 @@ async def stream_chat(
     )
     async for chunk in stream:
         yield parse_openai_style_chunk(chunk, model)
+
+
+async def stream_chat(
+    config: GatewayConfig,
+    messages: list[dict],
+    tools: list[dict] | None,
+    max_tokens: int,
+    *,
+    model: str | None = None,
+    tool_choice: object = None,
+    sampling: dict | None = None,
+    response_format: dict | None = None,
+) -> AsyncIterator[StreamDelta]:
+    """`_stream_chat()` behind `guard_empty_stream()`: a stream with no text
+    and no tool calls raises `EmptyCompletionError` before its first chunk."""
+    deltas = _stream_chat(
+        config,
+        messages,
+        tools,
+        max_tokens,
+        model=model,
+        tool_choice=tool_choice,
+        sampling=sampling,
+        response_format=response_format,
+    )
+    guarded = guard_empty_stream(deltas, provider="openai", model=model or default_model(config))
+    async with aclosing(guarded):
+        async for delta in guarded:
+            yield delta
