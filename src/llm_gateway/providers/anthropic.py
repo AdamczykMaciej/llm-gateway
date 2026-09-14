@@ -1,6 +1,16 @@
+"""Anthropic's Messages API.
+
+The request/response logic lives in `messages_call()`, `messages_chat()` and
+`messages_stream()`, which take the SDK client through an async factory and
+the provider id to report. `call()`, `chat()` and `stream_chat()` bind them to
+the first-party `AsyncAnthropic` client; providers/vertex.py binds the same
+functions to `AsyncAnthropicVertex`, so both serve identical request bodies.
+"""
+
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import aclosing
+from typing import Any
 
 from anthropic import AsyncAnthropic, DefaultAsyncHttpxClient
 
@@ -33,6 +43,12 @@ from .base import (
     stream_request_options,
 )
 
+PROVIDER = "anthropic"
+
+# Returns the SDK client to send one request with: `AsyncAnthropic` or
+# `AsyncAnthropicVertex`, which share the `messages` resource.
+ClientFactory = Callable[[], Awaitable[Any]]
+
 _clients: dict[tuple, AsyncAnthropic] = {}
 
 
@@ -51,6 +67,13 @@ def _client(config: GatewayConfig) -> AsyncAnthropic:
         )
         _clients[key] = client
     return client
+
+
+def _client_factory(config: GatewayConfig) -> ClientFactory:
+    async def get() -> AsyncAnthropic:
+        return _client(config)
+
+    return get
 
 
 def configured(config: GatewayConfig) -> bool:
@@ -115,10 +138,32 @@ async def call(
     output_schema: OutputSchema | None = None,
     cache_system: bool = False,
 ) -> ProviderResult:
+    return await messages_call(
+        _client_factory(config),
+        provider=PROVIDER,
+        model=model or default_model(config),
+        system=system,
+        prompt=prompt,
+        max_tokens=max_tokens,
+        output_schema=output_schema,
+        cache_system=cache_system,
+    )
+
+
+async def messages_call(
+    get_client: ClientFactory,
+    *,
+    provider: str,
+    model: str,
+    system: str,
+    prompt: str,
+    max_tokens: int,
+    output_schema: OutputSchema | None,
+    cache_system: bool,
+) -> ProviderResult:
     """Plain completion. The answer is every `text` block joined in order:
     a model that thinks returns `thinking`/`redacted_thinking` blocks before
     its text, so the first block is not necessarily the answer."""
-    model = model or default_model(config)
     kwargs: dict = {}
     if output_schema is not None:
         # Native structured outputs (constrained decoding), which Anthropic's
@@ -131,7 +176,7 @@ async def call(
                 "schema": output_schema.strict_schema(require_all_properties=False),
             }
         }
-    resp = await _client(config).messages.create(
+    resp = await (await get_client()).messages.create(
         model=model,
         max_tokens=max_tokens,
         system=system_param(system, model, cache_system),
@@ -142,7 +187,7 @@ async def call(
     text = "".join(text_blocks(resp.content)).strip()
     ensure_not_empty(
         text,
-        provider="anthropic",
+        provider=provider,
         model=model,
         finish_reason=resp.stop_reason,
         reasoning_tokens=usage.reasoning_tokens,
@@ -172,14 +217,38 @@ async def chat(
     sampling: dict | None = None,
     response_format: dict | None = None,
 ) -> ChatResult:
-    model = model or default_model(config)
+    return await messages_chat(
+        _client_factory(config),
+        provider=PROVIDER,
+        model=model or default_model(config),
+        messages=messages,
+        tools=tools,
+        max_tokens=max_tokens,
+        tool_choice=tool_choice,
+        sampling=sampling,
+        response_format=response_format,
+    )
+
+
+async def messages_chat(
+    get_client: ClientFactory,
+    *,
+    provider: str,
+    model: str,
+    messages: list[dict],
+    tools: list[dict] | None,
+    max_tokens: int,
+    tool_choice: object,
+    sampling: dict | None,
+    response_format: dict | None,
+) -> ChatResult:
     system, anthropic_messages = to_anthropic_messages(messages)
     tool_kwargs, emulating_structured_output = _resolve_tool_kwargs(
         tools, tool_choice, response_format
     )
     kwargs: dict = {**_sampling_kwargs(sampling), **tool_kwargs}
 
-    resp = await _client(config).messages.create(
+    resp = await (await get_client()).messages.create(
         model=model,
         max_tokens=max_tokens,
         system=system,
@@ -204,7 +273,7 @@ async def chat(
     ensure_not_empty(
         result.content,
         has_tool_calls=bool(result.tool_calls),
-        provider="anthropic",
+        provider=provider,
         model=model,
         finish_reason=resp.stop_reason,
         reasoning_tokens=result.reasoning_tokens,
@@ -223,6 +292,34 @@ async def _stream_chat(
     sampling: dict | None = None,
     response_format: dict | None = None,
 ) -> AsyncIterator[StreamDelta]:
+    deltas = messages_stream(
+        _client_factory(config),
+        model=model or default_model(config),
+        messages=messages,
+        tools=tools,
+        max_tokens=max_tokens,
+        tool_choice=tool_choice,
+        sampling=sampling,
+        response_format=response_format,
+        request_options=stream_request_options(config),
+    )
+    async with aclosing(deltas):
+        async for delta in deltas:
+            yield delta
+
+
+async def messages_stream(
+    get_client: ClientFactory,
+    *,
+    model: str,
+    messages: list[dict],
+    tools: list[dict] | None,
+    max_tokens: int,
+    tool_choice: object,
+    sampling: dict | None,
+    response_format: dict | None,
+    request_options: dict,
+) -> AsyncIterator[StreamDelta]:
     """Translate Anthropic's raw SSE event stream into normalized
     StreamDelta chunks. Anthropic's tool-call streaming already arrives
     fragment-by-fragment (content_block_start announces id+name,
@@ -230,7 +327,6 @@ async def _stream_chat(
     the same shape OpenAI's own streaming uses, so no re-chunking is needed,
     just a translation of event names/fields.
     """
-    model = model or default_model(config)
     system, anthropic_messages = to_anthropic_messages(messages)
     tool_kwargs, emulating_structured_output = _resolve_tool_kwargs(
         tools, tool_choice, response_format
@@ -251,13 +347,13 @@ async def _stream_chat(
     structured_tool_index: int | None = None
     structured_output_parts: list[str] = []
 
-    async with _client(config).messages.stream(
+    async with (await get_client()).messages.stream(
         model=model,
         max_tokens=max_tokens,
         system=system,
         messages=anthropic_messages,
         **kwargs,
-        **stream_request_options(config),
+        **request_options,
     ) as stream:
         async for event in stream:
             if event.type == "message_start":
@@ -347,7 +443,7 @@ async def stream_chat(
         sampling=sampling,
         response_format=response_format,
     )
-    guarded = guard_empty_stream(deltas, provider="anthropic", model=model or default_model(config))
+    guarded = guard_empty_stream(deltas, provider=PROVIDER, model=model or default_model(config))
     async with aclosing(guarded):
         async for delta in guarded:
             yield delta
