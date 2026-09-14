@@ -4,6 +4,8 @@ in-process."""
 
 import time
 import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -12,6 +14,7 @@ from .. import breaker
 from ..chat import chat as chat_engine
 from ..config import GatewayConfig
 from ..providers import CONFIGURED
+from ..providers import azure as azure_provider
 from ..router import LLMError
 from ..streaming import stream_chat as stream_engine
 from . import usage as usage_store
@@ -39,7 +42,14 @@ _OPENAI_ERROR_TYPES = {
 
 def create_app(config: GatewayConfig | None = None) -> FastAPI:
     config = config or GatewayConfig()
-    app = FastAPI(title="llm-gateway", version="0.3.0")
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        yield
+        # Entra credentials hold their own HTTP sessions.
+        await azure_provider.aclose()
+
+    app = FastAPI(title="llm-gateway", version="0.4.2", lifespan=lifespan)
     rate_limit_dep = enforce_rate_limit(config)
     auth_dep = require_api_key(config)
 
@@ -67,6 +77,7 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
     async def models(api_key: str = Depends(auth_dep)) -> dict:
         provider_models = {
             "anthropic": config.claude_model,
+            "azure": config.azure_model,
             "groq": config.groq_model,
             "openai": config.openai_model,
         }
@@ -133,7 +144,7 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
         model = body.model
         if model and model != "auto" and "/" in model:
             provider_name, _, upstream_model = model.partition("/")
-            if provider_name not in ("anthropic", "groq", "openai"):
+            if provider_name not in ("anthropic", "azure", "groq", "openai"):
                 raise HTTPException(
                     status_code=400,
                     detail=f"Unknown provider '{provider_name}' in model '{model}'",

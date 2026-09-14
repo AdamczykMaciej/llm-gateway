@@ -356,12 +356,15 @@ async def test_openai_structured_output_uses_strict_json_schema():
     assert json_schema["schema"]["additionalProperties"] is False
 
 
-async def test_groq_default_model_uses_json_mode_with_schema_in_system_prompt():
+async def test_groq_non_strict_model_uses_json_mode_with_schema_in_system_prompt():
+    # Since 0.4.2 the default groq_model is openai/gpt-oss-120b (strict
+    # json_schema); models without strict support still get JSON mode.
     fenced = f"```json\n{_VERDICT_JSON}\n```"
     recorder = _Recorder(_openai_reply(fenced))
+    config = _single("groq", groq_model="llama-3.1-8b-instant")
     with _real_sdk_providers(groq=recorder):
         result = await complete_with_usage(
-            system="Be strict.", prompt="p", config=_single("groq"), output_schema=Verdict
+            system="Be strict.", prompt="p", config=config, output_schema=Verdict
         )
 
     assert result.parsed.summary == "Solid answer."

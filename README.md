@@ -1,7 +1,7 @@
 # llm-gateway
 
 A small, self-hosted multi-provider LLM gateway: a fallback chain across
-Anthropic / Groq / OpenAI, a per-provider circuit breaker, PII-masked OTel
+Anthropic / Azure AI Foundry / Groq / OpenAI, a per-provider circuit breaker, PII-masked OTel
 tracing, and an OpenAI-compatible HTTP API — so any app can point at one
 provider and quietly keep working when that provider is down, rate-limited,
 or missing a key.
@@ -19,7 +19,7 @@ pip install "llm-gateway @ git+https://github.com/AdamczykMaciej/llm-gateway.git
 ```
 
 Requires Python 3.11+ and the current provider SDK majors: `anthropic>=1.5,<2`
-and `openai>=3.13,<4` (the OpenAI SDK also drives the Groq provider). Both are
+and `openai>=3.13,<4` (the OpenAI SDK also drives the Groq and Azure providers). Both are
 built on [`httpx2`](https://pypi.org/project/httpx2/) rather than `httpx` — an
 HTTP client you hand to either SDK yourself must be an `httpx2` client.
 
@@ -123,6 +123,9 @@ The gateway sends `reasoning_effort: "low"` in `complete()`, `chat()` and
 - `openai/gpt-oss-` (and bare `gpt-oss-`), which accept low/medium/high;
 - `qwen/qwen3.8-27b`, which accepts none/default/low/medium/high.
 
+Azure deployments get `AZURE_REASONING_EFFORT` (default `low`) instead;
+see [Azure AI Foundry](#azure-ai-foundry-042).
+
 Both are listed in [Groq's reasoning docs](https://console.groq.com/docs/reasoning),
 checked 2026-09-14. Other models never get the parameter, including Qwen 3.6
 27B (none/default only) and MiniMax M2.7 (no effort values documented).
@@ -161,7 +164,8 @@ Each provider is asked through its native mechanism:
 |-----------|--------------------------------------------------------------------------------------------------|
 | Anthropic | `output_config.format = {"type": "json_schema", "schema": ...}`: [structured outputs][ant-so], generally available, constrained decoding, supported on `claude-haiku-4-5` and newer. The JSON comes back as a text block. |
 | OpenAI    | `response_format = {"type": "json_schema", "json_schema": {"name", "strict": true, "schema"}}`  |
-| Groq      | the same strict `json_schema` on `openai/gpt-oss-20b` / `openai/gpt-oss-120b`, the models [Groq documents][groq-so] with strict support. Every other model, including the default `llama-3.3-70b-versatile`, gets JSON mode (`{"type": "json_object"}`) with the schema spelled out in the system prompt. |
+| Groq      | the same strict `json_schema` on `openai/gpt-oss-20b` / `openai/gpt-oss-120b`, the models [Groq documents][groq-so] with strict support. Every other model, such as `llama-3.1-8b-instant`, gets JSON mode (`{"type": "json_object"}`) with the schema spelled out in the system prompt. |
+| Azure     | the same strict `json_schema` as OpenAI, for every deployment (Azure lists structured outputs for `gpt-oss-120b`). |
 
 [ant-so]: https://platform.claude.com/docs/en/build-with-claude/structured-outputs
 [groq-so]: https://console.groq.com/docs/structured-outputs
@@ -243,9 +247,138 @@ it off for prompts that change per request or are rarely repeated. Anything
 that varies (user input, per-request data) belongs in `prompt`, not
 `system`.
 
-OpenAI and Groq cache long prompt prefixes automatically. `cache_system`
-changes nothing in their requests, and their hits show up as
+OpenAI and Groq cache long prompt prefixes automatically, as Azure does for
+the deployments that support prompt caching. `cache_system` changes nothing
+in their requests, and their hits show up as
 `usage.cache_read_input_tokens`.
+
+### Azure AI Foundry (0.4.2)
+
+The `azure` provider calls a model deployment through the
+[Azure OpenAI v1 API][az-v1] with the plain openai SDK and Azure's base URL:
+no `api-version` parameter and no `AzureOpenAI` client. It was added for
+`gpt-oss-120b`, which Azure lists with the Chat Completions API, streaming,
+function calling, structured outputs and reasoning (Preview; deploying it
+needs a Foundry project) in [Foundry Models sold by Azure][az-models].
+
+```bash
+pip install "llm-gateway[azure] @ git+https://github.com/AdamczykMaciej/llm-gateway.git"
+```
+
+```python
+config = GatewayConfig(
+    azure_endpoint="https://my-resource.services.ai.azure.com",
+    azure_model="gpt-oss-120b",  # the deployment name
+    provider_order="anthropic,azure,groq,openai",
+)
+```
+
+`azure` is not in the default `provider_order`; add it where you want it.
+
+| Setting (env var = upper case) | Default | |
+|---|---|---|
+| `azure_endpoint` | — | `https://<resource>.openai.azure.com` or `https://<resource>.services.ai.azure.com`, with or without a trailing `/openai/v1` and slash. Normalized to `…/openai/v1/`. A Foundry project endpoint (`…/api/projects/<project>`) gets `/openai/v1/` appended the same way. |
+| `azure_model` | — | The **deployment name**, sent as `model` and reported as `Completion.model`. |
+| `azure_auth` | `entra` | `entra` or `api_key`. Any other value fails config validation. |
+| `azure_api_key` | — | The resource key. Used only with `azure_auth=api_key`. |
+| `azure_managed_identity_client_id` | — | Entra only: the client id of a user-assigned managed identity. Unset means `DefaultAzureCredential`. |
+| `azure_reasoning_effort` | `low` | Sent as `reasoning_effort` on every azure request. `low`, `medium`, `high`, or `""` to omit the parameter. |
+| `azure_max_tokens_param` | `max_completion_tokens` | The request field that carries the token budget: `max_completion_tokens` or `max_tokens`. Any other value fails config validation. |
+
+The provider counts as configured when `azure_endpoint` and `azure_model` are
+set, and, for `api_key` auth, `azure_api_key`. With Entra auth nothing is
+checked at startup: a missing or broken identity fails the call instead (see
+below), and the chain moves on.
+
+**Authentication.**
+
+- `entra` (default): Microsoft Entra ID tokens for the scope
+  `https://ai.azure.com/.default`, from azure-identity's async
+  `get_bearer_token_provider`. `AsyncOpenAI` awaits a callable `api_key`
+  before every request, and the token provider caches the token and
+  refreshes it before it expires. The credential is
+  `ManagedIdentityCredential(client_id=...)` when
+  `azure_managed_identity_client_id` is set, else `DefaultAzureCredential()`.
+  Give that identity the **Cognitive Services OpenAI User** role on the
+  resource. This needs the `[azure]` extra (azure-identity, plus aiohttp,
+  the HTTP transport its async credentials use). Without it, each azure
+  call fails with `ProviderAuthError` (logged once) and fails over; nothing
+  else in the gateway imports azure-identity.
+- `api_key`: the SDK sends the key as `Authorization: Bearer <key>`, like
+  Microsoft's own `OpenAI(api_key=..., base_url=".../openai/v1/")` example.
+  The v1 API accepts a key in either `api-key` or `Authorization`
+  ([v1 OpenAPI spec][az-spec]).
+
+A token that can't be acquired (`ClientAuthenticationError`,
+`CredentialUnavailableError`) raises `ProviderAuthError`, classified `AUTH`:
+not retried, fails over, counts toward the breaker. Its message names the
+exception type and never includes a token or key. Cached credentials are
+closed by `await llm_gateway.providers.azure.aclose()`, which the HTTP
+service calls on shutdown.
+
+**Requests.** Everything else works like the OpenAI provider: the same
+`REQUEST_TIMEOUT_SECONDS`, `STREAM_IDLE_TIMEOUT_SECONDS` and
+`SDK_MAX_RETRIES`, and `SSL_VERIFY=false` (which also turns off certificate
+checks for the Entra credential's token requests). Structured output uses
+strict `json_schema` ([Azure structured outputs][az-so]). Streams request
+`stream_options={"include_usage": true}`. Usage comes from
+`prompt_tokens`, `completion_tokens`,
+`completion_tokens_details.reasoning_tokens` and
+`prompt_tokens_details.cached_tokens`, under provider `azure`. The token
+budget goes in the field named by `azure_max_tokens_param`. The default,
+`max_completion_tokens`, suits reasoning deployments: gpt-oss and the o-series
+need it, and it covers reasoning plus visible tokens. Set `max_tokens` if a
+deployment rejects it. The gateway doesn't verify which field a given
+deployment accepts.
+
+**`reasoning_effort`.** Same reason as Groq: at a reasoning model's default
+effort, a small `max_tokens` can go entirely to reasoning and leave empty
+content. Deployment names are arbitrary, so the gateway can't recognise a
+reasoning model by name the way it does on Groq; the setting applies to every
+azure request instead. The v1 chat-completions request schema defines
+`reasoning_effort`, and Azure lists `gpt-oss-120b` with reasoning. Azure's
+[reasoning models page][az-reasoning] gives accepted values only for Azure
+OpenAI GPT and o-series models, not gpt-oss; `low`/`medium`/`high` are the
+levels gpt-oss itself defines. Set `AZURE_REASONING_EFFORT=""` for a
+deployment of a non-reasoning model, which may reject the parameter.
+
+**Empty replies and content filtering** ([Azure content filtering][az-cf]):
+
+- A prompt blocked by the content filter returns HTTP 400 with
+  `error.code = "content_filter"`. That is `INVALID_REQUEST`: it fails over,
+  isn't retried, and doesn't count toward the breaker, since it's about the
+  caller's prompt, not the provider's health. The same applies when a stream
+  is opened.
+- A completion blocked by the filter returns 200 with
+  `finish_reason: "content_filter"` and no content. That is an empty reply
+  (`EmptyCompletionError`, `EMPTY_RESPONSE`): it fails over and counts toward
+  the breaker, like any other empty reply. A stream that ends that way before
+  any text fails over too. A stream the filter cuts off after text has
+  already reached the caller just ends with `finish_reason: "content_filter"`.
+
+**Troubleshooting: repeated 400 failovers.** If the logs show repeated `azure`
+`INVALID_REQUEST` (400) failovers right after you enable the provider, the
+likely cause is `azure_reasoning_effort` or `azure_max_tokens_param` not
+matching the deployment's model. Set `AZURE_REASONING_EFFORT=""` and/or
+`AZURE_MAX_TOKENS_PARAM=max_tokens`. A 400 never trips the breaker, so a
+mismatch doesn't take azure out of rotation: every call pays a failed Azure
+round trip before failing over.
+
+**Data residency.** The deployment's SKU decides where inference is
+processed. gpt-oss-120b is currently offered only as GlobalStandard
+(processed in any Azure region). For EU-only processing, use a Data Zone
+Standard deployment of a model that supports it (e.g. Mistral or DeepSeek
+models listed in Microsoft's Data Zone tables) and set
+`azure_reasoning_effort` to `""` for non-reasoning models. Choosing the
+deployment type and region is the operator's responsibility; the gateway
+only calls the endpoint it's given.
+
+[az-v1]: https://learn.microsoft.com/en-us/azure/foundry/openai/api-version-lifecycle
+[az-models]: https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure
+[az-spec]: https://github.com/Azure/azure-rest-api-specs/blob/main/specification/ai/data-plane/OpenAI.v1/azure-v1-v1-generated.json
+[az-so]: https://learn.microsoft.com/en-us/azure/foundry/openai/how-to/structured-outputs
+[az-reasoning]: https://learn.microsoft.com/en-us/azure/foundry/openai/how-to/reasoning
+[az-cf]: https://learn.microsoft.com/en-us/azure/foundry-classic/foundry-models/concepts/content-filter
 
 ## 2. As an HTTP service (OpenAI-compatible)
 
@@ -338,8 +471,8 @@ and — always — failing over to the next provider in `PROVIDER_ORDER`.
 | Transient | connection errors, 408, 409, 5xx, Anthropic 529 `overloaded` | yes | yes | yes |
 | Timeout | SDK `APITimeoutError`, gateway per-attempt timeout | no | yes | yes |
 | Rate limited | 429 | no | yes | yes |
-| Auth | 401, 403 | no | yes | yes |
-| Invalid request | 400, 404, 413, 422, any other 4xx | no | **no** | yes |
+| Auth | 401, 403; `ProviderAuthError` (e.g. no Entra token for Azure) | no | yes | yes |
+| Invalid request | 400 (including Azure's `content_filter`), 404, 413, 422, any other 4xx | no | **no** | yes |
 | Unknown | anything else (e.g. a response-parsing bug) | no | yes | yes |
 
 Errors that arrive *inside* an already-open SSE stream carry no useful HTTP
@@ -410,8 +543,15 @@ Worst case for one call with the default three-provider chain:
 | `ANTHROPIC_API_KEY` | — | Primary provider |
 | `GROQ_API_KEY` | — | Fallback provider (free tier available) |
 | `OPENAI_API_KEY` | — | Fallback provider |
+| `AZURE_ENDPOINT` | — | Azure AI Foundry / Azure OpenAI resource endpoint; see [Azure AI Foundry](#azure-ai-foundry-042) |
+| `AZURE_MODEL` | — | Azure deployment name |
+| `AZURE_AUTH` | `entra` | `entra` (needs the `[azure]` extra) or `api_key` |
+| `AZURE_API_KEY` | — | Azure resource key, for `AZURE_AUTH=api_key` |
+| `AZURE_MANAGED_IDENTITY_CLIENT_ID` | — | User-assigned managed identity for Entra auth; unset uses `DefaultAzureCredential` |
+| `AZURE_REASONING_EFFORT` | `low` | `reasoning_effort` on every azure request; `""` omits it |
+| `AZURE_MAX_TOKENS_PARAM` | `max_completion_tokens` | Token-budget field for azure requests: `max_completion_tokens` or `max_tokens` |
 | `CLAUDE_MODEL` | `claude-haiku-4-5-20251001` | |
-| `GROQ_MODEL` | `llama-3.3-70b-versatile` | |
+| `GROQ_MODEL` | `openai/gpt-oss-120b` | Groq retired `llama-3.3-70b-versatile` on 2026-08-16 |
 | `OPENAI_MODEL` | `gpt-4o-mini` | |
 | `PROVIDER_ORDER` | `anthropic,groq,openai` | Comma-separated, tried in order |
 | `BREAKER_FAILURE_THRESHOLD` | `3` | Consecutive failures before a provider is skipped |
@@ -492,7 +632,7 @@ regardless of which provider actually served the request.
 OpenAI's multi-part content format works in messages —
 `"content": [{"type": "text", "text": "..."}, {"type": "image_url", "image_url": {"url": "..."}}]`
 — for both `data:` URIs and plain `https://` URLs. Passed through as-is for
-OpenAI/Groq; translated to Anthropic's `image`/`source` block format
+OpenAI/Groq/Azure; translated to Anthropic's `image`/`source` block format
 internally. Images aren't counted against `MAX_PROMPT_CHARS` (only text
 parts are); the decoded size of `data:` URI images is instead bounded
 separately by `MAX_IMAGE_BYTES` — `https://` URLs aren't counted there

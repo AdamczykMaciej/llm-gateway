@@ -1,32 +1,37 @@
-from . import anthropic, groq, openai
+from . import anthropic, azure, groq, openai
 from .base import ChatResult, ProviderResult, StreamDelta, ToolCall, Usage
 
 CALLS = {
     "anthropic": anthropic.call,
+    "azure": azure.call,
     "groq": groq.call,
     "openai": openai.call,
 }
 
 CHAT_CALLS = {
     "anthropic": anthropic.chat,
+    "azure": azure.chat,
     "groq": groq.chat,
     "openai": openai.chat,
 }
 
 STREAM_CALLS = {
     "anthropic": anthropic.stream_chat,
+    "azure": azure.stream_chat,
     "groq": groq.stream_chat,
     "openai": openai.stream_chat,
 }
 
 CONFIGURED = {
     "anthropic": anthropic.configured,
+    "azure": azure.configured,
     "groq": groq.configured,
     "openai": openai.configured,
 }
 
 DEFAULT_MODEL = {
     "anthropic": anthropic.default_model,
+    "azure": azure.default_model,
     "groq": groq.default_model,
     "openai": openai.default_model,
 }

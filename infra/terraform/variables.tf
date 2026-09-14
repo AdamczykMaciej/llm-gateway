@@ -54,7 +54,7 @@ variable "claude_model" {
 
 variable "groq_model" {
   type    = string
-  default = "llama-3.3-70b-versatile"
+  default = "openai/gpt-oss-120b"
 }
 
 variable "openai_model" {

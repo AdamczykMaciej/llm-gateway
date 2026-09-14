@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "llm-gateway"
-version = "0.4.1"
-description = "Self-hosted multi-provider LLM gateway: fallback chain, circuit breaker, PII-masked tracing — as a library or an OpenAI-compatible HTTP service."
+version = "0.4.2"
+description = "Self-hosted multi-provider LLM gateway (Anthropic, Azure AI Foundry, Groq, OpenAI): fallback chain, circuit breaker, PII-masked tracing — as a library or an OpenAI-compatible HTTP service."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
@@ -21,6 +21,9 @@ dependencies = [
 
 [project.optional-dependencies]
 service = ["fastapi>=0.110,<1.0", "uvicorn[standard]>=0.27,<1.0"]
+# Microsoft Entra ID auth for the azure provider (azure_auth="entra"). The
+# async credentials need aiohttp as their HTTP transport.
+azure = ["azure-identity>=1.25.3", "aiohttp>=3.14"]
 dev = [
   "pytest>=8",
   "pytest-asyncio>=0.24",

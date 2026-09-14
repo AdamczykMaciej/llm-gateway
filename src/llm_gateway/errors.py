@@ -9,8 +9,10 @@ failed provider call, so the rules below are the whole policy:
 | `TRANSIENT`       | connection error, 408, 409, 5xx, Anthropic 529 | yes   | counts  |
 | `TIMEOUT`         | SDK `APITimeoutError`, per-attempt timeout     | no    | counts  |
 | `RATE_LIMITED`    | 429                                            | no    | counts  |
-| `AUTH`            | 401, 403                                       | no    | counts  |
-| `INVALID_REQUEST` | 400, 404, 413, 422 and every other 4xx         | no    | ignored |
+| `AUTH`            | 401, 403; `ProviderAuthError` (e.g. no Entra   | no    | counts  |
+|                   | token for Azure)                               |       |         |
+| `INVALID_REQUEST` | 400, 404, 413, 422 and every other 4xx,        | no    | ignored |
+|                   | including Azure's 400 `content_filter`         |       |         |
 | `INVALID_OUTPUT`  | no text, a refusal, or structured output that  | no    | ignored |
 |                   | fails to parse/validate; Groq's 400            |       |         |
 |                   | `json_validate_failed`                         |       |         |
@@ -61,6 +63,18 @@ class InvalidOutputError(Exception):
     schema validation. Raised inside one provider attempt, so the engine fails
     over to the next provider. The message never includes the model's output,
     which can echo prompt content, including personal data."""
+
+
+class ProviderAuthError(Exception):
+    """A provider could not authenticate before sending its request, e.g.
+    Azure with `azure_auth="entra"` when no Microsoft Entra token can be
+    acquired or azure-identity isn't installed. Classified `AUTH`: fails over
+    and counts toward the breaker, like a 401. The message names the provider
+    and the cause's exception type, never a token or key."""
+
+    def __init__(self, provider: str, message: str) -> None:
+        self.provider = provider
+        super().__init__(f"{provider}: {message}")
 
 
 class EmptyCompletionError(Exception):
@@ -183,6 +197,8 @@ def classify(exc: BaseException) -> ErrorKind:
         return ErrorKind.INVALID_OUTPUT
     if isinstance(exc, EmptyCompletionError):
         return ErrorKind.EMPTY_RESPONSE
+    if isinstance(exc, ProviderAuthError):
+        return ErrorKind.AUTH
     if isinstance(exc, _TIMEOUT_ERRORS):
         return ErrorKind.TIMEOUT
     if isinstance(exc, _CONNECTION_ERRORS):
