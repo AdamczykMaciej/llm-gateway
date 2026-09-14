@@ -14,7 +14,7 @@ other deployment is unknown.
 """
 
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal
 
 from .providers.groq import STRICT_JSON_SCHEMA_MODELS
@@ -93,17 +93,22 @@ def _anthropic(model: str) -> ModelCapabilities:
     )
 
 
-def _vertex(model: str) -> ModelCapabilities:
+def _vertex(model: str, *, structured_outputs: bool) -> ModelCapabilities:
     """Claude on Vertex AI: the same answers as `_anthropic` for the same model
     family. Google lists function calling, prompt caching and streaming for
     Claude Haiku 4.5, and structured outputs for every Claude 4.5 and later
     model
     (https://docs.cloud.google.com/vertex-ai/generative-ai/docs/partner-models/claude/structured-outputs),
-    though an organization policy (`constraints/vertexai.allowedPartnerModelFeatures`)
-    disables structured outputs until it allows them. Vertex ids carry a
-    `@version` suffix, which the prefix match covers. Image input is base64
-    only: Vertex doesn't accept URL image sources."""
-    return _anthropic(model)
+    but organizations deny structured outputs until the policy
+    `constraints/vertexai.allowedPartnerModelFeatures` allows them. So
+    structured output is "unsupported" (known unsupported, always skipped)
+    unless `GatewayConfig.vertex_structured_outputs` says the policy allows it.
+    Vertex ids carry a `@version` suffix, which the prefix match covers. Image
+    input is base64 only: Vertex doesn't accept URL image sources."""
+    capabilities = _anthropic(model)
+    if structured_outputs:
+        return capabilities
+    return replace(capabilities, structured_output="unsupported")
 
 
 def _openai(model: str) -> ModelCapabilities:
@@ -135,21 +140,32 @@ _TABLES: dict[str, Callable[[str], ModelCapabilities]] = {
     "azure": _azure,
     "openai": _openai,
     "groq": _groq,
-    "vertex": _vertex,
 }
 
 
-def capabilities_for(provider: str, model: str) -> ModelCapabilities:
+def capabilities_for(
+    provider: str, model: str, *, vertex_structured_outputs: bool = False
+) -> ModelCapabilities:
+    """`vertex_structured_outputs` is `GatewayConfig.vertex_structured_outputs`."""
+    if provider == "vertex":
+        return _vertex(model, structured_outputs=vertex_structured_outputs)
     table = _TABLES.get(provider)
     return table(model) if table else UNKNOWN
 
 
 def missing_capabilities(
-    provider: str, model: str, required: Iterable[str], *, require_parameters: bool
+    provider: str,
+    model: str,
+    required: Iterable[str],
+    *,
+    require_parameters: bool,
+    vertex_structured_outputs: bool = False,
 ) -> list[str]:
     """Why `provider`'s `model` can't serve the `required` features (empty
     when it can)."""
-    capabilities = capabilities_for(provider, model)
+    capabilities = capabilities_for(
+        provider, model, vertex_structured_outputs=vertex_structured_outputs
+    )
     missing = []
     for feature in required:
         support = getattr(capabilities, feature)

@@ -147,6 +147,12 @@ class GatewayConfig(BaseSettings):
     # With vertex_azure_app_id_uri: a user-assigned managed identity's client
     # id. Empty = the system-assigned identity.
     vertex_azure_managed_identity_client_id: str = ""
+    # Send output_schema calls (Vertex `output_config` structured outputs) to
+    # vertex. Off by default: organizations deny the feature until the policy
+    # constraints/vertexai.allowedPartnerModelFeatures allows
+    # publishers/anthropic/models/<model>:structured_outputs, and a denied call
+    # is a 400. While off, routing skips vertex for those calls.
+    vertex_structured_outputs: bool = False
 
     # ── Routing ───────────────────────────────────────────────────────────
     # Comma-separated provider names, tried in order. A provider is skipped

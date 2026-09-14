@@ -202,7 +202,11 @@ def plan_chain(
         for reason in compliance_reasons(effective, provider, metadata):
             plan._exclude(provider, _POLICY, reason)
         for reason in missing_capabilities(
-            provider, model, profile.features, require_parameters=effective.require_parameters
+            provider,
+            model,
+            profile.features,
+            require_parameters=effective.require_parameters,
+            vertex_structured_outputs=config.vertex_structured_outputs,
         ):
             plan._exclude(provider, _CAPABILITY, reason)
         cap = effective.max_cost_usd

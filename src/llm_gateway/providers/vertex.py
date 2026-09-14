@@ -139,7 +139,7 @@ def _azure_subject_token_supplier(config: GatewayConfig) -> tuple[Any, Any]:
     from google.auth import identity_pool
 
     try:
-        from azure.core.exceptions import ClientAuthenticationError
+        from azure.core.exceptions import AzureError
         from azure.identity import ManagedIdentityCredential
     except ImportError as e:
         raise _missing_extra(e, extra="azure", library="azure-identity") from None
@@ -154,7 +154,9 @@ def _azure_subject_token_supplier(config: GatewayConfig) -> tuple[Any, Any]:
         def get_subject_token(self, context: Any, request: Any) -> str:
             try:
                 return credential.get_token(scope).token
-            except ClientAuthenticationError as e:
+            # AzureError also covers an unreachable identity endpoint
+            # (ServiceRequestError), not only ClientAuthenticationError.
+            except AzureError as e:
                 raise google_exceptions.RefreshError(
                     f"could not acquire an Azure managed identity token for {scope} "
                     f"({type(e).__name__})"
@@ -200,6 +202,22 @@ def _credentials_from_info(info: dict, **kwargs: Any) -> Any:
     return user_credentials.Credentials.from_authorized_user_info(info, scopes=scopes)
 
 
+def _key_based(credentials: Any) -> bool:
+    """True when credentials are backed by a long-lived key: a service account
+    key or a GDCH service account, directly or as the source (at any depth)
+    of impersonated credentials. Inspects types only, never the network."""
+    from google.auth import impersonated_credentials
+    from google.oauth2 import gdch_credentials, service_account
+
+    for _ in range(10):  # impersonation chains are short; never loop forever
+        if not isinstance(credentials, impersonated_credentials.Credentials):
+            break
+        credentials = getattr(credentials, "_source_credentials", None)
+    return isinstance(
+        credentials, service_account.Credentials | gdch_credentials.ServiceAccountCredentials
+    )
+
+
 def load_credentials(config: GatewayConfig) -> tuple[Any, Any]:
     """(google credentials, closeable azure credential or None) for the
     config. Blocking (file reads, and ADC may probe the metadata server), but
@@ -209,7 +227,7 @@ def load_credentials(config: GatewayConfig) -> tuple[Any, Any]:
         import google.auth.transport.requests  # noqa: F401 (the SDK refreshes with it)
         from google.auth import exceptions as google_exceptions
         from google.auth import impersonated_credentials
-        from google.oauth2 import service_account
+        from google.oauth2 import gdch_credentials, service_account  # noqa: F401 (_key_based)
     except ImportError as e:
         raise _missing_extra(e, extra="vertex", library="google-auth") from None
 
@@ -238,12 +256,13 @@ def load_credentials(config: GatewayConfig) -> tuple[Any, Any]:
             "vertex_credentials_file, or Application Default Credentials when it is unset.",
         ) from e
 
-    if isinstance(credentials, service_account.Credentials):
+    if _key_based(credentials):
         raise ProviderAuthError(
             PROVIDER,
-            "Application Default Credentials resolved to a service account key; keys are "
-            "not accepted. Use Workload Identity Federation (an external_account "
-            "credential configuration) or an attached service account.",
+            "the credentials resolve to a service account key (directly, as the source of "
+            "impersonated credentials, or a GDCH service account); keys are not accepted. "
+            "Use Workload Identity Federation (an external_account credential "
+            "configuration) or an attached service account.",
         )
     if impersonate:
         credentials = impersonated_credentials.Credentials(
@@ -267,8 +286,10 @@ async def _google_credentials(config: GatewayConfig) -> Any:
     key = _auth_key(config)
     cached = _credentials.get(key)
     if cached is None:
-        cached = await asyncio.to_thread(load_credentials, config)
-        cached = _credentials.setdefault(key, cached)
+        loaded = await asyncio.to_thread(load_credentials, config)
+        cached = _credentials.setdefault(key, loaded)
+        if cached is not loaded and loaded[1] is not None:
+            loaded[1].close()  # a concurrent first call won the race; keep one credential
     return cached[0]
 
 

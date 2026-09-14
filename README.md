@@ -415,6 +415,7 @@ config = GatewayConfig(
 | `vertex_impersonate_service_account` | — | A service account email to act as. |
 | `vertex_azure_app_id_uri` | — | Workload Identity Federation from an Azure managed identity: the Entra application ID URI the pool provider accepts as audience. Needs an `external_account` `vertex_credentials_file` and the `[azure]` extra. |
 | `vertex_azure_managed_identity_client_id` | — | With `vertex_azure_app_id_uri`: the client id of a user-assigned managed identity. Empty = the system-assigned identity. |
+| `vertex_structured_outputs` | `false` | Send `output_schema` calls to Vertex. Enable **only after** the organization policy `constraints/vertexai.allowedPartnerModelFeatures` allows `publishers/anthropic/models/claude-haiku-4-5:structured_outputs` on the project (see [Features](#features)). While `false`, routing skips `vertex` for `output_schema` calls. |
 
 The provider counts as configured when `vertex_project_id` and `vertex_model`
 are set. Bad values fail at startup: a malformed location, project id or
@@ -489,15 +490,34 @@ Two operator-side switches:
 
 - **Enable the model**: open the Claude Haiku 4.5 model card in Model Garden
   and click **Enable** ([use Claude][vx-use]).
-- **Structured outputs are off by default.** The organization policy
-  constraint `constraints/vertexai.allowedPartnerModelFeatures` must allow
-  `structured_outputs` ([structured outputs][vx-so]). Until it does,
-  `output_schema` calls on Vertex get a 400, which fails over without
-  counting toward the breaker. `chat()`'s `response_format` uses a forced
-  tool call and isn't affected.
+- **Structured outputs are off twice by default.** For projects in an
+  organization, Google denies the `structured_outputs` feature until the
+  policy `constraints/vertexai.allowedPartnerModelFeatures` allows it
+  ([structured outputs][vx-so], [controlling model access][vx-policy]). The
+  gateway's own `VERTEX_STRUCTURED_OUTPUTS` also defaults to `false`: vertex
+  then reports structured output as unsupported, and routing skips it for
+  every `output_schema` call before any request. It doesn't pay a 400, doesn't
+  touch the breaker, and needs no `POLICY_REQUIRE_PARAMETERS`. Set
+  `VERTEX_STRUCTURED_OUTPUTS=true` only **after** the policy on the project
+  allows `publishers/anthropic/models/claude-haiku-4-5:structured_outputs` (or
+  a broader `publishers/anthropic/models/claude-haiku-4-5` or
+  `publishers/anthropic`):
+
+  ```yaml
+  name: projects/PROJECT_ID/policies/vertexai.allowedPartnerModelFeatures
+  spec:
+    rules:
+    - values:
+        allowedValues:
+        - publishers/anthropic/models/claude-haiku-4-5:structured_outputs
+  ```
+
+  `chat()`'s `response_format` uses a forced tool call rather than structured
+  outputs, so it is served by Vertex either way.
 
 Capabilities mirror `anthropic` for the same model id (`@version` suffixes
-included): strict structured output, tools, images and streaming for Haiku 4.5.
+included): tools, images and streaming for Haiku 4.5, and strict structured
+output only with `VERTEX_STRUCTURED_OUTPUTS=true`.
 
 #### Authentication
 
@@ -653,8 +673,9 @@ projects often start low.
   counts toward the breaker.
 - **404 `NOT_FOUND`**: the model isn't enabled in Model Garden, or isn't offered
   in `vertex_location` (e.g. `eu` for Haiku 4.5). **400 `INVALID_ARGUMENT` /
-  `FAILED_PRECONDITION`**: a request Vertex rejects, e.g. structured output
-  blocked by organization policy, or a URL image. Both are INVALID_REQUEST:
+  `FAILED_PRECONDITION`**: a request Vertex rejects, e.g.
+  `VERTEX_STRUCTURED_OUTPUTS=true` before the organization policy allows the
+  feature, or a URL image. Both are INVALID_REQUEST:
   they fail over and never trip the breaker, so every call pays the round trip.
 - **401/403**: the service account lacks `roles/aiplatform.user`, or an
   organization policy blocks the model. AUTH, counts toward the breaker.
@@ -678,6 +699,7 @@ configured/available state.
 [vx-pricing]: https://cloud.google.com/gemini-enterprise-agent-platform/generative-ai/pricing
 [vx-so]: https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/partner-models/claude/structured-outputs
 [vx-use]: https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/partner-models/claude/use-claude
+[vx-policy]: https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/control-model-access
 [vx-iam]: https://docs.cloud.google.com/gemini-enterprise-agent-platform/machine-learning/general/access-control
 [claude-features]: https://platform.claude.com/docs/en/build-with-claude/overview
 [wif-azure]: https://docs.cloud.google.com/iam/docs/workload-identity-federation-with-other-clouds
@@ -1094,6 +1116,7 @@ Worst case for one call with the default three-provider chain:
 | `VERTEX_IMPERSONATE_SERVICE_ACCOUNT` | — | Service account email to impersonate |
 | `VERTEX_AZURE_APP_ID_URI` | — | WIF from an Azure managed identity: the Entra application ID URI (needs the `[azure]` extra) |
 | `VERTEX_AZURE_MANAGED_IDENTITY_CLIENT_ID` | — | User-assigned managed identity for `VERTEX_AZURE_APP_ID_URI`; unset uses the system-assigned identity |
+| `VERTEX_STRUCTURED_OUTPUTS` | `false` | Route `output_schema` calls to Vertex. Enable only after `constraints/vertexai.allowedPartnerModelFeatures` allows `publishers/anthropic/models/claude-haiku-4-5:structured_outputs` |
 | `CLAUDE_MODEL` | `claude-haiku-4-5-20251001` | |
 | `GROQ_MODEL` | `openai/gpt-oss-120b` | Groq retired `llama-3.3-70b-versatile` on 2026-08-16 |
 | `OPENAI_MODEL` | `gpt-4o-mini` | |

@@ -29,6 +29,7 @@ from llm_gateway import (
     ModelPrice,
     PolicyViolationError,
     ProviderAuthError,
+    UnsupportedCapabilityError,
     Usage,
     breaker,
     chat,
@@ -41,6 +42,7 @@ from llm_gateway.errors import ErrorKind, classify
 from llm_gateway.policy import KNOWN_PROVIDERS, ProviderPolicy
 from llm_gateway.pricing import VERTEX_REGIONAL_PREMIUM, lookup_price
 from llm_gateway.providers import CONFIGURED, anthropic, groq, vertex
+from llm_gateway.providers._anthropic_translate import STRUCTURED_OUTPUT_TOOL_NAME
 from tests.test_sdk_compat import _anthropic_client, _openai_client, _sse, _status
 
 
@@ -107,6 +109,7 @@ _ENV = (
     "VERTEX_IMPERSONATE_SERVICE_ACCOUNT",
     "VERTEX_AZURE_APP_ID_URI",
     "VERTEX_AZURE_MANAGED_IDENTITY_CLIENT_ID",
+    "VERTEX_STRUCTURED_OUTPUTS",
     # Read by google-auth and by the SDK's Vertex client when not given.
     "GOOGLE_APPLICATION_CREDENTIALS",
     "ANTHROPIC_VERTEX_BASE_URL",
@@ -332,6 +335,7 @@ def test_defaults_env_names_and_normalisation(monkeypatch, tmp_path):
     assert defaults.vertex_impersonate_service_account == ""
     assert defaults.vertex_azure_app_id_uri == ""
     assert defaults.vertex_azure_managed_identity_client_id == ""
+    assert defaults.vertex_structured_outputs is False
     assert not vertex.configured(defaults)
     assert "vertex" not in defaults.provider_order_list
 
@@ -343,7 +347,9 @@ def test_defaults_env_names_and_normalisation(monkeypatch, tmp_path):
     monkeypatch.setenv("VERTEX_IMPERSONATE_SERVICE_ACCOUNT", SERVICE_ACCOUNT)
     monkeypatch.setenv("VERTEX_AZURE_APP_ID_URI", APP_ID_URI)
     monkeypatch.setenv("VERTEX_AZURE_MANAGED_IDENTITY_CLIENT_ID", "mi-client-id")
+    monkeypatch.setenv("VERTEX_STRUCTURED_OUTPUTS", "true")
     config = GatewayConfig(_env_file=None)
+    assert config.vertex_structured_outputs is True
     assert config.vertex_project_id == PROJECT
     assert config.vertex_location == "eu"
     assert config.vertex_model == "claude-haiku-4-5"
@@ -616,6 +622,72 @@ def test_adc_resolving_to_a_service_account_key_is_refused():
         vertex.load_credentials(_config())
 
 
+def _rsa_private_key_pem() -> str:
+    """A throwaway key generated in-process, so google-auth can build real
+    service-account credentials offline."""
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    return key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    ).decode()
+
+
+@needs_google_auth
+def test_adc_impersonating_from_a_service_account_key_is_refused(tmp_path, monkeypatch):
+    import google.auth
+    from google.auth import impersonated_credentials
+
+    adc = {
+        "type": "impersonated_service_account",
+        "service_account_impersonation_url": vertex.service_account_impersonation_url(
+            SERVICE_ACCOUNT
+        ),
+        "source_credentials": {
+            "type": "service_account",
+            "project_id": PROJECT,
+            "private_key_id": "0",
+            "private_key": _rsa_private_key_pem(),
+            "client_email": "source@interviewer-eu.iam.gserviceaccount.com",
+            "token_uri": "https://oauth2.googleapis.com/token",
+        },
+    }
+    monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", _write_json(tmp_path, "adc.json", adc))
+    # google-auth itself accepts the file: impersonated credentials over a key.
+    resolved, _ = google.auth.default(scopes=[vertex.CLOUD_PLATFORM_SCOPE])
+    assert isinstance(resolved, impersonated_credentials.Credentials)
+
+    with pytest.raises(ProviderAuthError, match="service account key") as excinfo:
+        vertex.load_credentials(_config())
+    assert "PRIVATE KEY" not in str(excinfo.value)
+    with pytest.raises(ProviderAuthError, match="service account key"):
+        vertex.load_credentials(_config(vertex_impersonate_service_account=SERVICE_ACCOUNT))
+
+
+@needs_google_auth
+def test_adc_resolving_to_a_gdch_service_account_is_refused():
+    from google.auth import impersonated_credentials
+    from google.oauth2 import gdch_credentials
+
+    gdch = MagicMock(spec=gdch_credentials.ServiceAccountCredentials)
+    with (
+        patch("google.auth.default", return_value=(gdch, PROJECT)),
+        pytest.raises(ProviderAuthError, match="service account key"),
+    ):
+        vertex.load_credentials(_config())
+
+    over_gdch = MagicMock(spec=impersonated_credentials.Credentials)
+    over_gdch._source_credentials = gdch
+    with (
+        patch("google.auth.default", return_value=(over_gdch, PROJECT)),
+        pytest.raises(ProviderAuthError, match="service account key"),
+    ):
+        vertex.load_credentials(_config())
+
+
 @needs_google_auth
 def test_unusable_credentials_are_an_auth_error():
     from google.auth.exceptions import DefaultCredentialsError
@@ -629,8 +701,16 @@ def test_unusable_credentials_are_an_auth_error():
     assert "DefaultCredentialsError" in str(excinfo.value)
 
 
-class _FakeClientAuthenticationError(Exception):
+class _FakeAzureError(Exception):
     pass
+
+
+class _FakeClientAuthenticationError(_FakeAzureError):
+    pass
+
+
+class _FakeServiceRequestError(_FakeAzureError):
+    """What azure-core raises when the identity endpoint can't be reached."""
 
 
 class _FakeManagedIdentityCredential:
@@ -657,7 +737,9 @@ def _fake_azure_modules() -> dict:
     identity = ModuleType("azure.identity")
     identity.ManagedIdentityCredential = _FakeManagedIdentityCredential
     exceptions = ModuleType("azure.core.exceptions")
+    exceptions.AzureError = _FakeAzureError
     exceptions.ClientAuthenticationError = _FakeClientAuthenticationError
+    exceptions.ServiceRequestError = _FakeServiceRequestError
     return {
         "azure": ModuleType("azure"),
         "azure.identity": identity,
@@ -695,6 +777,51 @@ def test_azure_managed_identity_supplies_the_subject_token(tmp_path):
             credentials.retrieve_subject_token(None)
     assert "_FakeClientAuthenticationError" in str(excinfo.value)
     assert "AADSTS" not in str(excinfo.value)
+
+
+@needs_google_auth
+async def test_unreachable_identity_endpoint_is_an_auth_error(tmp_path):
+    from google.auth.exceptions import RefreshError
+
+    _FakeManagedIdentityCredential.instances.clear()
+    config = _config(
+        vertex_credentials_file=_write_json(tmp_path, "wif.json", EXTERNAL_ACCOUNT),
+        vertex_azure_app_id_uri=APP_ID_URI,
+    )
+    wire = _Wire(_vertex_ok)
+    with patch.dict(sys.modules, _fake_azure_modules()):
+        credentials, _ = vertex.load_credentials(config)
+        (managed_identity,) = _FakeManagedIdentityCredential.instances
+        managed_identity.error = _FakeServiceRequestError("connection refused to IDENTITY_ENDPOINT")
+        with pytest.raises(RefreshError, match="_FakeServiceRequestError"):
+            credentials.retrieve_subject_token(None)
+
+        # Through the SDK: the refresh fails before any request is sent.
+        client = _vertex_client(wire, credentials=credentials)
+        with (
+            patch.object(vertex, "_client", new=AsyncMock(return_value=client)),
+            pytest.raises(ProviderAuthError) as excinfo,
+        ):
+            await vertex.call(config, "s", "p", 10)
+    assert classify(excinfo.value) is ErrorKind.AUTH
+    assert isinstance(excinfo.value.__cause__, RefreshError)
+    assert wire.requests == []
+
+
+async def test_credential_losing_a_load_race_is_closed():
+    winner = (object(), MagicMock())
+    loser = MagicMock()
+    config = _config()
+
+    def load(config):
+        # Another first call finished loading while this one was in its thread.
+        vertex._credentials[vertex._auth_key(config)] = winner
+        return (object(), loser)
+
+    with patch.object(vertex, "load_credentials", side_effect=load):
+        assert await vertex._google_credentials(config) is winner[0]
+    loser.close.assert_called_once()
+    winner[1].close.assert_not_called()
 
 
 @needs_google_auth
@@ -798,7 +925,7 @@ async def test_structured_output_and_prompt_caching_pass_through_like_anthropic(
         result = await complete_with_usage(
             system=long_system,
             prompt="Rate it",
-            config=_config(),
+            config=_config(vertex_structured_outputs=True),
             output_schema=_Score,
             cache_system=True,
         )
@@ -1079,14 +1206,86 @@ async def test_eu_residency_includes_vertex_only_when_its_metadata_asserts_eu():
     "model", [MODEL, "claude-haiku-4-5", "claude-sonnet-4-5@20250929", "claude-opus-4-1@20250805"]
 )
 def test_capabilities_mirror_the_anthropic_model_family(model):
-    assert capabilities_for("vertex", model) == capabilities_for("anthropic", model.split("@")[0])
+    anthropic_caps = capabilities_for("anthropic", model.split("@")[0])
+    assert capabilities_for("vertex", model, vertex_structured_outputs=True) == anthropic_caps
+    assert capabilities_for("vertex", model) == ModelCapabilities(
+        structured_output="unsupported",
+        tools=anthropic_caps.tools,
+        images=anthropic_caps.images,
+        streaming=anthropic_caps.streaming,
+    )
 
 
 def test_haiku_capabilities_and_unknown_models():
-    assert capabilities_for("vertex", MODEL) == ModelCapabilities(
+    assert capabilities_for("vertex", MODEL, vertex_structured_outputs=True) == ModelCapabilities(
         structured_output="strict", tools=True, images=True, streaming=True
     )
-    assert capabilities_for("vertex", "gemini-2.5-flash") == UNKNOWN
+    assert capabilities_for("vertex", MODEL) == ModelCapabilities(
+        structured_output="unsupported", tools=True, images=True, streaming=True
+    )
+    assert capabilities_for("vertex", "gemini-2.5-flash", vertex_structured_outputs=True) == UNKNOWN
+
+
+async def test_structured_outputs_off_skips_vertex_for_output_schema_without_a_request():
+    anthropic_reply = _json(_message('{"score": 4, "reason": "clear"}'))
+    anthropic_wire, vertex_wire = _Wire(anthropic_reply), _Wire(_vertex_ok)
+    # Default settings: no POLICY_REQUIRE_PARAMETERS needed.
+    config = _config(anthropic_api_key="k", provider_order="vertex,anthropic")
+    with _providers(vertex_wire=vertex_wire, anthropic_wire=anthropic_wire):
+        served = await complete_with_usage(
+            system="s", prompt="p", config=config, output_schema=_Score
+        )
+        with pytest.raises(UnsupportedCapabilityError) as excinfo:
+            await complete_with_usage(
+                system="s", prompt="p", config=_config(), output_schema=_Score
+            )
+        # A plain completion still goes to Vertex.
+        plain = await complete_with_usage(system="s", prompt="p", config=config)
+
+    assert (served.provider, served.parsed) == ("anthropic", _Score(score=4, reason="clear"))
+    assert plain.provider == "vertex"
+    assert len(vertex_wire.requests) == 1  # only the plain completion
+    assert not breaker.is_open("vertex")
+    assert excinfo.value.exclusions["vertex"] == (
+        f"model {MODEL} does not support structured output",
+    )
+
+
+async def test_structured_outputs_off_still_serves_chat_response_format_on_vertex():
+    # chat()'s response_format is a forced tool call, not Vertex structured outputs.
+    tool_reply = _message(
+        content=[
+            {
+                "type": "tool_use",
+                "id": "toolu_1",
+                "name": STRUCTURED_OUTPUT_TOOL_NAME,
+                "input": {"score": 4, "reason": "clear"},
+            }
+        ]
+    )
+    wire = _Wire(_json(tool_reply))
+    response_format = {
+        "type": "json_schema",
+        "json_schema": {"name": "score", "schema": _Score.model_json_schema()},
+    }
+    with _providers(vertex_wire=wire):
+        result = await chat(messages=MESSAGES, config=_config(), response_format=response_format)
+    assert json.loads(result.content) == {"score": 4, "reason": "clear"}
+    assert "output_config" not in wire.bodies[0]
+
+
+async def test_structured_outputs_on_sends_output_config_to_vertex():
+    wire = _Wire(_json(_message('{"score": 5, "reason": "great"}')))
+    config = _config(anthropic_api_key="k", provider_order="vertex,anthropic")
+    with _providers(vertex_wire=wire, anthropic_wire=_Wire(_status(500))):
+        result = await complete_with_usage(
+            system="s",
+            prompt="p",
+            config=config.model_copy(update={"vertex_structured_outputs": True}),
+            output_schema=_Score,
+        )
+    assert (result.provider, result.parsed) == ("vertex", _Score(score=5, reason="great"))
+    assert wire.bodies[0]["output_config"]["format"]["type"] == "json_schema"
 
 
 # ─── HTTP service and shutdown ─────────────────────────────────────────────
