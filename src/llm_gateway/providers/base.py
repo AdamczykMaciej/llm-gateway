@@ -13,6 +13,9 @@ Providers own their own client caching internally.
 """
 
 import json
+import logging
+from collections.abc import AsyncIterator
+from contextlib import aclosing
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -20,7 +23,9 @@ from typing import Any
 from openai import Timeout
 
 from ..config import GatewayConfig
-from ..errors import InvalidOutputError
+from ..errors import EmptyCompletionError, InvalidOutputError
+
+logger = logging.getLogger("llm_gateway")
 
 # Kept at the SDKs' own default: a TCP connect that takes longer than this
 # is not going to succeed, however long the request timeout is.
@@ -102,6 +107,11 @@ class Usage:
     output_tokens: int = 0
     cache_read_input_tokens: int = 0
     cache_creation_input_tokens: int = 0
+    # The subset of `output_tokens` the model spent reasoning (OpenAI/Groq
+    # `completion_tokens_details.reasoning_tokens`, Anthropic
+    # `output_tokens_details.thinking_tokens`). Already included in
+    # `output_tokens` and billed as output; 0 when not reported.
+    reasoning_tokens: int = 0
 
     @property
     def uncached_input_tokens(self) -> int:
@@ -120,10 +130,41 @@ def usage_from_openai_style(usage: Any) -> Usage:
     if usage is None:
         return Usage()
     details = getattr(usage, "prompt_tokens_details", None)
+    completion_details = getattr(usage, "completion_tokens_details", None)
     return Usage(
         input_tokens=as_int(getattr(usage, "prompt_tokens", None)),
         output_tokens=as_int(getattr(usage, "completion_tokens", None)),
         cache_read_input_tokens=as_int(getattr(details, "cached_tokens", None)),
+        reasoning_tokens=as_int(getattr(completion_details, "reasoning_tokens", None)),
+    )
+
+
+def ensure_not_empty(
+    text: str | None,
+    *,
+    has_tool_calls: bool = False,
+    provider: str,
+    model: str,
+    finish_reason: str | None,
+    reasoning_tokens: int | None,
+) -> None:
+    """Raise `EmptyCompletionError` for a reply with no usable text (None,
+    empty or whitespace) and no tool calls. Logs a warning with the provider,
+    model, finish reason and reasoning tokens; never the content."""
+    if has_tool_calls or (text and text.strip()):
+        return
+    logger.warning(
+        "llm_gateway empty completion: provider=%s model=%s finish_reason=%s reasoning_tokens=%s",
+        provider,
+        model,
+        finish_reason,
+        reasoning_tokens,
+    )
+    raise EmptyCompletionError(
+        provider=provider,
+        model=model,
+        finish_reason=finish_reason,
+        reasoning_tokens=reasoning_tokens,
     )
 
 
@@ -135,6 +176,7 @@ class ProviderResult:
     output_tokens: int
     cache_read_input_tokens: int = 0
     cache_creation_input_tokens: int = 0
+    reasoning_tokens: int = 0
     # Provider-native stop reason ("end_turn", "stop", "max_tokens", ...).
     # Excluded from equality: it is diagnostic, not part of the result.
     stop_reason: str | None = field(default=None, compare=False)
@@ -146,6 +188,7 @@ class ProviderResult:
             self.output_tokens,
             self.cache_read_input_tokens,
             self.cache_creation_input_tokens,
+            self.reasoning_tokens,
         )
 
 
@@ -166,6 +209,7 @@ class ChatResult:
     finish_reason: str = "stop"  # "stop" | "tool_calls"
     cache_read_input_tokens: int = 0
     cache_creation_input_tokens: int = 0
+    reasoning_tokens: int = 0
 
     @property
     def usage(self) -> Usage:
@@ -174,6 +218,7 @@ class ChatResult:
             self.output_tokens,
             self.cache_read_input_tokens,
             self.cache_creation_input_tokens,
+            self.reasoning_tokens,
         )
 
 
@@ -198,11 +243,16 @@ class StreamDelta:
     provider: str | None = None
 
 
-def parse_openai_style_response(resp: Any, model: str) -> ChatResult:
+def parse_openai_style_response(resp: Any, model: str, provider: str = "openai") -> ChatResult:
     """Shared response parser for any provider speaking the OpenAI chat-
-    completions wire format natively (OpenAI itself, Groq)."""
+    completions wire format natively (OpenAI itself, Groq).
+
+    Null content is fine alongside tool calls. Without tool calls, a refusal
+    is `InvalidOutputError` and empty content is `EmptyCompletionError`."""
     choice = resp.choices[0]
     msg = choice.message
+    if getattr(msg, "refusal", None) and not msg.tool_calls:
+        raise InvalidOutputError("The model refused the request (message.refusal is set).")
     tool_calls = [
         ToolCall(
             id=tc.id,
@@ -213,6 +263,14 @@ def parse_openai_style_response(resp: Any, model: str) -> ChatResult:
     ]
     finish_reason = "tool_calls" if tool_calls else "stop"
     usage = usage_from_openai_style(resp.usage)
+    ensure_not_empty(
+        msg.content,
+        has_tool_calls=bool(tool_calls),
+        provider=provider,
+        model=model,
+        finish_reason=choice.finish_reason,
+        reasoning_tokens=usage.reasoning_tokens,
+    )
     return ChatResult(
         content=msg.content,
         model=model,
@@ -221,28 +279,40 @@ def parse_openai_style_response(resp: Any, model: str) -> ChatResult:
         tool_calls=tool_calls,
         finish_reason=finish_reason,
         cache_read_input_tokens=usage.cache_read_input_tokens,
+        reasoning_tokens=usage.reasoning_tokens,
     )
 
 
-def provider_result_from_openai_style(resp: Any, model: str) -> ProviderResult:
+def provider_result_from_openai_style(
+    resp: Any, model: str, provider: str = "openai"
+) -> ProviderResult:
     """Plain-completion parser shared by OpenAI and Groq.
 
     `message.content` is None when the model refuses (OpenAI sets
     `message.refusal`, which in practice only happens for structured-output
     requests) or answers with tool calls (never requested here). A refusal is
-    an unusable answer, so it fails over instead of returning "".
+    an unusable answer (`InvalidOutputError`); empty or whitespace content is
+    `EmptyCompletionError`. Both fail over instead of returning "".
     """
     choice = resp.choices[0]
     message = choice.message
     if getattr(message, "refusal", None):
         raise InvalidOutputError("The model refused the request (message.refusal is set).")
     usage = usage_from_openai_style(resp.usage)
+    ensure_not_empty(
+        message.content,
+        provider=provider,
+        model=model,
+        finish_reason=choice.finish_reason,
+        reasoning_tokens=usage.reasoning_tokens,
+    )
     return ProviderResult(
-        text=(message.content or "").strip(),
+        text=message.content.strip(),
         model=model,
         input_tokens=usage.input_tokens,
         output_tokens=usage.output_tokens,
         cache_read_input_tokens=usage.cache_read_input_tokens,
+        reasoning_tokens=usage.reasoning_tokens,
         stop_reason=choice.finish_reason,
     )
 
@@ -283,3 +353,38 @@ def parse_openai_style_chunk(chunk: Any, model: str) -> StreamDelta:
         finish_reason=choice.finish_reason,
         model=model,
     )
+
+
+async def guard_empty_stream(
+    deltas: AsyncIterator[StreamDelta], *, provider: str, model: str
+) -> AsyncIterator[StreamDelta]:
+    """Hold a stream's chunks back until one carries non-whitespace text or a
+    tool call, then pass everything through in order.
+
+    A stream that ends before that (a reasoning model streaming only
+    reasoning, or nothing at all) raises `EmptyCompletionError` before its
+    first chunk reaches the engine, so `stream_chat()` can still fail over.
+    Once real content has been seen, chunks flow through unbuffered."""
+    pending: list[StreamDelta] = []
+    started = False
+    async with aclosing(deltas):
+        async for delta in deltas:
+            if started:
+                yield delta
+                continue
+            pending.append(delta)
+            if delta.tool_call_deltas or (delta.content and delta.content.strip()):
+                started = True
+                for item in pending:
+                    yield item
+                pending.clear()
+    if not started:
+        finish_reason = next((d.finish_reason for d in reversed(pending) if d.finish_reason), None)
+        details = next((d.usage_details for d in reversed(pending) if d.usage_details), None)
+        ensure_not_empty(
+            None,
+            provider=provider,
+            model=model,
+            finish_reason=finish_reason,
+            reasoning_tokens=details.reasoning_tokens if details else None,
+        )

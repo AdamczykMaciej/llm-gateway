@@ -38,6 +38,7 @@ def set_call_attributes(
     error_code: str | None = None,
     cache_read_input_tokens: int = 0,
     cache_creation_input_tokens: int = 0,
+    reasoning_tokens: int = 0,
 ) -> None:
     """Set attributes on an in-progress span. Never raises — a tracing bug
     must not break the actual LLM call."""
@@ -46,6 +47,8 @@ def set_call_attributes(
         span.set_attribute("gen_ai.request.model", model)
         span.set_attribute("gen_ai.usage.input_tokens", input_tokens)
         span.set_attribute("gen_ai.usage.output_tokens", output_tokens)
+        # The reasoning share of output_tokens (already included in it).
+        span.set_attribute("llm_gateway.usage.reasoning_tokens", reasoning_tokens)
         # Subsets of input_tokens (see providers.base.Usage). Counts only,
         # never prompt text.
         span.set_attribute("gen_ai.usage.cache_read.input_tokens", cache_read_input_tokens)
@@ -75,6 +78,7 @@ def set_chat_attributes(
     error_code: str | None = None,
     cache_read_input_tokens: int = 0,
     cache_creation_input_tokens: int = 0,
+    reasoning_tokens: int = 0,
 ) -> None:
     """Same as set_call_attributes, for the tool-calling chat() path — which
     has no single "prompt" string to (optionally) trace, just a message list."""
@@ -83,6 +87,8 @@ def set_chat_attributes(
         span.set_attribute("gen_ai.request.model", model)
         span.set_attribute("gen_ai.usage.input_tokens", input_tokens)
         span.set_attribute("gen_ai.usage.output_tokens", output_tokens)
+        # The reasoning share of output_tokens (already included in it).
+        span.set_attribute("llm_gateway.usage.reasoning_tokens", reasoning_tokens)
         # Subsets of input_tokens (see providers.base.Usage). Counts only,
         # never prompt text.
         span.set_attribute("gen_ai.usage.cache_read.input_tokens", cache_read_input_tokens)

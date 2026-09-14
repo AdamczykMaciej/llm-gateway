@@ -14,6 +14,9 @@ failed provider call, so the rules below are the whole policy:
 | `INVALID_OUTPUT`  | no text, a refusal, or structured output that  | no    | ignored |
 |                   | fails to parse/validate; Groq's 400            |       |         |
 |                   | `json_validate_failed`                         |       |         |
+| `EMPTY_RESPONSE`  | `EmptyCompletionError`: no text (None, empty   | no    | counts  |
+|                   | or whitespace) and no tool calls, e.g. a       |       |         |
+|                   | reasoning model that spent its token budget    |       |         |
 | `UNKNOWN`         | anything else (e.g. a response-parsing bug)    | no    | counts  |
 
 Every kind fails over to the next provider in the chain. See the README's
@@ -26,6 +29,13 @@ that schema and prompt: counting it would let one caller's hard schema take
 a healthy provider out of rotation for everyone. It is not retried on the
 same provider either. The next provider is a better bet than re-rolling the
 same model, and a retry would double the cost of a call that already failed.
+
+`EMPTY_RESPONSE` is also not retried, but it *does* count toward the breaker.
+An empty reply is not about one caller's schema: it is what a provider/model
+configuration produces for everyone, typically a reasoning model that spends
+its whole `max_tokens` budget on reasoning (`finish_reason="length"`). The same
+budget gives the same result on a retry, and taking the provider out of
+rotation saves every later caller the latency and the billed reasoning tokens.
 """
 
 from dataclasses import dataclass
@@ -53,6 +63,34 @@ class InvalidOutputError(Exception):
     which can echo prompt content, including personal data."""
 
 
+class EmptyCompletionError(Exception):
+    """A provider answered with no usable text (None, empty or whitespace
+    content) and no tool calls.
+
+    The usual cause is a reasoning model whose reasoning used up the whole
+    completion budget before any answer text, which the provider reports as
+    `finish_reason="length"` with the tokens counted as reasoning. The message
+    carries provider, model, finish reason and reasoning tokens, never content.
+    """
+
+    def __init__(
+        self,
+        *,
+        provider: str,
+        model: str,
+        finish_reason: str | None,
+        reasoning_tokens: int | None,
+    ) -> None:
+        self.provider = provider
+        self.model = model
+        self.finish_reason = finish_reason
+        self.reasoning_tokens = reasoning_tokens
+        super().__init__(
+            f"{provider} returned empty content for model {model} "
+            f"(finish_reason={finish_reason}, reasoning_tokens={reasoning_tokens})."
+        )
+
+
 class ErrorKind(StrEnum):
     TRANSIENT = "transient"
     TIMEOUT = "timeout"
@@ -60,6 +98,7 @@ class ErrorKind(StrEnum):
     AUTH = "auth"
     INVALID_REQUEST = "invalid_request"
     INVALID_OUTPUT = "invalid_output"
+    EMPTY_RESPONSE = "empty_response"
     UNKNOWN = "unknown"
 
 
@@ -78,6 +117,7 @@ POLICIES: dict[ErrorKind, ErrorPolicy] = {
     ErrorKind.AUTH: ErrorPolicy(retry=False, trips_breaker=True),
     ErrorKind.INVALID_REQUEST: ErrorPolicy(retry=False, trips_breaker=False),
     ErrorKind.INVALID_OUTPUT: ErrorPolicy(retry=False, trips_breaker=False),
+    ErrorKind.EMPTY_RESPONSE: ErrorPolicy(retry=False, trips_breaker=True),
     ErrorKind.UNKNOWN: ErrorPolicy(retry=False, trips_breaker=True),
 }
 
@@ -141,6 +181,8 @@ def _body_error_code(body: object) -> object:
 def classify(exc: BaseException) -> ErrorKind:
     if isinstance(exc, InvalidOutputError):
         return ErrorKind.INVALID_OUTPUT
+    if isinstance(exc, EmptyCompletionError):
+        return ErrorKind.EMPTY_RESPONSE
     if isinstance(exc, _TIMEOUT_ERRORS):
         return ErrorKind.TIMEOUT
     if isinstance(exc, _CONNECTION_ERRORS):

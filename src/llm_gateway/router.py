@@ -4,6 +4,7 @@ per-provider circuit breaker and OTel tracing.
 This is the engine — `llm_gateway.service` is a thin HTTP wrapper around it.
 """
 
+import logging
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -28,6 +29,8 @@ __all__ = [
     "complete_with_usage",
     "record_provider_failure",
 ]
+
+logger = logging.getLogger("llm_gateway")
 
 
 def record_provider_failure(
@@ -223,6 +226,16 @@ async def complete_with_usage(
                 prompt=prompt,
                 cache_read_input_tokens=usage.cache_read_input_tokens,
                 cache_creation_input_tokens=usage.cache_creation_input_tokens,
+                reasoning_tokens=usage.reasoning_tokens,
+            )
+            logger.debug(
+                "llm_gateway served: provider=%s model=%s input_tokens=%s output_tokens=%s "
+                "reasoning_tokens=%s",
+                provider,
+                result.model,
+                usage.input_tokens,
+                usage.output_tokens,
+                usage.reasoning_tokens,
             )
             return Completion(
                 text=result.text,

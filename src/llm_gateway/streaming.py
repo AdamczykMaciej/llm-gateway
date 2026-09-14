@@ -25,6 +25,7 @@ stream that has already started, which then ends with LLMDeadlineExceeded.
 
 import asyncio
 import dataclasses
+import logging
 import time
 
 from opentelemetry.trace import StatusCode
@@ -37,6 +38,8 @@ from .providers.base import StreamDelta
 from .retry import Deadline, call_with_retry
 from .router import record_provider_failure
 from .tracing import get_tracer, set_chat_attributes
+
+logger = logging.getLogger("llm_gateway")
 
 
 async def stream_chat(
@@ -124,7 +127,7 @@ async def stream_chat(
             if first_delta is None:
                 return
             input_tokens = output_tokens = 0
-            cache_read_input_tokens = cache_creation_input_tokens = 0
+            cache_read_input_tokens = cache_creation_input_tokens = reasoning_tokens = 0
             finish_reason = "stop"
             tool_call_count = 0
             delta: StreamDelta | None = first_delta
@@ -138,6 +141,7 @@ async def stream_chat(
                         cache_creation_input_tokens = (
                             delta.usage_details.cache_creation_input_tokens
                         )
+                        reasoning_tokens = delta.usage_details.reasoning_tokens
                     # Attribute the usage to the provider that actually served.
                     delta = dataclasses.replace(delta, provider=provider)
                 if delta.finish_reason:
@@ -169,6 +173,16 @@ async def stream_chat(
                 finish_reason=finish_reason,
                 cache_read_input_tokens=cache_read_input_tokens,
                 cache_creation_input_tokens=cache_creation_input_tokens,
+                reasoning_tokens=reasoning_tokens,
+            )
+            logger.debug(
+                "llm_gateway served stream: provider=%s model=%s input_tokens=%s "
+                "output_tokens=%s reasoning_tokens=%s",
+                provider,
+                resolved_model,
+                input_tokens,
+                output_tokens,
+                reasoning_tokens,
             )
             return
 

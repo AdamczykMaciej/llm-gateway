@@ -1,4 +1,5 @@
 from collections.abc import AsyncIterator
+from contextlib import aclosing
 
 from openai import AsyncOpenAI, DefaultAsyncHttpx2Client
 
@@ -8,6 +9,7 @@ from .base import (
     ChatResult,
     ProviderResult,
     StreamDelta,
+    guard_empty_stream,
     openai_sampling_kwargs,
     parse_openai_style_chunk,
     parse_openai_style_response,
@@ -45,6 +47,27 @@ def _client(config: GatewayConfig) -> AsyncOpenAI:
 STRICT_JSON_SCHEMA_MODELS = ("openai/gpt-oss-20b", "openai/gpt-oss-120b")
 
 
+# Groq reasoning models that accept `reasoning_effort="low"`, matched by id
+# prefix. Groq's reasoning docs (https://console.groq.com/docs/reasoning,
+# checked 2026-09-14) list GPT-OSS 20B/120B as accepting "low", "medium" and
+# "high" (default medium), and Qwen 3.8 27B as accepting "none", "default",
+# "low", "medium" and "high". Qwen 3.6 27B only takes "none"/"default" and
+# MiniMax M2.7 documents no effort values, so neither is listed, and
+# non-reasoning models never get the parameter.
+#
+# Why "low": reasoning tokens are generated before the answer and billed as
+# output, and they count against the completion budget, so at the default
+# medium effort a small `max_tokens` can be spent entirely on reasoning,
+# leaving empty content (finish_reason="length"). Low effort keeps structured
+# extraction and short replies cheap, fast and inside their budgets.
+LOW_REASONING_EFFORT_MODELS = ("openai/gpt-oss-", "gpt-oss-", "qwen/qwen3.8-27b")
+
+
+def reasoning_kwargs(model: str) -> dict:
+    """`{"reasoning_effort": "low"}` for a Groq reasoning model, else `{}`."""
+    return {"reasoning_effort": "low"} if model.startswith(LOW_REASONING_EFFORT_MODELS) else {}
+
+
 def _structured_request(model: str, system: str, output_schema: OutputSchema) -> tuple[str, dict]:
     """(system prompt, extra create() kwargs) for a structured-output call."""
     if model.startswith(STRICT_JSON_SCHEMA_MODELS):
@@ -75,9 +98,10 @@ async def call(
     # `cache_system` needs nothing here: where Groq caches prompts it does so
     # automatically, and reports hits as usage.prompt_tokens_details.cached_tokens.
     model = model or default_model(config)
-    kwargs: dict = {}
+    kwargs: dict = reasoning_kwargs(model)
     if output_schema is not None:
-        system, kwargs = _structured_request(model, system, output_schema)
+        system, structured = _structured_request(model, system, output_schema)
+        kwargs.update(structured)
     resp = await _client(config).chat.completions.create(
         model=model,
         max_tokens=max_tokens,
@@ -87,7 +111,7 @@ async def call(
         ],
         **kwargs,
     )
-    return provider_result_from_openai_style(resp, model)
+    return provider_result_from_openai_style(resp, model, provider="groq")
 
 
 async def chat(
@@ -102,7 +126,7 @@ async def chat(
     response_format: dict | None = None,
 ) -> ChatResult:
     model = model or default_model(config)
-    kwargs: dict = openai_sampling_kwargs(sampling)
+    kwargs: dict = {**openai_sampling_kwargs(sampling), **reasoning_kwargs(model)}
     if tools:
         kwargs["tools"] = tools
         if tool_choice is not None:
@@ -112,10 +136,10 @@ async def chat(
     resp = await _client(config).chat.completions.create(
         model=model, max_tokens=max_tokens, messages=messages, **kwargs
     )
-    return parse_openai_style_response(resp, model)
+    return parse_openai_style_response(resp, model, provider="groq")
 
 
-async def stream_chat(
+async def _stream_chat(
     config: GatewayConfig,
     messages: list[dict],
     tools: list[dict] | None,
@@ -127,7 +151,7 @@ async def stream_chat(
     response_format: dict | None = None,
 ) -> AsyncIterator[StreamDelta]:
     model = model or default_model(config)
-    kwargs: dict = openai_sampling_kwargs(sampling)
+    kwargs: dict = {**openai_sampling_kwargs(sampling), **reasoning_kwargs(model)}
     if tools:
         kwargs["tools"] = tools
         if tool_choice is not None:
@@ -145,3 +169,32 @@ async def stream_chat(
     )
     async for chunk in stream:
         yield parse_openai_style_chunk(chunk, model)
+
+
+async def stream_chat(
+    config: GatewayConfig,
+    messages: list[dict],
+    tools: list[dict] | None,
+    max_tokens: int,
+    *,
+    model: str | None = None,
+    tool_choice: object = None,
+    sampling: dict | None = None,
+    response_format: dict | None = None,
+) -> AsyncIterator[StreamDelta]:
+    """`_stream_chat()` behind `guard_empty_stream()`: a stream with no text
+    and no tool calls raises `EmptyCompletionError` before its first chunk."""
+    deltas = _stream_chat(
+        config,
+        messages,
+        tools,
+        max_tokens,
+        model=model,
+        tool_choice=tool_choice,
+        sampling=sampling,
+        response_format=response_format,
+    )
+    guarded = guard_empty_stream(deltas, provider="groq", model=model or default_model(config))
+    async with aclosing(guarded):
+        async for delta in guarded:
+            yield delta
