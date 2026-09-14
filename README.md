@@ -115,20 +115,83 @@ Error responses are OpenAI-shaped (`{"error": {"message", "type", "code"}}`),
 not FastAPI's default `{"detail": "..."}` — so the openai-python SDK (and
 therefore LangChain) can parse them the way it expects to.
 
-### Retries
+### Retries, failover and timeouts
 
-Before falling over to the next provider, a failed call is retried against
-the *same* provider up to `RETRY_ATTEMPTS` times total (default `2` — one
-retry), with a short doubling delay (`RETRY_BASE_DELAY_SECONDS`, default
-`0.2`s) between attempts. This absorbs a dropped connection or a momentary
-5xx without paying for a full failover — and its cold-start latency on the
-next provider — for something that would have succeeded on the very next
-try. Deliberately minimal: every exception is treated as retryable, no
-jitter. The circuit breaker only ever sees one failure per request (after
-all retries for that provider are exhausted), not one per attempt, so this
-doesn't change how quickly a genuinely-down provider trips its breaker.
-Set `RETRY_ATTEMPTS=1` to disable retries entirely. Not applied to
-streaming's pre-flight pull — see `streaming.py`'s module docstring for why.
+Every provider failure is classified once, in `llm_gateway/errors.py`, from
+the anthropic/openai SDK exception hierarchies (Groq goes through the openai
+SDK). The classification decides three things: whether the same provider is
+retried, whether the error counts toward that provider's circuit breaker,
+and — always — failing over to the next provider in `PROVIDER_ORDER`.
+
+| Kind | Errors | Retry same provider | Counts for breaker | Fails over |
+|---|---|---|---|---|
+| Transient | connection errors, 408, 409, 5xx, Anthropic 529 `overloaded` | yes | yes | yes |
+| Timeout | SDK `APITimeoutError`, gateway per-attempt timeout | no | yes | yes |
+| Rate limited | 429 | no | yes | yes |
+| Auth | 401, 403 | no | yes | yes |
+| Invalid request | 400, 404, 413, 422, any other 4xx | no | **no** | yes |
+| Unknown | anything else (e.g. a response-parsing bug) | no | yes | yes |
+
+Errors that arrive *inside* an already-open SSE stream carry no useful HTTP
+status; they are classified by their `error.type` (`overloaded_error`,
+`invalid_request_error`, ...).
+
+Why these choices:
+
+- **Only transient errors are retried** (`RETRY_ATTEMPTS`, default `2` =
+  one retry, after `RETRY_BASE_DELAY_SECONDS`, default `0.2`s, doubling).
+  An auth failure or a malformed request fails identically on the next try.
+- **Timeouts and 429s fail over immediately.** Retrying a hung provider
+  spends a whole second timeout the next provider could use; retrying a
+  throttled provider 0.2 s later almost always gets another 429. (The
+  gateway has no provider-side rate-limit handling beyond this — the
+  `RATE_LIMIT_PER_MINUTE` limiter only applies to inbound callers.)
+- **Auth errors fail over and count for the breaker**, so one provider's
+  revoked key doesn't take down the chain, and a persistently broken key is
+  skipped for `BREAKER_COOLDOWN_SECONDS` instead of costing a call every time.
+- **Invalid-request errors still fail over, but never trip the breaker.**
+  The gateway translates each request per provider (sampling params, image
+  blocks, tools, structured output) and providers differ in context window,
+  model names and content policy, so "rejected here" doesn't reliably mean
+  "rejected everywhere". The extra call is cheap: 4xx responses are fast and
+  never retried. It must not count for the breaker, though — a caller's bad
+  request says nothing about the provider's health, and counting it would
+  let one caller take a healthy provider out of rotation for everyone.
+- **The SDKs' own retries are off** (`SDK_MAX_RETRIES=0`). The gateway owns
+  retries now; SDK retries (default 2) multiplied every gateway attempt — up
+  to 6 HTTP requests per provider — retried 429s blindly, slept on
+  `retry-after` instead of failing over, and were invisible to tracing and
+  the breaker.
+
+Streaming uses the same rules for its pre-flight (everything before the
+first chunk reaches the caller, including a retry); after that, a failure
+ends the stream — see [Streaming](#streaming).
+
+**Time bounds** (`0` disables any of them):
+
+| Setting | Default | Bounds |
+|---|---|---|
+| `REQUEST_TIMEOUT_SECONDS` | `45` | One non-streaming attempt on one provider. Passed to the SDK client (5 s connect) and enforced by the gateway around the whole attempt. |
+| `STREAM_IDLE_TIMEOUT_SECONDS` | `30` | Streaming: the wait for the response to start and every gap between chunks (SDK read timeout). Not a cap on a stream that keeps flowing. |
+| `CALL_DEADLINE_SECONDS` | `90` | One whole `complete()`/`chat()`/`stream_chat()` call — every attempt, retry, backoff and failover, including a stream that has already started. |
+
+When the deadline runs out the call raises `LLMDeadlineExceeded`, a subclass
+of `LLMError`, so existing `except LLMError` handling (and the HTTP service's
+503 / SSE error event) needs no change. A timeout that fired only because
+the deadline ran out isn't counted against that provider's breaker.
+
+The defaults are sized for single completions of up to ~2000 output tokens,
+which usually finish in a few seconds and occasionally take ~30 s: 45 s
+gives that 50% headroom, and 90 s fits one hung provider plus a full attempt
+on the next. Raise both for long generations (large `max_tokens` on a slow
+model, or long streams).
+
+Worst case for one call with the default three-provider chain:
+
+| | Before (0.2.0) | After (0.3.0) |
+|---|---|---|
+| Non-streaming | 2 gateway × 3 SDK attempts × 600 s timeout per provider, plus backoff: ~1 h per provider, ~3 h for the chain — and no bound at all for a provider that trickles bytes | 90 s |
+| Streaming | 3 SDK attempts × 600 s to open, per provider (~90 min for the chain); no bound once the stream started | 90 s, start to last chunk |
 
 ## Environment variables
 
@@ -143,8 +206,12 @@ streaming's pre-flight pull — see `streaming.py`'s module docstring for why.
 | `PROVIDER_ORDER` | `anthropic,groq,openai` | Comma-separated, tried in order |
 | `BREAKER_FAILURE_THRESHOLD` | `3` | Consecutive failures before a provider is skipped |
 | `BREAKER_COOLDOWN_SECONDS` | `60` | How long a tripped provider is skipped |
-| `RETRY_ATTEMPTS` | `2` | Total attempts on one provider before failing over. `1` disables retries. |
+| `RETRY_ATTEMPTS` | `2` | Total attempts on one provider for transient errors before failing over. `1` disables retries. |
 | `RETRY_BASE_DELAY_SECONDS` | `0.2` | Delay before a retry; doubles each attempt. |
+| `REQUEST_TIMEOUT_SECONDS` | `45` | Per-attempt timeout for non-streaming calls. `0` falls back to the SDK default (600 s). |
+| `STREAM_IDLE_TIMEOUT_SECONDS` | `30` | Streaming: max wait for the stream to start and between chunks. `0` falls back to the SDK default. |
+| `SDK_MAX_RETRIES` | `0` | The provider SDKs' own retry count. The gateway owns retries; leave at `0`. |
+| `CALL_DEADLINE_SECONDS` | `90` | Wall-clock budget for one call across all retries and failovers. `0` disables it. |
 | `TRACE_INCLUDE_PROMPTS` | `false` | Include (PII-masked) prompt text in traces |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | — | Any OTLP collector (Langfuse, Grafana Cloud, ...) |
 | `OTEL_EXPORTER_OTLP_HEADERS` | — | Comma-separated `key=value` pairs |
