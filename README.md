@@ -380,6 +380,215 @@ only calls the endpoint it's given.
 [az-reasoning]: https://learn.microsoft.com/en-us/azure/foundry/openai/how-to/reasoning
 [az-cf]: https://learn.microsoft.com/en-us/azure/foundry-classic/foundry-models/concepts/content-filter
 
+### Provider policy and cost controls (0.5.0)
+
+The gateway can restrict *which* providers may process a call, based on
+where and how they process prompts, what the request needs, and what it may
+cost. The controls are modelled on OpenRouter's provider routing (`zdr`,
+`data_collection`, `only`/`ignore`, `require_parameters`, `max_price`,
+`sort`) and run in-process. They **fail closed**: when no provider
+qualifies, the call raises before any network request, and failover (streams
+included) never falls back to an excluded provider.
+
+> **Provider metadata is operator-asserted.** The library does not know or
+> verify any vendor's processing region, retention, training use or
+> contracts. Every fact comes from your configuration and should come from
+> your signed agreements (DPA, zero-data-retention terms, the region of the
+> deployment you actually use), not from a vendor's marketing page. A
+> provider without metadata is `region=unknown`, `retention=unknown`,
+> `trains_on_data=true`, `dpa=false`, and fails every requirement below.
+
+**1. Assert what your contracts say**, per provider id (`anthropic`, `groq`,
+`openai`, `azure`), as JSON in `PROVIDER_METADATA`, or as
+`provider_metadata={...}` (dicts or `ProviderMetadata`) in code:
+
+| Field | Values | Default |
+|---|---|---|
+| `region` | a short lowercase code: `eu`, `us`, `global`, ... | `unknown` |
+| `retention` | `zero`, `abuse_monitoring_30d`, `unknown` | `unknown` |
+| `trains_on_data` | `true` / `false` | `true` |
+| `dpa` | `true` / `false` | `false` |
+| `notes` | free text, e.g. which agreement or deployment backs the entry | `""` |
+
+Unknown provider ids, unknown fields and invalid values fail at startup
+(`GatewayConfig()` raises a `ValidationError`).
+
+**2. Set the policy.** The global policy comes from `POLICY_*` settings.
+Every call can pass `policy=ProviderPolicy(...)` to `complete()`,
+`complete_with_usage()`, `chat()` and `stream_chat()`:
+
+| Requirement | A provider qualifies when |
+|---|---|
+| `residency="eu"` | its asserted `region` is exactly `eu` (`global` does not match) |
+| `require_zero_retention` | `retention` is `zero` |
+| `forbid_training` | `trains_on_data` is `false` |
+| `require_dpa` | `dpa` is `true` |
+| `only` / `ignore` | its id is in `only` (when set) and not in `ignore` |
+| `require_parameters` | its model is known to support every feature the request uses (below) |
+| `max_cost_usd` | its estimated worst-case cost for the call is within the cap (below) |
+
+**A per-call policy can only narrow the global one.** Flags are OR-ed, `only`
+lists intersect (disjoint lists allow nothing), `ignore` lists union, the
+lower cost cap wins, and both budget checks must allow. A per-call residency
+that differs from the global one raises `PolicyViolationError`. `sort` only
+orders providers that already qualify, so a per-call `sort` wins. The policy
+also applies to `force_provider` (`model="<provider>/<model>"` over HTTP).
+
+#### EU-only example
+
+Only an Azure deployment in an EU Data Zone (here `mistral-medium-3-5`) may
+see prompts. Assert only what your Azure agreement says; the retention value
+below is a placeholder to replace with yours:
+
+```bash
+PROVIDER_ORDER=azure,anthropic,groq,openai
+AZURE_ENDPOINT=https://my-resource.services.ai.azure.com
+AZURE_MODEL=mistral-medium-3-5  # an EU Data Zone Standard deployment
+AZURE_REASONING_EFFORT=""        # not a reasoning model
+POLICY_RESIDENCY=eu
+POLICY_REQUIRE_DPA=true
+POLICY_FORBID_TRAINING=true
+PROVIDER_METADATA='{"azure": {"region": "eu", "retention": "abuse_monitoring_30d",
+  "trains_on_data": false, "dpa": true,
+  "notes": "mistral-medium-3-5, EU Data Zone deployment, Microsoft DPA"}}'
+```
+
+`anthropic`, `groq` and `openai` have no metadata, so they are excluded
+before any call. If the Azure deployment fails, the call raises `LLMError`
+instead of failing over to them. A `gpt-oss-120b` deployment on Azure is
+GlobalStandard only (no EU Data Zone), so its honest metadata is
+`"region": "global"`, which `POLICY_RESIDENCY=eu` excludes. The library
+doesn't assert that either: `azure` defaults to `region=unknown` like every
+other provider.
+
+The same in code, with a per-call cost cap on top:
+
+```python
+from llm_gateway import GatewayConfig, PolicyViolationError, ProviderPolicy, complete_with_usage
+
+config = GatewayConfig(
+    provider_metadata={
+        "azure": {
+            "region": "eu",
+            "retention": "abuse_monitoring_30d",
+            "trains_on_data": False,
+            "dpa": True,
+        }
+    },
+    policy_residency="eu",
+    policy_require_dpa=True,
+    policy_forbid_training=True,
+)
+try:
+    result = await complete_with_usage(
+        system="Score the answer.",
+        prompt=answer,
+        config=config,
+        policy=ProviderPolicy(max_cost_usd=0.02),
+    )
+except PolicyViolationError as e:
+    e.exclusions  # {"anthropic": ("region=unknown does not match residency=eu", ...), ...}
+```
+
+#### Capability filter
+
+Before calling, the gateway skips a provider whose model is **known** not to
+support a feature the request uses: `output_schema`, `tools` (unless
+`tool_choice="none"`), image input, or streaming. Before 0.5 such a request
+went out, got a 400, and failed over. With `require_parameters`, it also
+skips models whose support is **unknown**, and Groq models that only have
+JSON mode (anything but `openai/gpt-oss-20b` / `-120b`, from
+`providers/groq.py`) for `output_schema`. The table lives in
+`llm_gateway/capabilities.py`. It records only facts from the vendors' docs.
+Azure deployment names are the operator's choice, so an `azure` deployment
+is recognized only when named after gpt-oss (`gpt-oss-*`: strict structured
+output, tools, streaming, no images); any other deployment is unknown. When capabilities alone empty the
+chain, the call raises `UnsupportedCapabilityError`, a subclass of
+`PolicyViolationError`, naming the missing capability per provider.
+
+#### Cost: `cost_usd`, `max_cost_usd`, budget hook, `sort`
+
+- **`Completion.cost_usd`** is computed from the served call's actual usage:
+  uncached input, cache reads, cache writes and output, each at its own
+  rate. It is `None` when the model has no price, never a guessed `0`. It is
+  excluded from `Completion` equality.
+- **Prices** (USD per 1M tokens) live in `llm_gateway/pricing.py`, keyed
+  `"provider/model"`. The defaults cover only the default models, at list
+  price, checked 2026-09-14: `claude-haiku-4-5` ($1 input, $0.10 cache read,
+  $1.25 cache write, $5 output), `gpt-4o-mini` ($0.15 / $0.075 cached /
+  $0.60) and Groq's `openai/gpt-oss-120b` ($0.15 / $0.60). Azure deployments
+  have no default (the price depends on the deployment's model and SKU), and
+  neither does Groq's `llama-3.3-70b-versatile` ("Contact sales"): their
+  cost is `None` until you set one. Add or replace entries with
+  `MODEL_PRICES`, e.g.
+  `{"azure/mistral-medium-3-5": {"input_per_mtok": ..., "output_per_mtok": ...}}`.
+  Negotiated discounts, batch pricing and regional premiums are not applied.
+- **`max_cost_usd`** skips providers whose *estimated worst case* exceeds the
+  cap: prompt characters / 4 as input tokens, at the higher of the input and
+  cache-write rates, plus the full `max_tokens` at the output rate. Output is
+  the dominant term and is charged in full, so the estimate is conservative
+  for text. Chars/4 can undercount non-English text and code, and image
+  tokens aren't estimated. A provider whose model has no price is skipped,
+  because the cap can't be checked.
+- **`budget_check`** (`ProviderPolicy(budget_check=fn)`): the host app's
+  hook, sync or async, called right before each provider attempt as
+  `fn(provider, model, estimated_cost_usd)`. Return falsy to deny. A denial
+  skips that provider like any other exclusion and **never counts toward
+  its circuit breaker**. If every provider is denied, the call raises
+  `PolicyViolationError`. An exception from the hook propagates. The library
+  keeps no per-user state or spend ledger; the hook is where yours plugs in.
+- **`sort="price"`** tries the cheapest estimated provider first (unpriced
+  last, ties in `provider_order`). The default `order` keeps
+  `provider_order`. There is no latency sort.
+
+#### Errors and observability
+
+`PolicyViolationError` (a subclass of `LLMError`, `ErrorKind.POLICY_VIOLATION`:
+not retried, never counted by the breaker) names the effective policy and
+each excluded provider with its reasons, in the message and as
+`.exclusions`. It never includes prompt content. The same exclusions are
+logged at DEBUG on the `llm_gateway` logger and recorded on the call's span
+as `llm_gateway.policy`, `llm_gateway.policy.eligible_providers`,
+`llm_gateway.policy.excluded_providers` and
+`llm_gateway.policy.exclusion_reasons`. `complete_with_usage()` spans also
+record `llm_gateway.cost_usd`.
+
+#### Over HTTP
+
+`POST /v1/chat/completions` accepts the same fields (minus `budget_check`)
+as a `policy` object:
+
+```json
+{"messages": [...], "policy": {"residency": "eu", "require_dpa": true, "only": ["azure"]}}
+```
+
+It is merged with the server's `POLICY_*` settings under the same rules, so
+a client can narrow the server policy but never loosen it. Unknown fields
+are rejected with 422, an invalid provider id or residency with 400, and a
+request no provider may serve with 400 (`invalid_request_error`) before any
+provider is called. For `"stream": true` that last case is an SSE error
+event with code 400.
+
+#### Settings
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `PROVIDER_METADATA` | `{}` | JSON object: provider id → `region` / `retention` / `trains_on_data` / `dpa` / `notes`. Operator-asserted. |
+| `POLICY_RESIDENCY` | — | Only providers whose `region` equals this, e.g. `eu`. |
+| `POLICY_REQUIRE_ZERO_RETENTION` | `false` | Only `retention=zero`. |
+| `POLICY_FORBID_TRAINING` | `false` | Only `trains_on_data=false`. |
+| `POLICY_REQUIRE_DPA` | `false` | Only `dpa=true`. |
+| `POLICY_ONLY` | — | Comma-separated provider ids allowed. |
+| `POLICY_IGNORE` | — | Comma-separated provider ids never used. |
+| `POLICY_REQUIRE_PARAMETERS` | `false` | Also skip models with unknown support for a requested feature, and JSON-mode-only models for `output_schema`. |
+| `POLICY_MAX_COST_USD` | `0` | Cap on a call's estimated worst-case cost. `0` disables it. |
+| `POLICY_SORT` | `order` | `order` or `price`. |
+| `MODEL_PRICES` | `{}` | JSON object: `"provider/model"` → `input_per_mtok`, `output_per_mtok`, optional `cached_input_per_mtok`, `cache_write_per_mtok`. Merged over the defaults. |
+
+Not covered yet: `chat()` / `stream_chat()` results don't carry `cost_usd`;
+`GET /v1/models` availability ignores the policy; the HTTP service has no
+budget hook.
+
 ## 2. As an HTTP service (OpenAI-compatible)
 
 ```bash
