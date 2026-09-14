@@ -1,6 +1,10 @@
 """Configuration for the gateway, generic across any consuming application."""
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+AZURE_AUTH_MODES = ("entra", "api_key")
+AZURE_REASONING_EFFORTS = ("", "low", "medium", "high")
 
 
 class GatewayConfig(BaseSettings):
@@ -17,11 +21,34 @@ class GatewayConfig(BaseSettings):
     anthropic_api_key: str = ""
     groq_api_key: str = ""
     openai_api_key: str = ""
+    # Only used when azure_auth == "api_key".
+    azure_api_key: str = ""
 
     # ── Provider models ──────────────────────────────────────────────────
     claude_model: str = "claude-haiku-4-5-20251001"
-    groq_model: str = "llama-3.3-70b-versatile"
+    # Groq retired llama-3.3-70b-versatile on 2026-08-16. gpt-oss-120b is a
+    # reasoning model: providers/groq.py sends it reasoning_effort="low".
+    groq_model: str = "openai/gpt-oss-120b"
     openai_model: str = "gpt-4o-mini"
+    # The Azure deployment name (not the model id), sent as `model`.
+    azure_model: str = ""
+
+    # ── Azure AI Foundry / Azure OpenAI (v1 API) ─────────────────────────
+    # Resource endpoint: https://<resource>.openai.azure.com or
+    # https://<resource>.services.ai.azure.com, with or without a trailing
+    # /openai/v1; normalized to .../openai/v1/ (see providers/azure.py).
+    azure_endpoint: str = ""
+    # "entra": Microsoft Entra ID tokens from azure-identity (install the
+    # `azure` extra), scope https://ai.azure.com/.default. "api_key": the
+    # resource key in azure_api_key.
+    azure_auth: str = "entra"
+    # Entra only: a user-assigned managed identity's client id. Unset uses
+    # DefaultAzureCredential (managed identity, workload identity, Azure CLI, ...).
+    azure_managed_identity_client_id: str = ""
+    # Sent as `reasoning_effort` on every azure request: "low" suits a
+    # gpt-oss deployment. Set "" for a deployment of a non-reasoning model,
+    # which may reject the parameter.
+    azure_reasoning_effort: str = "low"
 
     # ── Routing ───────────────────────────────────────────────────────────
     # Comma-separated provider names, tried in order. A provider is skipped
@@ -92,6 +119,22 @@ class GatewayConfig(BaseSettings):
 
     # Set to false only behind a corporate SSL-inspection proxy.
     ssl_verify: bool = True
+
+    @field_validator("azure_auth")
+    @classmethod
+    def _check_azure_auth(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized not in AZURE_AUTH_MODES:
+            raise ValueError(f"azure_auth must be one of: {', '.join(AZURE_AUTH_MODES)}")
+        return normalized
+
+    @field_validator("azure_reasoning_effort")
+    @classmethod
+    def _check_azure_reasoning_effort(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized not in AZURE_REASONING_EFFORTS:
+            raise ValueError('azure_reasoning_effort must be "" (omit it), low, medium or high')
+        return normalized
 
     @property
     def provider_order_list(self) -> list[str]:

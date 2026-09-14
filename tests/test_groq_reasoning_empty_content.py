@@ -368,3 +368,23 @@ async def test_openai_provider_never_gets_reasoning_effort():
 def test_strict_json_schema_match_covers_groqs_gpt_oss_ids():
     assert GPT_OSS.startswith(groq.STRICT_JSON_SCHEMA_MODELS)
     assert "openai/gpt-oss-20b".startswith(groq.STRICT_JSON_SCHEMA_MODELS)
+
+
+# ─── 0.4.2: the default Groq model ────────────────────────────────────────
+
+
+async def test_groq_default_model_is_not_the_retired_llama_and_gets_low_effort(monkeypatch):
+    # Groq retired llama-3.3-70b-versatile on 2026-08-16.
+    monkeypatch.delenv("GROQ_MODEL", raising=False)
+    defaults = GatewayConfig(_env_file=None)
+    assert defaults.groq_model != "llama-3.3-70b-versatile"
+    assert defaults.groq_model == GPT_OSS
+
+    recorder = _Recorder(_reply({"role": "assistant", "content": "ok"}))
+    config = GatewayConfig(
+        _env_file=None, groq_api_key="k", provider_order="groq", retry_attempts=1
+    )
+    with _with(recorder):
+        await complete(system="s", prompt="p", config=config)
+    assert recorder.bodies[-1]["model"] == GPT_OSS
+    assert recorder.bodies[-1]["reasoning_effort"] == "low"

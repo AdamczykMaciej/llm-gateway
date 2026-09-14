@@ -115,6 +115,37 @@ def test_chat_completions_forces_provider_from_model_prefix():
     assert mock_chat.await_args.kwargs["model"] == "claude-sonnet-4-6"
 
 
+def test_chat_completions_forces_azure_from_model_prefix():
+    client = _client(gateway_api_keys="secret-key")
+    mock_chat = AsyncMock(return_value=_result("forced"))
+    with patch("llm_gateway.service.app.chat_engine", mock_chat):
+        resp = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "azure/gpt-oss-120b-prod",
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+            headers={"Authorization": "Bearer secret-key"},
+        )
+    assert resp.status_code == 200
+    assert mock_chat.await_args.kwargs["force_provider"] == "azure"
+    assert mock_chat.await_args.kwargs["model"] == "gpt-oss-120b-prod"
+
+
+def test_models_endpoint_lists_azure_deployment_availability():
+    client = _client(
+        gateway_api_keys="secret-key",
+        azure_endpoint="https://contoso.openai.azure.com",
+        azure_model="gpt-oss-120b-prod",
+        azure_auth="api_key",
+        azure_api_key="azure-key",
+    )
+    resp = client.get("/v1/models", headers={"Authorization": "Bearer secret-key"})
+    by_id = {m["id"]: m for m in resp.json()["data"]}
+    assert by_id["azure/gpt-oss-120b-prod"]["configured"] is True
+    assert by_id["azure/gpt-oss-120b-prod"]["available"] is True
+
+
 def test_models_endpoint_rejects_missing_auth():
     # Previously unauthenticated even with gateway_api_keys set — a real
     # info-disclosure gap (reveals which providers are configured and
@@ -146,8 +177,8 @@ def test_models_endpoint_reports_availability():
     resp = client.get("/v1/models", headers={"Authorization": "Bearer secret-key"})
     by_id = {m["id"]: m for m in resp.json()["data"] if m["id"] != "auto"}
     assert by_id["anthropic/claude-haiku-4-5-20251001"]["available"] is True
-    assert by_id["groq/llama-3.3-70b-versatile"]["configured"] is False
-    assert by_id["groq/llama-3.3-70b-versatile"]["available"] is False
+    assert by_id["groq/openai/gpt-oss-120b"]["configured"] is False
+    assert by_id["groq/openai/gpt-oss-120b"]["available"] is False
 
 
 def test_models_endpoint_reflects_open_circuit_breaker():

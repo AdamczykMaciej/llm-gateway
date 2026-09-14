@@ -255,7 +255,7 @@ async def complete_with_usage(
         )
         if not attempted_any:
             raise LLMError(
-                "No LLM provider available. Set ANTHROPIC_API_KEY, GROQ_API_KEY, or "
-                "OPENAI_API_KEY, matching provider_order."
+                "No LLM provider available. Set ANTHROPIC_API_KEY, GROQ_API_KEY, "
+                "OPENAI_API_KEY, or AZURE_ENDPOINT and AZURE_MODEL, matching provider_order."
             )
         raise LLMError(f"All configured providers failed. Last error: {last_error}") from last_error

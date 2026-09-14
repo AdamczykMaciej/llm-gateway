@@ -41,7 +41,7 @@ def _client(config: GatewayConfig) -> AsyncOpenAI:
 
 # Models Groq documents with strict `json_schema` support
 # (https://console.groq.com/docs/structured-outputs, checked 2026-09-14).
-# Every other model, including the default llama-3.3-70b-versatile, gets JSON
+# Every other model, e.g. llama-3.1-8b-instant, gets JSON
 # mode with the schema spelled out in the system prompt, and is validated
 # locally like every other provider.
 STRICT_JSON_SCHEMA_MODELS = ("openai/gpt-oss-20b", "openai/gpt-oss-120b")
