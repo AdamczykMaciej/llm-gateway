@@ -33,14 +33,24 @@ from .errors import (
     EmptyCompletionError,
     InvalidOutputError,
     LLMDeadlineExceeded,
+    PolicyViolationError,
     ProviderAuthError,
+    UnsupportedCapabilityError,
 )
 from .pii import mask_pii
+from .policy import BudgetCheck, ProviderMetadata, ProviderPolicy
+from .pricing import ModelPrice
 from .providers.base import ChatResult, StreamDelta, ToolCall, Usage
 from .router import Completion, LLMError, complete, complete_with_usage
 from .streaming import stream_chat
 
 __all__ = [
+    "ProviderPolicy",
+    "ProviderMetadata",
+    "ModelPrice",
+    "BudgetCheck",
+    "PolicyViolationError",
+    "UnsupportedCapabilityError",
     "complete",
     "complete_with_usage",
     "Completion",
