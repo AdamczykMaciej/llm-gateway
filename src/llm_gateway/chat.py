@@ -16,10 +16,11 @@ from opentelemetry.trace import StatusCode
 
 from . import breaker
 from .config import GatewayConfig
+from .errors import LLMError, deadline_exceeded
 from .providers import CHAT_CALLS, CONFIGURED, DEFAULT_MODEL
 from .providers.base import ChatResult
-from .retry import call_with_retry
-from .router import LLMError
+from .retry import Deadline, call_with_retry
+from .router import record_provider_failure
 from .tracing import get_tracer, set_chat_attributes
 
 
@@ -39,7 +40,9 @@ async def chat(
     `config.provider_order` — same fallback/circuit-breaker semantics as
     `router.complete()`. `messages` and `tools` are OpenAI-wire-shaped
     dicts; each provider translates internally (see providers/anthropic.py
-    for the one that actually needs translating).
+    for the one that actually needs translating). Raises `LLMError`, or its
+    subclass `LLMDeadlineExceeded` when `config.call_deadline_seconds` runs
+    out first.
     """
     config = config or GatewayConfig()
     order = [force_provider] if force_provider else config.provider_order_list
@@ -47,6 +50,7 @@ async def chat(
 
     tracer = get_tracer()
     start = time.monotonic() * 1000
+    deadline = Deadline(config.call_deadline_seconds)
     attempted_any = False
     last_error: Exception | None = None
 
@@ -61,6 +65,8 @@ async def chat(
                 continue
             if not force_provider and breaker.is_open(provider):
                 continue
+            if deadline.expired:
+                break
 
             attempted_any = True
             is_fallback = index > 0
@@ -80,13 +86,11 @@ async def chat(
                     ),
                     attempts=config.retry_attempts,
                     base_delay_seconds=config.retry_base_delay_seconds,
+                    attempt_timeout_seconds=config.request_timeout_seconds,
+                    deadline=deadline,
                 )
             except Exception as e:  # noqa: BLE001 — any provider failure (after its retries) tries the next
-                breaker.record_failure(
-                    provider,
-                    threshold=config.breaker_failure_threshold,
-                    cooldown_seconds=config.breaker_cooldown_seconds,
-                )
+                record_provider_failure(provider, e, config=config, deadline=deadline)
                 last_error = e
                 latency = time.monotonic() * 1000 - start
                 set_chat_attributes(
@@ -118,6 +122,9 @@ async def chat(
             )
             return result
 
+        if deadline.expired:
+            span.set_status(StatusCode.ERROR, "call deadline exceeded")
+            raise deadline_exceeded(config.call_deadline_seconds, last_error) from last_error
         span.set_status(
             StatusCode.ERROR,
             str(last_error) if last_error else "No provider available",

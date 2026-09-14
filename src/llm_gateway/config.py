@@ -31,12 +31,38 @@ class GatewayConfig(BaseSettings):
     breaker_cooldown_seconds: float = 60.0
 
     # Short retry-with-backoff on a single provider before falling over to
-    # the next one — see retry.py. retry_attempts=1 means no retry (the
-    # original behavior); the breaker only sees a failure once every
-    # attempt for that provider is exhausted, so this doesn't change how
-    # quickly a genuinely-down provider trips its breaker.
+    # the next one — see retry.py. Only transient errors (connection
+    # errors, 5xx, overloaded) are retried; see errors.py for the full
+    # classification. retry_attempts=1 means no retry; the breaker only sees
+    # a failure once every attempt for that provider is exhausted, so this
+    # doesn't change how quickly a genuinely-down provider trips its breaker.
     retry_attempts: int = 2
     retry_base_delay_seconds: float = 0.2
+
+    # ── Timeouts ──────────────────────────────────────────────────────────
+    # 0/negative disables the corresponding bound (the SDKs' own 600 s
+    # request timeout then applies). Defaults are sized for single
+    # completions of up to ~2000 output tokens, which usually finish in a
+    # few seconds and occasionally take ~30 s.
+    #
+    # Per attempt on one provider, non-streaming: passed to the SDK client
+    # and also enforced by the gateway around the whole attempt.
+    request_timeout_seconds: float = 45.0
+    # Streaming: the longest the SDK waits for the response to start or for
+    # the next bytes of an open stream (an idle bound, not a total one).
+    stream_idle_timeout_seconds: float = 30.0
+    # The SDKs' own retry loop. 0 because the gateway owns retries: SDK
+    # retries would multiply every gateway attempt (the previous default of
+    # 2 meant up to 6 HTTP requests per provider), retry 429s and 4xx-ish
+    # 408/409s blindly, sleep on retry-after headers instead of failing
+    # over, and stay invisible to tracing and the circuit breaker.
+    sdk_max_retries: int = 0
+    # Wall-clock budget for one complete()/chat()/stream_chat() call across
+    # every attempt, retry and failover — including a stream that has
+    # already started. On expiry the call raises LLMDeadlineExceeded (an
+    # LLMError). Default fits one hung provider (45 s) plus a full attempt
+    # on the next one.
+    call_deadline_seconds: float = 90.0
 
     # ── Tracing ───────────────────────────────────────────────────────────
     # Prompts are never traced unless this is explicitly enabled, and even
