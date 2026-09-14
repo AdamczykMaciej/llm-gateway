@@ -13,13 +13,18 @@ Providers own their own client caching internally.
 """
 
 import json
+import logging
 from dataclasses import dataclass, field
 from typing import Any
 
 # The same class as anthropic.Timeout — both SDKs re-export httpx2.Timeout.
 from openai import Timeout
+from opentelemetry import trace
 
 from ..config import GatewayConfig
+from ..errors import EmptyCompletionError, completion_detail
+
+logger = logging.getLogger(__name__)
 
 # Kept at the SDKs' own default: a TCP connect that takes longer than this
 # is not going to succeed, however long the request timeout is.
@@ -123,6 +128,49 @@ class StreamDelta:
     finish_reason: str | None = None
     model: str | None = None
     usage: tuple[int, int] | None = None  # (input_tokens, output_tokens) — final chunk only
+
+
+def _reasoning_tokens(usage: Any) -> int | None:
+    details = getattr(usage, "completion_tokens_details", None)
+    tokens = getattr(details, "reasoning_tokens", None)
+    return tokens if isinstance(tokens, int) else None
+
+
+def _trace_completion(finish_reason: str | None, reasoning_tokens: int | None) -> None:
+    """Put the provider's raw finish_reason and reasoning-token count on the
+    engine's current span. Never raises — tracing must not break the call."""
+    try:
+        span = trace.get_current_span()
+        if finish_reason:
+            span.set_attribute("llm_gateway.provider_finish_reason", finish_reason)
+        if reasoning_tokens is not None:
+            span.set_attribute("llm_gateway.reasoning_tokens", reasoning_tokens)
+    except Exception:  # noqa: BLE001 — tracing must never break the real request
+        pass
+
+
+def check_openai_style_completion(resp: Any, *, provider: str, model: str) -> None:
+    """Log and trace a non-streamed OpenAI-wire reply's finish_reason and
+    reasoning-token count, then raise EmptyCompletionError if it has no
+    usable output: no tool calls and text that is None, empty or whitespace.
+    A tool-call reply with null content is valid. Neither the prompt nor the
+    reply text is logged."""
+    choice = resp.choices[0] if resp.choices else None
+    message = choice.message if choice is not None else None
+    finish_reason = choice.finish_reason if choice is not None else None
+    reasoning_tokens = _reasoning_tokens(resp.usage)
+    empty = message is None or (not message.tool_calls and not (message.content or "").strip())
+    _trace_completion(finish_reason, reasoning_tokens)
+    detail = completion_detail(model, finish_reason, reasoning_tokens)
+    if empty:
+        logger.warning("Empty completion from %s (%s)", provider, detail)
+        raise EmptyCompletionError(
+            provider=provider,
+            model=model,
+            finish_reason=finish_reason,
+            reasoning_tokens=reasoning_tokens,
+        )
+    logger.debug("Completion from %s (%s)", provider, detail)
 
 
 def parse_openai_style_response(resp: Any, model: str) -> ChatResult:

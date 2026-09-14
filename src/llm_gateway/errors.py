@@ -11,6 +11,7 @@ failed provider call, so the rules below are the whole policy:
 | `RATE_LIMITED`    | 429                                            | no    | counts  |
 | `AUTH`            | 401, 403                                       | no    | counts  |
 | `INVALID_REQUEST` | 400, 404, 413, 422 and every other 4xx         | no    | ignored |
+| `EMPTY_COMPLETION`| 200 reply with blank text and no tool calls    | no    | counts  |
 | `UNKNOWN`         | anything else (e.g. a response-parsing bug)    | no    | counts  |
 
 Every kind fails over to the next provider in the chain. See the README's
@@ -35,12 +36,50 @@ class LLMDeadlineExceeded(LLMError):
     callers that only catch `LLMError` keep working unchanged."""
 
 
+class EmptyCompletionError(Exception):
+    """A provider answered successfully but with no usable output: the reply
+    text is None, empty or whitespace and there are no tool calls. Reasoning
+    models do this when their hidden reasoning uses up `max_tokens`
+    (`finish_reason="length"`). It is a provider failure, so the call fails
+    over instead of handing the caller an empty string.
+
+    The message carries metadata only (provider, model, finish_reason,
+    reasoning token count), never prompt or completion text."""
+
+    def __init__(
+        self,
+        *,
+        provider: str,
+        model: str,
+        finish_reason: str | None,
+        reasoning_tokens: int | None = None,
+    ) -> None:
+        self.provider = provider
+        self.model = model
+        self.finish_reason = finish_reason
+        self.reasoning_tokens = reasoning_tokens
+        super().__init__(
+            f"{provider} returned an empty completion "
+            f"({completion_detail(model, finish_reason, reasoning_tokens)})"
+        )
+
+
+def completion_detail(model: str, finish_reason: str | None, reasoning_tokens: int | None) -> str:
+    """`model=..., finish_reason=...[, reasoning_tokens=...]` — shared by
+    EmptyCompletionError and the provider completion logs."""
+    detail = f"model={model}, finish_reason={finish_reason}"
+    if reasoning_tokens is not None:
+        detail += f", reasoning_tokens={reasoning_tokens}"
+    return detail
+
+
 class ErrorKind(StrEnum):
     TRANSIENT = "transient"
     TIMEOUT = "timeout"
     RATE_LIMITED = "rate_limited"
     AUTH = "auth"
     INVALID_REQUEST = "invalid_request"
+    EMPTY_COMPLETION = "empty_completion"
     UNKNOWN = "unknown"
 
 
@@ -58,6 +97,10 @@ POLICIES: dict[ErrorKind, ErrorPolicy] = {
     ErrorKind.RATE_LIMITED: ErrorPolicy(retry=False, trips_breaker=True),
     ErrorKind.AUTH: ErrorPolicy(retry=False, trips_breaker=True),
     ErrorKind.INVALID_REQUEST: ErrorPolicy(retry=False, trips_breaker=False),
+    # Not retried: the same prompt and max_tokens on the same model almost
+    # always exhausts the reasoning budget again. Counted: a provider that
+    # keeps answering with nothing is not serving, whatever its HTTP status.
+    ErrorKind.EMPTY_COMPLETION: ErrorPolicy(retry=False, trips_breaker=True),
     ErrorKind.UNKNOWN: ErrorPolicy(retry=False, trips_breaker=True),
 }
 
@@ -106,6 +149,8 @@ def _classify_body(body: object) -> ErrorKind:
 
 
 def classify(exc: BaseException) -> ErrorKind:
+    if isinstance(exc, EmptyCompletionError):
+        return ErrorKind.EMPTY_COMPLETION
     if isinstance(exc, _TIMEOUT_ERRORS):
         return ErrorKind.TIMEOUT
     if isinstance(exc, _CONNECTION_ERRORS):
