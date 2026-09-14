@@ -318,6 +318,51 @@ async def test_only_eligible_provider_without_a_key_still_fails_closed():
     assert set(info.value.exclusions) == {"anthropic"}
 
 
+def _azure_config(deployment: str, metadata: dict, **overrides) -> GatewayConfig:
+    return _config(
+        provider_order="azure,anthropic,groq,openai",
+        azure_endpoint="https://my-resource.services.ai.azure.com",
+        azure_model=deployment,
+        azure_auth="api_key",
+        azure_api_key="k",
+        provider_metadata={"azure": metadata},
+        **overrides,
+    )
+
+
+async def test_eu_only_routes_to_an_asserted_eu_azure_deployment():
+    calls = {
+        "azure": AsyncMock(return_value=_result("from azure", "mistral-medium-3-5")),
+        **{p: _never() for p in PROVIDERS},
+    }
+    config = _azure_config(
+        "mistral-medium-3-5",
+        {"region": "eu", "retention": "abuse_monitoring_30d", "trains_on_data": False, "dpa": True},
+        azure_reasoning_effort="",
+        policy_residency="eu",
+        policy_require_dpa=True,
+        policy_forbid_training=True,
+    )
+    with patch("llm_gateway.router.CALLS", calls):
+        result = await complete_with_usage(system="s", prompt=SECRET, config=config)
+    assert result.provider == "azure"
+    assert result.cost_usd is None  # no default price for an azure deployment
+
+
+async def test_global_gpt_oss_azure_deployment_is_excluded_under_eu_residency():
+    calls = {"azure": _never(), **{p: _never() for p in PROVIDERS}}
+    config = _azure_config(
+        "gpt-oss-120b",
+        {"region": "global", "trains_on_data": False, "dpa": True},
+        policy_residency="eu",
+    )
+    with patch("llm_gateway.router.CALLS", calls):
+        with pytest.raises(PolicyViolationError) as info:
+            await complete(system="s", prompt="p", config=config)
+    assert info.value.exclusions["azure"] == ("region=global does not match residency=eu",)
+    assert set(info.value.exclusions) == {"azure", *PROVIDERS}
+
+
 async def test_per_call_policy_applies_without_a_global_policy():
     calls = {
         "anthropic": _never(),
@@ -528,6 +573,9 @@ def test_capability_table():
     assert capabilities_for("anthropic", "claude-haiku-4-5-20251001").structured_output == "strict"
     assert capabilities_for("openai", "gpt-4o-mini").structured_output == "strict"
     assert capabilities_for("azure", "mistral-medium-3-5") == ModelCapabilities()
+    assert capabilities_for("azure", "gpt-oss-120b") == ModelCapabilities(
+        structured_output="strict", tools=True, images=False, streaming=True
+    )
     assert missing_capabilities("azure", "dep", ["streaming"], require_parameters=False) == []
     assert missing_capabilities("azure", "dep", ["streaming"], require_parameters=True) == [
         "streaming support is unknown for model dep (require_parameters)"
@@ -561,6 +609,18 @@ def test_cost_usd_without_cache_rates_uses_the_input_rate():
 def test_cost_usd_is_none_without_a_price():
     assert cost_usd(None, Usage(input_tokens=10, output_tokens=10)) is None
     assert lookup_price("groq", "llama-3.3-70b-versatile") is None
+    assert lookup_price("azure", "gpt-oss-120b") is None
+
+
+def test_default_prices_cover_the_default_models():
+    defaults = GatewayConfig(_env_file=None)
+    assert lookup_price("anthropic", defaults.claude_model) == _HAIKU
+    assert lookup_price("openai", defaults.openai_model) == ModelPrice(
+        input_per_mtok=0.15, output_per_mtok=0.6, cached_input_per_mtok=0.075
+    )
+    assert lookup_price("groq", defaults.groq_model) == ModelPrice(
+        input_per_mtok=0.15, output_per_mtok=0.6
+    )
 
 
 def test_worst_case_estimate_is_chars_over_four_plus_max_tokens():
