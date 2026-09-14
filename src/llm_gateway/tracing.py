@@ -36,6 +36,8 @@ def set_call_attributes(
     system: str,
     prompt: str = "",
     error_code: str | None = None,
+    cache_read_input_tokens: int = 0,
+    cache_creation_input_tokens: int = 0,
 ) -> None:
     """Set attributes on an in-progress span. Never raises — a tracing bug
     must not break the actual LLM call."""
@@ -44,6 +46,10 @@ def set_call_attributes(
         span.set_attribute("gen_ai.request.model", model)
         span.set_attribute("gen_ai.usage.input_tokens", input_tokens)
         span.set_attribute("gen_ai.usage.output_tokens", output_tokens)
+        # Subsets of input_tokens (see providers.base.Usage). Counts only,
+        # never prompt text.
+        span.set_attribute("gen_ai.usage.cache_read.input_tokens", cache_read_input_tokens)
+        span.set_attribute("gen_ai.usage.cache_creation.input_tokens", cache_creation_input_tokens)
         span.set_attribute("llm_gateway.latency_ms", round(latency_ms, 1))
         span.set_attribute("llm_gateway.fallback", fallback)
         if error_code:
@@ -67,6 +73,8 @@ def set_chat_attributes(
     tool_call_count: int = 0,
     finish_reason: str = "",
     error_code: str | None = None,
+    cache_read_input_tokens: int = 0,
+    cache_creation_input_tokens: int = 0,
 ) -> None:
     """Same as set_call_attributes, for the tool-calling chat() path — which
     has no single "prompt" string to (optionally) trace, just a message list."""
@@ -75,6 +83,10 @@ def set_chat_attributes(
         span.set_attribute("gen_ai.request.model", model)
         span.set_attribute("gen_ai.usage.input_tokens", input_tokens)
         span.set_attribute("gen_ai.usage.output_tokens", output_tokens)
+        # Subsets of input_tokens (see providers.base.Usage). Counts only,
+        # never prompt text.
+        span.set_attribute("gen_ai.usage.cache_read.input_tokens", cache_read_input_tokens)
+        span.set_attribute("gen_ai.usage.cache_creation.input_tokens", cache_creation_input_tokens)
         span.set_attribute("llm_gateway.latency_ms", round(latency_ms, 1))
         span.set_attribute("llm_gateway.fallback", fallback)
         span.set_attribute("llm_gateway.tool_call_count", tool_call_count)

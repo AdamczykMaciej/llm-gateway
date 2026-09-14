@@ -18,7 +18,7 @@ naturally, or every `tool_choice` variant.
 import json
 from typing import Any
 
-from .base import ChatResult, ToolCall
+from .base import ChatResult, ToolCall, Usage, as_int
 
 
 def _translate_image_url(url: str) -> dict:
@@ -174,22 +174,59 @@ def to_anthropic_structured_output_tool(response_format: dict | None) -> dict | 
     }
 
 
-def from_anthropic_response(resp: Any, model: str) -> ChatResult:
-    text_parts: list[str] = []
-    tool_calls: list[ToolCall] = []
-    for block in resp.content:
-        if block.type == "text":
-            text_parts.append(block.text)
-        elif block.type == "tool_use":
-            tool_calls.append(ToolCall(id=block.id, name=block.name, arguments=block.input))
+def usage_from_anthropic(
+    input_tokens: object,
+    output_tokens: object,
+    cache_read_input_tokens: object = None,
+    cache_creation_input_tokens: object = None,
+) -> Usage:
+    """Normalized Usage from Anthropic's usage fields.
 
-    input_tokens = resp.usage.input_tokens if resp.usage else 0
-    output_tokens = resp.usage.output_tokens if resp.usage else 0
+    Anthropic's `input_tokens` excludes cached tokens ("tokens after the last
+    cache breakpoint"), so cache reads and writes are added back to make
+    `Usage.input_tokens` the total prompt size, as it is for OpenAI."""
+    cache_read = as_int(cache_read_input_tokens)
+    cache_creation = as_int(cache_creation_input_tokens)
+    return Usage(
+        input_tokens=as_int(input_tokens) + cache_read + cache_creation,
+        output_tokens=as_int(output_tokens),
+        cache_read_input_tokens=cache_read,
+        cache_creation_input_tokens=cache_creation,
+    )
+
+
+def usage_from_anthropic_response(usage: Any) -> Usage:
+    if usage is None:
+        return Usage()
+    return usage_from_anthropic(
+        getattr(usage, "input_tokens", None),
+        getattr(usage, "output_tokens", None),
+        getattr(usage, "cache_read_input_tokens", None),
+        getattr(usage, "cache_creation_input_tokens", None),
+    )
+
+
+def text_blocks(content: Any) -> list[str]:
+    """The text of every `text` block, in order. `thinking` and
+    `redacted_thinking` blocks (which come first when the model thinks) and
+    `tool_use` blocks carry no answer text and are skipped."""
+    return [block.text for block in content if block.type == "text"]
+
+
+def from_anthropic_response(resp: Any, model: str) -> ChatResult:
+    tool_calls = [
+        ToolCall(id=block.id, name=block.name, arguments=block.input)
+        for block in resp.content
+        if block.type == "tool_use"
+    ]
+    usage = usage_from_anthropic_response(resp.usage)
     return ChatResult(
-        content="\n".join(text_parts).strip() or None,
+        content="\n".join(text_blocks(resp.content)).strip() or None,
         model=model,
-        input_tokens=input_tokens,
-        output_tokens=output_tokens,
+        input_tokens=usage.input_tokens,
+        output_tokens=usage.output_tokens,
         tool_calls=tool_calls,
         finish_reason="tool_calls" if tool_calls else "stop",
+        cache_read_input_tokens=usage.cache_read_input_tokens,
+        cache_creation_input_tokens=usage.cache_creation_input_tokens,
     )

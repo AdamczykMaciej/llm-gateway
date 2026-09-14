@@ -41,6 +41,169 @@ is unset or its circuit breaker is open after repeated recent failures.
 `GatewayConfig()` with no args reads from environment variables / a `.env`
 file (see `.env.example`).
 
+### Token usage: `complete_with_usage()`
+
+`complete()` returns a string, and keeps doing exactly that. To also learn
+which provider served the call and what it cost, call
+`complete_with_usage()`. It takes the same arguments and returns a
+`Completion`:
+
+```python
+from llm_gateway import complete_with_usage
+
+result = await complete_with_usage(system="...", prompt="...", config=config)
+result.text         # the string complete() would have returned
+result.provider     # the provider that actually served, e.g. "groq" after a failover
+result.model        # that provider's model
+result.usage        # Usage(input_tokens, output_tokens,
+                    #       cache_read_input_tokens, cache_creation_input_tokens)
+result.stop_reason  # provider-native: "end_turn", "stop", "max_tokens", ...
+```
+
+It's a separate function rather than a `return_usage=True` flag because a
+flag would make the return type depend on a runtime value: every caller
+would get `str | Completion` and need a cast or `typing.overload`s. Two
+functions keep both signatures exact. `chat()` already works this way, and
+`complete()` is now just `(await complete_with_usage(...)).text`.
+
+`Usage` means the same thing for every provider:
+
+- `input_tokens` counts **all** prompt tokens, cached or not. Anthropic
+  reports uncached, cache-read and cache-write tokens as three separate
+  numbers, so the gateway sums them. OpenAI and Groq's `prompt_tokens`
+  already include cached tokens.
+- `cache_read_input_tokens` and `cache_creation_input_tokens` are the
+  subsets of `input_tokens` read from or written to a prompt cache. OpenAI
+  and Groq report cache reads as `prompt_tokens_details.cached_tokens` and
+  have no cache-write count. `usage.uncached_input_tokens` is the rest.
+
+For Anthropic, that gives the cost of a call as
+`uncached_input_tokens × input price + cache_creation_input_tokens × 1.25 ×
+input price + cache_read_input_tokens × 0.1 × input price + output_tokens ×
+output price` (5-minute cache writes; see Prompt caching below).
+
+**Streaming.** `stream_chat()`'s final chunk carries `usage` (the
+`(input, output)` tuple, unchanged), `usage_details` (the same `Usage`) and
+`provider`. Anthropic's usage comes from `message_start` and `message_delta`.
+OpenAI and Groq streams are always requested with
+`stream_options={"include_usage": True}`.
+
+**Tracing.** The `llm_gateway.complete` / `.chat` / `.stream_chat` spans
+record `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`,
+`gen_ai.usage.cache_read.input_tokens` and
+`gen_ai.usage.cache_creation.input_tokens`: counts only, never prompt text.
+
+### Structured output: `output_schema=`
+
+Pass a pydantic model class (or a JSON Schema dict) and get validated data
+back:
+
+```python
+from pydantic import BaseModel, Field
+
+class Verdict(BaseModel):
+    score: int = Field(ge=0, le=100)
+    summary: str
+
+result = await complete_with_usage(
+    system="Score the answer.", prompt=answer, config=config, output_schema=Verdict
+)
+result.parsed  # Verdict(score=..., summary=...)
+result.text    # the raw JSON
+```
+
+Each provider is asked through its native mechanism:
+
+| Provider  | Request                                                                                          |
+|-----------|--------------------------------------------------------------------------------------------------|
+| Anthropic | `output_config.format = {"type": "json_schema", "schema": ...}`: [structured outputs][ant-so], generally available, constrained decoding, supported on `claude-haiku-4-5` and newer. The JSON comes back as a text block. |
+| OpenAI    | `response_format = {"type": "json_schema", "json_schema": {"name", "strict": true, "schema"}}`  |
+| Groq      | the same strict `json_schema` on `openai/gpt-oss-20b` / `openai/gpt-oss-120b`, the models [Groq documents][groq-so] with strict support. Every other model, including the default `llama-3.3-70b-versatile`, gets JSON mode (`{"type": "json_object"}`) with the schema spelled out in the system prompt. |
+
+[ant-so]: https://platform.claude.com/docs/en/build-with-claude/structured-outputs
+[groq-so]: https://console.groq.com/docs/structured-outputs
+
+Anthropic's docs recommend native structured outputs over forcing a single
+tool call. Forced tool use is also rejected when manual extended thinking is
+on. So this path doesn't use the forced-tool emulation that `chat()`'s
+`response_format` still uses (that path is unchanged in 0.4).
+
+Strict modes accept only part of JSON Schema: every object needs
+`additionalProperties: false`, OpenAI also needs every property listed in
+`required`, and numeric/length/pattern constraints aren't supported. The
+gateway rewrites the schema it *sends* to fit those rules. Your pydantic
+model still enforces every constraint when the reply is validated, so a
+`le=100` violation is caught locally.
+
+**When the reply is unusable** (not JSON, fails validation, a refusal,
+Groq's `400 json_validate_failed`), that provider's attempt fails with
+`InvalidOutputError` and the call **fails over to the next provider**. It is
+classified `INVALID_OUTPUT`: not retried on the same provider, and **not
+counted by the circuit breaker**, because the provider answered and one
+caller's hard schema must not take it out of rotation for everyone. If
+every provider fails, you get `LLMError` as usual. Error messages name the
+failing fields but never include the model's output.
+
+A dict schema gets only a shallow check (top-level type and `required`
+keys), since the gateway has no JSON Schema validator dependency. Use a
+pydantic model for full validation.
+
+### Prompt caching: `cache_system=True`
+
+```python
+result = await complete_with_usage(
+    system=LONG_STATIC_INSTRUCTIONS, prompt=user_input, config=config, cache_system=True
+)
+result.usage.cache_creation_input_tokens  # > 0 on the first call
+result.usage.cache_read_input_tokens      # > 0 on later calls within the TTL
+```
+
+On Anthropic, `system` is sent as one text block with
+`cache_control: {"type": "ephemeral"}` (the default 5-minute TTL), **but only
+when it can actually be cached**. Minimum cacheable prompt lengths from
+[Anthropic's prompt-caching docs][ant-pc] (checked 2026-09-14):
+
+| Model                                                              | Minimum tokens |
+|--------------------------------------------------------------------|---------------:|
+| Claude Opus 5, Fable 5 / 5.1, Mythos 5 / 5.1                       | 512            |
+| Claude Opus 4.8, Sonnet 5, Sonnet 4.6, Sonnet 4.5, Opus 4.1, Opus 4, Sonnet 4 | 1,024 |
+| Claude Opus 4.7, Mythos Preview, Haiku 3.5                         | 2,048          |
+| **Claude Haiku 4.5** (the default `CLAUDE_MODEL`), Opus 4.6, Opus 4.5 | **4,096**   |
+
+[ant-pc]: https://platform.claude.com/docs/en/build-with-claude/prompt-caching
+
+The docs: *"Shorter prompts cannot be cached, even if marked with
+`cache_control`. Any requests to cache fewer than this number of tokens will
+be processed without caching, and no error is returned."* The gateway checks
+a local estimate (3 characters per token, deliberately generous) against the
+table and leaves the request unchanged below it. An overestimate only sends
+a marker the API ignores. Counting exactly with `messages.count_tokens`
+would add a separate API request, and its latency, to every call, which
+costs more than the check saves. Unknown models get the largest minimum
+(4,096).
+
+**When it saves money.** From the same docs, a 5-minute cache write costs
+**1.25×** the base input price (a 1-hour write costs 2×; the gateway uses
+5 minutes), and a cache read costs **0.1×**. For a cacheable prefix of *N*
+tokens:
+
+- one call with no reuse inside 5 minutes: 1.25*N* instead of *N*, so
+  **25% more** on that prefix;
+- two calls inside 5 minutes: 1.25*N* + 0.1*N* = 1.35*N* instead of 2*N*,
+  **32.5% less**;
+- *k* calls: 1.25*N* + 0.1(*k*−1)*N* instead of *kN*, approaching a 90%
+  saving on the prefix.
+
+So turn it on for a long, byte-identical system prompt that repeats within
+minutes (for example, several answers scored in one practice session). Leave
+it off for prompts that change per request or are rarely repeated. Anything
+that varies (user input, per-request data) belongs in `prompt`, not
+`system`.
+
+OpenAI and Groq cache long prompt prefixes automatically. `cache_system`
+changes nothing in their requests, and their hits show up as
+`usage.cache_read_input_tokens`.
+
 ## 2. As an HTTP service (OpenAI-compatible)
 
 ```bash
@@ -99,6 +262,10 @@ they support it natively. Anthropic has no equivalent feature, so it's
 emulated with a forced single tool call matching the schema, transparently
 unwrapped back into plain `content` — the caller never sees a tool call,
 just the same JSON-schema response shape as any other provider.
+
+In-process callers who want validated output with failover should use
+`complete_with_usage(output_schema=...)` instead (see "Structured output"
+under the library section), which uses Anthropic's native structured outputs.
 
 ### Sampling parameters
 

@@ -3,6 +3,7 @@ from collections.abc import AsyncIterator
 from openai import AsyncOpenAI, DefaultAsyncHttpx2Client
 
 from ..config import GatewayConfig
+from ..structured import OutputSchema
 from .base import (
     ChatResult,
     ProviderResult,
@@ -10,6 +11,7 @@ from .base import (
     openai_sampling_kwargs,
     parse_openai_style_chunk,
     parse_openai_style_response,
+    provider_result_from_openai_style,
     sdk_client_cache_key,
     sdk_client_options,
     stream_request_options,
@@ -48,8 +50,16 @@ async def call(
     prompt: str,
     max_tokens: int,
     model: str | None = None,
+    *,
+    output_schema: OutputSchema | None = None,
+    cache_system: bool = False,
 ) -> ProviderResult:
+    # `cache_system` needs nothing here: OpenAI caches long prompt prefixes
+    # automatically and reports hits as usage.prompt_tokens_details.cached_tokens.
     model = model or default_model(config)
+    kwargs: dict = {}
+    if output_schema is not None:
+        kwargs["response_format"] = output_schema.openai_response_format()
     resp = await _client(config).chat.completions.create(
         model=model,
         max_tokens=max_tokens,
@@ -57,15 +67,9 @@ async def call(
             {"role": "system", "content": system},
             {"role": "user", "content": prompt},
         ],
+        **kwargs,
     )
-    input_tokens = resp.usage.prompt_tokens if resp.usage else 0
-    output_tokens = resp.usage.completion_tokens if resp.usage else 0
-    return ProviderResult(
-        text=(resp.choices[0].message.content or "").strip(),
-        model=model,
-        input_tokens=input_tokens,
-        output_tokens=output_tokens,
-    )
+    return provider_result_from_openai_style(resp, model)
 
 
 async def chat(

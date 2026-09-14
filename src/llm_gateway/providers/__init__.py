@@ -1,5 +1,5 @@
 from . import anthropic, groq, openai
-from .base import ChatResult, ProviderResult, StreamDelta, ToolCall
+from .base import ChatResult, ProviderResult, StreamDelta, ToolCall, Usage
 
 CALLS = {
     "anthropic": anthropic.call,
@@ -36,6 +36,7 @@ __all__ = [
     "ChatResult",
     "StreamDelta",
     "ToolCall",
+    "Usage",
     "CALLS",
     "CHAT_CALLS",
     "STREAM_CALLS",
