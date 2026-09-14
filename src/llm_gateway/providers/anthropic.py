@@ -4,19 +4,26 @@ from collections.abc import AsyncIterator
 from anthropic import AsyncAnthropic, DefaultAsyncHttpxClient
 
 from ..config import GatewayConfig
+from ..errors import InvalidOutputError
+from ..structured import OutputSchema
+from ._anthropic_caching import system_param
 from ._anthropic_translate import (
     STRUCTURED_OUTPUT_TOOL_NAME,
     from_anthropic_response,
+    text_blocks,
     to_anthropic_messages,
     to_anthropic_sampling,
     to_anthropic_structured_output_tool,
     to_anthropic_tool_choice,
     to_anthropic_tools,
+    usage_from_anthropic,
+    usage_from_anthropic_response,
 )
 from .base import (
     ChatResult,
     ProviderResult,
     StreamDelta,
+    as_int,
     sdk_client_cache_key,
     sdk_client_options,
     stream_request_options,
@@ -100,21 +107,49 @@ async def call(
     prompt: str,
     max_tokens: int,
     model: str | None = None,
+    *,
+    output_schema: OutputSchema | None = None,
+    cache_system: bool = False,
 ) -> ProviderResult:
+    """Plain completion. The answer is every `text` block joined in order:
+    a model that thinks returns `thinking`/`redacted_thinking` blocks before
+    its text, so the first block is not necessarily the answer."""
     model = model or default_model(config)
+    kwargs: dict = {}
+    if output_schema is not None:
+        # Native structured outputs (constrained decoding), which Anthropic's
+        # docs recommend over forcing a tool call. Forced tool use is also
+        # rejected together with manual extended thinking. The JSON arrives
+        # as an ordinary text block.
+        kwargs["output_config"] = {
+            "format": {
+                "type": "json_schema",
+                "schema": output_schema.strict_schema(require_all_properties=False),
+            }
+        }
     resp = await _client(config).messages.create(
         model=model,
         max_tokens=max_tokens,
-        system=system,
+        system=system_param(system, model, cache_system),
         messages=[{"role": "user", "content": prompt}],
+        **kwargs,
     )
-    input_tokens = resp.usage.input_tokens if resp.usage else 0
-    output_tokens = resp.usage.output_tokens if resp.usage else 0
+    texts = text_blocks(resp.content)
+    if not texts:
+        raise InvalidOutputError(
+            f"Anthropic returned no text content (stop_reason={resp.stop_reason})."
+        )
+    if output_schema is not None and resp.stop_reason == "refusal":
+        raise InvalidOutputError("The model refused the request (stop_reason=refusal).")
+    usage = usage_from_anthropic_response(resp.usage)
     return ProviderResult(
-        text=resp.content[0].text.strip(),
+        text="".join(texts).strip(),
         model=model,
-        input_tokens=input_tokens,
-        output_tokens=output_tokens,
+        input_tokens=usage.input_tokens,
+        output_tokens=usage.output_tokens,
+        cache_read_input_tokens=usage.cache_read_input_tokens,
+        cache_creation_input_tokens=usage.cache_creation_input_tokens,
+        stop_reason=resp.stop_reason,
     )
 
 
@@ -183,8 +218,15 @@ async def stream_chat(
     )
     kwargs: dict = {**_sampling_kwargs(sampling), **tool_kwargs}
 
-    input_tokens = 0
-    output_tokens = 0
+    # Raw Anthropic usage fields. message_start carries the input side;
+    # message_delta carries cumulative counts, where any field it includes
+    # supersedes the earlier value.
+    raw_usage = {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 0,
+    }
     stop_reason = "end_turn"
     structured_tool_index: int | None = None
     structured_output_parts: list[str] = []
@@ -199,7 +241,7 @@ async def stream_chat(
     ) as stream:
         async for event in stream:
             if event.type == "message_start":
-                input_tokens = event.message.usage.input_tokens
+                _update_usage(raw_usage, event.message.usage)
 
             elif event.type == "content_block_start":
                 block = event.content_block
@@ -236,7 +278,7 @@ async def stream_chat(
                     )
 
             elif event.type == "message_delta":
-                output_tokens = event.usage.output_tokens
+                _update_usage(raw_usage, event.usage)
                 stop_reason = event.delta.stop_reason
 
     if structured_output_parts:
@@ -245,4 +287,17 @@ async def stream_chat(
     finish_reason = (
         "tool_calls" if (stop_reason == "tool_use" and not emulating_structured_output) else "stop"
     )
-    yield StreamDelta(finish_reason=finish_reason, model=model, usage=(input_tokens, output_tokens))
+    usage = usage_from_anthropic(**raw_usage)
+    yield StreamDelta(
+        finish_reason=finish_reason,
+        model=model,
+        usage=(usage.input_tokens, usage.output_tokens),
+        usage_details=usage,
+    )
+
+
+def _update_usage(raw_usage: dict[str, int], sdk_usage: object) -> None:
+    for name in raw_usage:
+        value = getattr(sdk_usage, name, None)
+        if as_int(value) or value == 0:
+            raw_usage[name] = as_int(value)

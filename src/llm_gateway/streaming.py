@@ -24,6 +24,7 @@ stream that has already started, which then ends with LLMDeadlineExceeded.
 """
 
 import asyncio
+import dataclasses
 import time
 
 from opentelemetry.trace import StatusCode
@@ -123,6 +124,7 @@ async def stream_chat(
             if first_delta is None:
                 return
             input_tokens = output_tokens = 0
+            cache_read_input_tokens = cache_creation_input_tokens = 0
             finish_reason = "stop"
             tool_call_count = 0
             delta: StreamDelta | None = first_delta
@@ -131,6 +133,13 @@ async def stream_chat(
                     tool_call_count += sum(1 for d in delta.tool_call_deltas if "id" in d)
                 if delta.usage:
                     input_tokens, output_tokens = delta.usage
+                    if delta.usage_details:
+                        cache_read_input_tokens = delta.usage_details.cache_read_input_tokens
+                        cache_creation_input_tokens = (
+                            delta.usage_details.cache_creation_input_tokens
+                        )
+                    # Attribute the usage to the provider that actually served.
+                    delta = dataclasses.replace(delta, provider=provider)
                 if delta.finish_reason:
                     finish_reason = delta.finish_reason
                 yield delta
@@ -158,6 +167,8 @@ async def stream_chat(
                 fallback=is_fallback,
                 tool_call_count=tool_call_count,
                 finish_reason=finish_reason,
+                cache_read_input_tokens=cache_read_input_tokens,
+                cache_creation_input_tokens=cache_creation_input_tokens,
             )
             return
 

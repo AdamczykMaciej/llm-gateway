@@ -765,3 +765,68 @@ async def test_call_deadline_ends_a_stream_that_stalls_after_starting():
                 received.append(delta.content)
     assert time.monotonic() - started < 2.0
     assert received == ["Hel"]
+
+
+# ─── Multi-block Anthropic responses ───────────────────────────────────────
+#
+# A model that thinks (e.g. extended thinking, or Sonnet 5 where thinking is
+# on by default) returns `thinking` / `redacted_thinking` blocks *before* its
+# text. These tests use only the 0.3 public API so they also run against it.
+
+_THINKING_FIRST_CONTENT = [
+    {"type": "thinking", "thinking": "The user wants a greeting.", "signature": "sig-1"},
+    {"type": "redacted_thinking", "data": "opaque-encrypted-reasoning"},
+    {"type": "text", "text": "Hello, "},
+    {"type": "text", "text": "world."},
+]
+
+
+def _anthropic_content_reply(content: list[dict], stop_reason: str = "end_turn"):
+    body = {**_ANTHROPIC_MESSAGE, "content": content, "stop_reason": stop_reason}
+    return lambda req: httpx2.Response(200, request=req, json=body)
+
+
+async def test_complete_returns_text_blocks_after_thinking_blocks():
+    recorder = _Recorder(_anthropic_content_reply(_THINKING_FIRST_CONTENT))
+    config = GatewayConfig(anthropic_api_key="k", provider_order="anthropic", retry_attempts=1)
+    with _real_sdk_providers(anthropic=recorder):
+        text = await complete(system="s", prompt="p", config=config)
+    assert text == "Hello, world."
+
+
+async def test_anthropic_call_skips_thinking_and_tool_use_blocks():
+    content = [
+        {"type": "thinking", "thinking": "Plan.", "signature": "sig-1"},
+        {"type": "text", "text": "Answer."},
+        {"type": "tool_use", "id": "toolu_1", "name": "lookup", "input": {"q": "x"}},
+    ]
+    recorder = _Recorder(_anthropic_content_reply(content, stop_reason="tool_use"))
+    config = GatewayConfig(anthropic_api_key="k")
+    with patch.object(anthropic, "_client", return_value=_anthropic_client(recorder)):
+        result = await anthropic.call(config, "s", "p", 50)
+    assert result.text == "Answer."
+
+
+async def test_chat_ignores_thinking_blocks_and_keeps_tool_calls():
+    content = [*_THINKING_FIRST_CONTENT[:2], {"type": "text", "text": "Looking it up."}]
+    content.append({"type": "tool_use", "id": "toolu_1", "name": "lookup", "input": {"q": "x"}})
+    recorder = _Recorder(_anthropic_content_reply(content, stop_reason="tool_use"))
+    config = GatewayConfig(anthropic_api_key="k")
+    with patch.object(anthropic, "_client", return_value=_anthropic_client(recorder)):
+        result = await anthropic.chat(
+            config,
+            [{"role": "user", "content": "hi"}],
+            tools=[{"type": "function", "function": {"name": "lookup"}}],
+            max_tokens=50,
+        )
+    assert result.content == "Looking it up."
+    assert [(c.name, c.arguments) for c in result.tool_calls] == [("lookup", {"q": "x"})]
+
+
+async def test_thinking_only_response_fails_over_to_the_next_provider():
+    primary = _Recorder(_anthropic_content_reply(_THINKING_FIRST_CONTENT[:2], "max_tokens"))
+    fallback = _Recorder(_openai_ok)
+    with _real_sdk_providers(anthropic=primary, groq=fallback):
+        text = await complete(system="s", prompt="p", config=_chain_config())
+    assert text == "from groq"
+    assert len(primary.bodies) == 1  # an unusable answer is not re-rolled

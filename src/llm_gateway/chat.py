@@ -119,6 +119,8 @@ async def chat(
                 fallback=is_fallback,
                 tool_call_count=len(result.tool_calls),
                 finish_reason=result.finish_reason,
+                cache_read_input_tokens=result.cache_read_input_tokens,
+                cache_creation_input_tokens=result.cache_creation_input_tokens,
             )
             return result
 

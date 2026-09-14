@@ -20,6 +20,7 @@ from typing import Any
 from openai import Timeout
 
 from ..config import GatewayConfig
+from ..errors import InvalidOutputError
 
 # Kept at the SDKs' own default: a TCP connect that takes longer than this
 # is not going to succeed, however long the request timeout is.
@@ -85,11 +86,67 @@ def stream_request_options(config: GatewayConfig) -> dict:
 
 
 @dataclass(frozen=True)
+class Usage:
+    """Token usage for one served call, normalized across providers.
+
+    `input_tokens` counts every prompt token the provider processed, cached
+    or not, so it means the same thing for every provider: Anthropic reports
+    uncached, cache-read and cache-write tokens as three disjoint numbers
+    (they are summed here), while OpenAI/Groq's `prompt_tokens` already
+    includes cached tokens. The two cache fields are subsets of
+    `input_tokens`; use `uncached_input_tokens` for the part billed at the
+    base input rate.
+    """
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_input_tokens: int = 0
+    cache_creation_input_tokens: int = 0
+
+    @property
+    def uncached_input_tokens(self) -> int:
+        cached = self.cache_read_input_tokens + self.cache_creation_input_tokens
+        return max(self.input_tokens - cached, 0)
+
+
+def as_int(value: object) -> int:
+    """An SDK usage field as an int: None (field absent) and anything
+    non-integer count as 0."""
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def usage_from_openai_style(usage: Any) -> Usage:
+    """Usage from an OpenAI/Groq `CompletionUsage` (or None)."""
+    if usage is None:
+        return Usage()
+    details = getattr(usage, "prompt_tokens_details", None)
+    return Usage(
+        input_tokens=as_int(getattr(usage, "prompt_tokens", None)),
+        output_tokens=as_int(getattr(usage, "completion_tokens", None)),
+        cache_read_input_tokens=as_int(getattr(details, "cached_tokens", None)),
+    )
+
+
+@dataclass(frozen=True)
 class ProviderResult:
     text: str
     model: str
     input_tokens: int
     output_tokens: int
+    cache_read_input_tokens: int = 0
+    cache_creation_input_tokens: int = 0
+    # Provider-native stop reason ("end_turn", "stop", "max_tokens", ...).
+    # Excluded from equality: it is diagnostic, not part of the result.
+    stop_reason: str | None = field(default=None, compare=False)
+
+    @property
+    def usage(self) -> Usage:
+        return Usage(
+            self.input_tokens,
+            self.output_tokens,
+            self.cache_read_input_tokens,
+            self.cache_creation_input_tokens,
+        )
 
 
 @dataclass(frozen=True)
@@ -107,6 +164,17 @@ class ChatResult:
     output_tokens: int
     tool_calls: list[ToolCall] = field(default_factory=list)
     finish_reason: str = "stop"  # "stop" | "tool_calls"
+    cache_read_input_tokens: int = 0
+    cache_creation_input_tokens: int = 0
+
+    @property
+    def usage(self) -> Usage:
+        return Usage(
+            self.input_tokens,
+            self.output_tokens,
+            self.cache_read_input_tokens,
+            self.cache_creation_input_tokens,
+        )
 
 
 @dataclass(frozen=True)
@@ -123,6 +191,11 @@ class StreamDelta:
     finish_reason: str | None = None
     model: str | None = None
     usage: tuple[int, int] | None = None  # (input_tokens, output_tokens) — final chunk only
+    # The same usage with the cache breakdown — final chunk only, when known.
+    usage_details: Usage | None = None
+    # Which provider served the stream. Set by `stream_chat()` on the chunk
+    # carrying usage, so a caller can attribute cost after a failover.
+    provider: str | None = None
 
 
 def parse_openai_style_response(resp: Any, model: str) -> ChatResult:
@@ -139,15 +212,38 @@ def parse_openai_style_response(resp: Any, model: str) -> ChatResult:
         for tc in (msg.tool_calls or [])
     ]
     finish_reason = "tool_calls" if tool_calls else "stop"
-    input_tokens = resp.usage.prompt_tokens if resp.usage else 0
-    output_tokens = resp.usage.completion_tokens if resp.usage else 0
+    usage = usage_from_openai_style(resp.usage)
     return ChatResult(
         content=msg.content,
         model=model,
-        input_tokens=input_tokens,
-        output_tokens=output_tokens,
+        input_tokens=usage.input_tokens,
+        output_tokens=usage.output_tokens,
         tool_calls=tool_calls,
         finish_reason=finish_reason,
+        cache_read_input_tokens=usage.cache_read_input_tokens,
+    )
+
+
+def provider_result_from_openai_style(resp: Any, model: str) -> ProviderResult:
+    """Plain-completion parser shared by OpenAI and Groq.
+
+    `message.content` is None when the model refuses (OpenAI sets
+    `message.refusal`, which in practice only happens for structured-output
+    requests) or answers with tool calls (never requested here). A refusal is
+    an unusable answer, so it fails over instead of returning "".
+    """
+    choice = resp.choices[0]
+    message = choice.message
+    if getattr(message, "refusal", None):
+        raise InvalidOutputError("The model refused the request (message.refusal is set).")
+    usage = usage_from_openai_style(resp.usage)
+    return ProviderResult(
+        text=(message.content or "").strip(),
+        model=model,
+        input_tokens=usage.input_tokens,
+        output_tokens=usage.output_tokens,
+        cache_read_input_tokens=usage.cache_read_input_tokens,
+        stop_reason=choice.finish_reason,
     )
 
 
@@ -157,8 +253,14 @@ def parse_openai_style_chunk(chunk: Any, model: str) -> StreamDelta:
     if not chunk.choices:
         # The final chunk when stream_options={"include_usage": True} is set
         # carries only usage, no choices.
-        usage = (chunk.usage.prompt_tokens, chunk.usage.completion_tokens) if chunk.usage else None
-        return StreamDelta(model=model, usage=usage)
+        if not chunk.usage:
+            return StreamDelta(model=model)
+        details = usage_from_openai_style(chunk.usage)
+        return StreamDelta(
+            model=model,
+            usage=(details.input_tokens, details.output_tokens),
+            usage_details=details,
+        )
 
     choice = chunk.choices[0]
     delta = choice.delta

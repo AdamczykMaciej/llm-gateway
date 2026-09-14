@@ -11,11 +11,21 @@ failed provider call, so the rules below are the whole policy:
 | `RATE_LIMITED`    | 429                                            | no    | counts  |
 | `AUTH`            | 401, 403                                       | no    | counts  |
 | `INVALID_REQUEST` | 400, 404, 413, 422 and every other 4xx         | no    | ignored |
+| `INVALID_OUTPUT`  | no text, a refusal, or structured output that  | no    | ignored |
+|                   | fails to parse/validate; Groq's 400            |       |         |
+|                   | `json_validate_failed`                         |       |         |
 | `UNKNOWN`         | anything else (e.g. a response-parsing bug)    | no    | counts  |
 
 Every kind fails over to the next provider in the chain. See the README's
 "Retries, failover and timeouts" section for why timeouts and 429s are not
 retried on the same provider, and why a 400/422 still fails over.
+
+`INVALID_OUTPUT` never trips the breaker. The provider was reachable and
+answered, and whether a reply matches a caller's schema depends mostly on
+that schema and prompt: counting it would let one caller's hard schema take
+a healthy provider out of rotation for everyone. It is not retried on the
+same provider either. The next provider is a better bet than re-rolling the
+same model, and a retry would double the cost of a call that already failed.
 """
 
 from dataclasses import dataclass
@@ -35,12 +45,21 @@ class LLMDeadlineExceeded(LLMError):
     callers that only catch `LLMError` keep working unchanged."""
 
 
+class InvalidOutputError(Exception):
+    """A provider answered, but not with something this call can use: no text
+    content, a refusal, or structured output that is not valid JSON or fails
+    schema validation. Raised inside one provider attempt, so the engine fails
+    over to the next provider. The message never includes the model's output,
+    which can echo prompt content, including personal data."""
+
+
 class ErrorKind(StrEnum):
     TRANSIENT = "transient"
     TIMEOUT = "timeout"
     RATE_LIMITED = "rate_limited"
     AUTH = "auth"
     INVALID_REQUEST = "invalid_request"
+    INVALID_OUTPUT = "invalid_output"
     UNKNOWN = "unknown"
 
 
@@ -58,6 +77,7 @@ POLICIES: dict[ErrorKind, ErrorPolicy] = {
     ErrorKind.RATE_LIMITED: ErrorPolicy(retry=False, trips_breaker=True),
     ErrorKind.AUTH: ErrorPolicy(retry=False, trips_breaker=True),
     ErrorKind.INVALID_REQUEST: ErrorPolicy(retry=False, trips_breaker=False),
+    ErrorKind.INVALID_OUTPUT: ErrorPolicy(retry=False, trips_breaker=False),
     ErrorKind.UNKNOWN: ErrorPolicy(retry=False, trips_breaker=True),
 }
 
@@ -105,12 +125,29 @@ def _classify_body(body: object) -> ErrorKind:
     return _BODY_ERROR_TYPES.get(error_type, ErrorKind.UNKNOWN) if error_type else ErrorKind.UNKNOWN
 
 
+# Error codes sent with an HTTP 400 that mean "the model's output failed the
+# requested format" rather than "the request was malformed". Groq returns
+# `json_validate_failed` when JSON mode or json_schema generation fails.
+_OUTPUT_ERROR_CODES = frozenset({"json_validate_failed"})
+
+
+def _body_error_code(body: object) -> object:
+    if not isinstance(body, dict):
+        return None
+    nested = body.get("error")
+    return nested.get("code") if isinstance(nested, dict) else body.get("code")
+
+
 def classify(exc: BaseException) -> ErrorKind:
+    if isinstance(exc, InvalidOutputError):
+        return ErrorKind.INVALID_OUTPUT
     if isinstance(exc, _TIMEOUT_ERRORS):
         return ErrorKind.TIMEOUT
     if isinstance(exc, _CONNECTION_ERRORS):
         return ErrorKind.TRANSIENT
     if isinstance(exc, _STATUS_ERRORS) and exc.status_code >= 400:
+        if exc.status_code == 400 and _body_error_code(exc.body) in _OUTPUT_ERROR_CODES:
+            return ErrorKind.INVALID_OUTPUT
         return _classify_status(exc.status_code)
     if isinstance(exc, _SDK_ERRORS):
         return _classify_body(exc.body)
