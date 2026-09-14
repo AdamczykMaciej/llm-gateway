@@ -4,16 +4,15 @@ build-backend = "hatchling.build"
 
 [project]
 name = "llm-gateway"
-version = "0.1.0"
+version = "0.2.0"
 description = "Self-hosted multi-provider LLM gateway: fallback chain, circuit breaker, PII-masked tracing — as a library or an OpenAI-compatible HTTP service."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "Maciej Adamczyk" }]
 dependencies = [
-  "anthropic>=0.41.0,<1",
-  "openai>=1.58.1,<2",
-  "httpx>=0.27,<1.0",
+  "anthropic>=1.5.0,<2",
+  "openai>=3.13.0,<4",
   "pydantic>=2.10,<3",
   "pydantic-settings>=2.7,<3",
   "opentelemetry-sdk>=1.27.0",
@@ -26,6 +25,9 @@ dev = [
   "pytest>=8",
   "pytest-asyncio>=0.24",
   "ruff>=0.8",
+  # Only for starlette's TestClient in tests/test_service.py — the provider
+  # SDKs themselves use httpx2 since anthropic 1.0 / openai 3.0.
+  "httpx>=0.27,<1.0",
   "fastapi>=0.110,<1.0",
   "uvicorn[standard]>=0.27,<1.0",
 ]
