@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "llm-gateway"
-version = "0.6.0"
+version = "0.7.0"
 description = "Self-hosted multi-provider LLM gateway (Anthropic, Claude on Google Vertex AI, Azure AI Foundry, Groq, OpenAI): fallback chain, circuit breaker, PII-masked tracing — as a library or an OpenAI-compatible HTTP service."
 readme = "README.md"
 requires-python = ">=3.11"

@@ -84,6 +84,9 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
             "groq": config.groq_model,
             "openai": config.openai_model,
             "vertex": config.vertex_model,
+            "mistral": config.mistral_model,
+            "openrouter": config.openrouter_model,
+            "openai_compat": config.openai_compat_model,
         }
         data = [
             {

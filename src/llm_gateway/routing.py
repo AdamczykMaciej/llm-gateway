@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 
 from opentelemetry import trace
 
-from .capabilities import missing_capabilities
+from .capabilities import missing_capabilities, openai_compat_capabilities
 from .config import GatewayConfig
 from .errors import PolicyViolationError, UnsupportedCapabilityError
 from .policy import ProviderPolicy, call_budget_check, compliance_reasons, metadata_for
@@ -207,6 +207,10 @@ def plan_chain(
             profile.features,
             require_parameters=effective.require_parameters,
             vertex_structured_outputs=config.vertex_structured_outputs,
+            openai_compat=openai_compat_capabilities(
+                supports_tools=config.openai_compat_supports_tools,
+                strict_json_schema=config.openai_compat_strict_json_schema,
+            ),
         ):
             plan._exclude(provider, _CAPABILITY, reason)
         cap = effective.max_cost_usd

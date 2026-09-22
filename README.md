@@ -939,6 +939,25 @@ Not covered yet: `chat()` / `stream_chat()` results don't carry `cost_usd`;
 `GET /v1/models` availability ignores the policy; the HTTP service has no
 budget hook.
 
+### OpenAI-compatible hosts: Mistral, OpenRouter, any (0.7.0)
+
+Three more provider ids share one implementation (`providers/openai_compatible.py`)
+for hosts that speak the OpenAI Chat Completions API at their own base URL:
+
+| id | Host | Notes |
+|---|---|---|
+| `mistral` | `https://api.mistral.ai/v1` | Mistral AI, a French company with an EU-hosted API. Tools, streaming and strict `json_schema` output. |
+| `openrouter` | `https://openrouter.ai/api/v1` | A US broker that forwards to many third-party hosts. `OPENROUTER_PROVIDER_ALLOW` pins the upstream hosts. Structured output uses JSON mode + local validation, since strictness depends on the upstream host. |
+| `openai_compat` | `OPENAI_COMPAT_BASE_URL` | Whatever you point it at. Declare what it supports with `OPENAI_COMPAT_SUPPORTS_TOOLS` / `OPENAI_COMPAT_STRICT_JSON_SCHEMA`. |
+
+Add them to `PROVIDER_ORDER` like any other id; the breaker, retries, failover,
+policies and the price table treat them the same way. The library asserts no
+residency, retention or training facts for any of them: a `residency=eu` policy
+excludes `mistral` until your `PROVIDER_METADATA` says `{"mistral": {"region": "eu"}}`,
+and `openrouter` is only as EU as the hosts you pin. Default prices cover
+`mistral/mistral-small-latest` and `openrouter/openai/gpt-oss-120b`; set
+`MODEL_PRICES` for anything else (an `openai_compat` model has no default).
+
 ## 2. As an HTTP service (OpenAI-compatible)
 
 ```bash
@@ -1117,6 +1136,17 @@ Worst case for one call with the default three-provider chain:
 | `VERTEX_AZURE_APP_ID_URI` | — | WIF from an Azure managed identity: the Entra application ID URI (needs the `[azure]` extra) |
 | `VERTEX_AZURE_MANAGED_IDENTITY_CLIENT_ID` | — | User-assigned managed identity for `VERTEX_AZURE_APP_ID_URI`; unset uses the system-assigned identity |
 | `VERTEX_STRUCTURED_OUTPUTS` | `false` | Route `output_schema` calls to Vertex. Enable only after `constraints/vertexai.allowedPartnerModelFeatures` allows `publishers/anthropic/models/claude-haiku-4-5:structured_outputs` |
+| `MISTRAL_API_KEY` | — | Mistral AI (EU company, EU-hosted API); see [OpenAI-compatible hosts](#openai-compatible-hosts-mistral-openrouter-any-070) |
+| `MISTRAL_MODEL` | `mistral-small-latest` | |
+| `OPENROUTER_API_KEY` | — | OpenRouter, a broker that forwards to third-party hosts |
+| `OPENROUTER_MODEL` | `openai/gpt-oss-120b` | OpenRouter ids are `<vendor>/<model>` |
+| `OPENROUTER_PROVIDER_ALLOW` | — | Comma-separated upstream hosts to pin routing to; requests fail rather than route elsewhere |
+| `OPENROUTER_APP_URL` / `OPENROUTER_APP_NAME` | — | Sent as `HTTP-Referer` / `X-Title` (OpenRouter app attribution) |
+| `OPENAI_COMPAT_BASE_URL` | — | Any host speaking the Chat Completions API (DeepSeek, Together, Fireworks, a local vLLM…). Registers provider id `openai_compat` |
+| `OPENAI_COMPAT_API_KEY` | — | Its key; a keyless local server takes any non-empty value |
+| `OPENAI_COMPAT_MODEL` | — | Its model id |
+| `OPENAI_COMPAT_SUPPORTS_TOOLS` | `true` | Whether that host takes `tools` |
+| `OPENAI_COMPAT_STRICT_JSON_SCHEMA` | `false` | Whether it enforces `json_schema`; otherwise JSON mode with the schema in the prompt |
 | `CLAUDE_MODEL` | `claude-haiku-4-5-20251001` | |
 | `GROQ_MODEL` | `openai/gpt-oss-120b` | Groq retired `llama-3.3-70b-versatile` on 2026-08-16 |
 | `OPENAI_MODEL` | `gpt-4o-mini` | |
