@@ -84,6 +84,13 @@ DEFAULT_PRICES: dict[str, ModelPrice] = {
     ),
     # https://console.groq.com/docs/models (the default GROQ_MODEL since 0.4.2)
     "groq/openai/gpt-oss-120b": ModelPrice(input_per_mtok=0.15, output_per_mtok=0.60),
+    # https://mistral.ai/pricing (API, "Mistral Small", checked 2026-09-22).
+    "mistral/mistral-small-latest": ModelPrice(input_per_mtok=0.10, output_per_mtok=0.30),
+    # OpenRouter passes the upstream host's price through; gpt-oss-120b
+    # listings cluster around this (https://openrouter.ai/openai/gpt-oss-120b,
+    # checked 2026-09-22). Override with MODEL_PRICES for the host you pin.
+    "openrouter/openai/gpt-oss-120b": ModelPrice(input_per_mtok=0.15, output_per_mtok=0.60),
+    # No default for openai_compat: the operator names the host and model.
     # No default for azure: a deployment's price depends on its model and SKU.
     # groq/llama-3.3-70b-versatile has none either: Groq lists it as "Contact sales".
 }

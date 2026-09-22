@@ -94,6 +94,14 @@ class GatewayConfig(BaseSettings):
     openai_api_key: str = ""
     # Only used when azure_auth == "api_key".
     azure_api_key: str = ""
+    # OpenAI-compatible hosts (providers/openai_compatible.py).
+    mistral_api_key: str = ""
+    openrouter_api_key: str = ""
+    # The generic escape hatch: any host speaking the Chat Completions API.
+    # Registered as provider id "openai_compat" once base_url and key are set;
+    # a local server that needs no key takes any non-empty value.
+    openai_compat_api_key: str = ""
+    openai_compat_base_url: str = ""
 
     # ── Provider models ──────────────────────────────────────────────────
     claude_model: str = "claude-haiku-4-5-20251001"
@@ -103,6 +111,27 @@ class GatewayConfig(BaseSettings):
     openai_model: str = "gpt-4o-mini"
     # The Azure deployment name (not the model id), sent as `model`.
     azure_model: str = ""
+    # https://docs.mistral.ai/getting-started/models/ — the small tier.
+    mistral_model: str = "mistral-small-latest"
+    # OpenRouter ids are "<vendor>/<model>".
+    openrouter_model: str = "openai/gpt-oss-120b"
+    openai_compat_model: str = ""
+
+    # ── OpenRouter routing and attribution ───────────────────────────────
+    # Comma-separated upstream host names (https://openrouter.ai/docs/features/provider-routing);
+    # when set, requests are pinned to these hosts and fail rather than route
+    # elsewhere. Empty leaves routing to OpenRouter.
+    openrouter_provider_allow: str = ""
+    # Sent as HTTP-Referer / X-Title, OpenRouter's app attribution. Optional.
+    openrouter_app_url: str = ""
+    openrouter_app_name: str = ""
+
+    # ── Generic OpenAI-compatible host capabilities ──────────────────────
+    # What the operator's host supports; the gateway can't know. Tools are
+    # passed through when True; structured output uses strict json_schema
+    # when True and JSON mode with the schema in the prompt otherwise.
+    openai_compat_supports_tools: bool = True
+    openai_compat_strict_json_schema: bool = False
 
     # ── Azure AI Foundry / Azure OpenAI (v1 API) ─────────────────────────
     # Resource endpoint: https://<resource>.openai.azure.com or
@@ -357,6 +386,10 @@ class GatewayConfig(BaseSettings):
         return [p.strip() for p in self.provider_order.split(",") if p.strip()]
 
     @property
+    def openrouter_provider_allow_list(self) -> tuple[str, ...]:
+        return tuple(p.strip() for p in self.openrouter_provider_allow.split(",") if p.strip())
+
+    @property
     def gateway_api_keys_list(self) -> list[str]:
         return [k.strip() for k in self.gateway_api_keys.split(",") if k.strip()]
 
@@ -374,6 +407,14 @@ class GatewayConfig(BaseSettings):
             max_cost_usd=self.policy_max_cost_usd if self.policy_max_cost_usd > 0 else None,
             sort=self.policy_sort,
         )
+
+    @field_validator("openai_compat_base_url")
+    @classmethod
+    def _check_openai_compat_base_url(cls, value: str) -> str:
+        value = value.strip()
+        if value and not value.startswith(("http://", "https://")):
+            raise ValueError("openai_compat_base_url must start with http:// or https://")
+        return value.rstrip("/")
 
     @field_validator("provider_metadata")
     @classmethod

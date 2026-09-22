@@ -27,7 +27,16 @@ from pydantic import BaseModel, ConfigDict, field_validator
 from .errors import PolicyViolationError
 
 # Provider ids the policy understands (the providers/ registry's ids).
-KNOWN_PROVIDERS: tuple[str, ...] = ("anthropic", "groq", "openai", "azure", "vertex")
+KNOWN_PROVIDERS: tuple[str, ...] = (
+    "anthropic",
+    "groq",
+    "openai",
+    "azure",
+    "vertex",
+    "mistral",
+    "openrouter",
+    "openai_compat",
+)
 
 Retention = Literal["zero", "abuse_monitoring_30d", "unknown"]
 SortOrder = Literal["order", "price"]

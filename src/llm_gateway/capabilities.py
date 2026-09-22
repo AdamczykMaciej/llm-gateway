@@ -135,20 +135,59 @@ def _groq(model: str) -> ModelCapabilities:
     )
 
 
+# Mistral lists function calling, JSON mode and strict json_schema output and
+# streaming for its current chat models (https://docs.mistral.ai/capabilities/,
+# checked 2026-09-22); image input only on the Pixtral / "multimodal" models,
+# which are unknown here rather than asserted.
+def _mistral(model: str) -> ModelCapabilities:
+    return ModelCapabilities(structured_output="strict", tools=True, images=None, streaming=True)
+
+
+# OpenRouter forwards to whichever host it picks, so nothing is known about
+# the model beyond streaming; providers/openrouter.py requests structured
+# output in JSON mode and validates locally.
+def _openrouter(model: str) -> ModelCapabilities:
+    return ModelCapabilities(structured_output="json_mode", tools=None, images=None, streaming=True)
+
+
+def openai_compat_capabilities(
+    *, supports_tools: bool, strict_json_schema: bool
+) -> ModelCapabilities:
+    """The operator-declared capabilities of the generic OpenAI-compatible
+    host (`GatewayConfig.openai_compat_supports_tools` /
+    `openai_compat_strict_json_schema`)."""
+    return ModelCapabilities(
+        structured_output="strict" if strict_json_schema else "json_mode",
+        tools=True if supports_tools else False,
+        images=None,
+        streaming=True,
+    )
+
+
 _TABLES: dict[str, Callable[[str], ModelCapabilities]] = {
     "anthropic": _anthropic,
     "azure": _azure,
     "openai": _openai,
     "groq": _groq,
+    "mistral": _mistral,
+    "openrouter": _openrouter,
 }
 
 
 def capabilities_for(
-    provider: str, model: str, *, vertex_structured_outputs: bool = False
+    provider: str,
+    model: str,
+    *,
+    vertex_structured_outputs: bool = False,
+    openai_compat: ModelCapabilities | None = None,
 ) -> ModelCapabilities:
-    """`vertex_structured_outputs` is `GatewayConfig.vertex_structured_outputs`."""
+    """`vertex_structured_outputs` is `GatewayConfig.vertex_structured_outputs`;
+    `openai_compat` is `openai_compat_capabilities(...)` built from the config,
+    or None when the generic host's capabilities should count as unknown."""
     if provider == "vertex":
         return _vertex(model, structured_outputs=vertex_structured_outputs)
+    if provider == "openai_compat":
+        return openai_compat or UNKNOWN
     table = _TABLES.get(provider)
     return table(model) if table else UNKNOWN
 
@@ -160,11 +199,15 @@ def missing_capabilities(
     *,
     require_parameters: bool,
     vertex_structured_outputs: bool = False,
+    openai_compat: ModelCapabilities | None = None,
 ) -> list[str]:
     """Why `provider`'s `model` can't serve the `required` features (empty
     when it can)."""
     capabilities = capabilities_for(
-        provider, model, vertex_structured_outputs=vertex_structured_outputs
+        provider,
+        model,
+        vertex_structured_outputs=vertex_structured_outputs,
+        openai_compat=openai_compat,
     )
     missing = []
     for feature in required:

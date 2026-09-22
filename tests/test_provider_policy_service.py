@@ -129,7 +129,7 @@ def test_unknown_policy_field_is_rejected_not_ignored():
 def test_unknown_provider_id_in_policy_is_400():
     client = _client()
     with patch("llm_gateway.chat.CHAT_CALLS", {"anthropic": _never(), "groq": _never()}):
-        resp = _post(client, policy={"only": ["mistral"]})
+        resp = _post(client, policy={"only": ["cohere"]})
     assert resp.status_code == 400
     assert "unknown provider id" in resp.json()["error"]["message"]
 
