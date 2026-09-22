@@ -12,7 +12,6 @@ from pydantic import BaseModel
 from llm_gateway import LLMError, chat, reset_circuit_breakers
 from llm_gateway.capabilities import capabilities_for, missing_capabilities
 from llm_gateway.config import GatewayConfig as _Config
-from llm_gateway.errors import PolicyViolationError
 from llm_gateway.pricing import DEFAULT_PRICES
 from llm_gateway.providers import (
     CALLS,
@@ -215,9 +214,7 @@ class _Answer(BaseModel):
 async def test_structured_output_strict_vs_json_mode():
     from llm_gateway.structured import OutputSchema
 
-    schema = OutputSchema.from_model(_Answer) if hasattr(OutputSchema, "from_model") else None
-    if schema is None:
-        pytest.skip("OutputSchema construction differs")
+    schema = OutputSchema.from_spec(_Answer)
     strict = _Recorder(
         _ok(
             {
@@ -389,4 +386,3 @@ def test_shared_implementation_caches_one_client_per_key_and_base_url():
     b = _Config(openai_compat_api_key="k", openai_compat_base_url="https://b.example/v1")
     assert provider._client(a) is provider._client(a)
     assert provider._client(a) is not provider._client(b)
-    assert isinstance(PolicyViolationError, type)
