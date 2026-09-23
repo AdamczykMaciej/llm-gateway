@@ -17,7 +17,11 @@ from opentelemetry.trace import StatusCode
 
 from . import breaker
 from .config import GatewayConfig
-from .errors import LLMError, deadline_exceeded
+from .errors import (
+    AllProvidersExhaustedError,
+    GatewayNotConfiguredError,
+    deadline_exceeded,
+)
 from .policy import ProviderPolicy
 from .providers import CHAT_CALLS, CONFIGURED, DEFAULT_MODEL
 from .providers.base import ChatResult
@@ -168,11 +172,17 @@ async def chat(
         if not attempted_any:
             if plan.denied:
                 raise plan.violation()
-            raise LLMError(
+            if plan.any_configured(config):
+                raise AllProvidersExhaustedError(
+                    "Every configured provider is currently unavailable (circuit breaker "
+                    "open, or the call deadline ran out before any attempt). This is very "
+                    "likely temporary; retrying after BREAKER_COOLDOWN_SECONDS is reasonable."
+                )
+            raise GatewayNotConfiguredError(
                 "No LLM provider available. Set ANTHROPIC_API_KEY, GROQ_API_KEY, "
                 "OPENAI_API_KEY, AZURE_ENDPOINT and AZURE_MODEL, or VERTEX_PROJECT_ID, "
                 "matching provider_order."
             )
-        raise LLMError(
+        raise AllProvidersExhaustedError(
             f"All configured providers failed. Last error: {last_error}{plan.failure_note()}"
         ) from last_error

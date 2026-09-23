@@ -856,6 +856,36 @@ output, tools, streaming, no images); any other deployment is unknown. When capa
 chain, the call raises `UnsupportedCapabilityError`, a subclass of
 `PolicyViolationError`, naming the missing capability per provider.
 
+**Capability matrix** — what `llm_gateway/capabilities.py` currently asserts
+for each provider's *known* model families (`✓` supported, `✗` known
+unsupported, `?` unknown — treated as "don't skip" unless
+`require_parameters` is set, see above). A cell reflects only what's been
+verified against the vendor's docs, not a claim about every model that
+provider might ever serve:
+
+| Provider | Streaming | Tool calling | Structured output | Image input |
+|---|---|---|---|---|
+| `anthropic` (`claude-*`) | ✓ | ✓ | strict (`claude-haiku-4-5` and newer listed models), `?` otherwise | ✓ |
+| `vertex` (same Claude family) | ✓ | ✓ | `✗` unless `VERTEX_STRUCTURED_OUTPUTS=true` (see [Claude on Google Vertex AI](#claude-on-google-vertex-ai-060)) | ✓ (base64 `data:` only — Vertex rejects URL image sources) |
+| `openai` (`gpt-4o`/`gpt-4.1`/`gpt-5` families) | ✓ | ✓ | strict | ✓ |
+| `openai` (other models, e.g. audio/realtime/older) | ✓ | `?` | `?` | `?` |
+| `azure` (deployment named `gpt-oss-*`) | ✓ | ✓ | strict | `✗` |
+| `azure` (any other deployment name) | `?` | `?` | `?` | `?` |
+| `groq` (`openai/gpt-oss-20b`/`-120b`) | ✓ | ✓ | strict | `✗` |
+| `groq` (`llama-3.3-70b-versatile`, `llama-3.1-8b-instant`) | ✓ | ✓ | JSON mode | `✗` |
+| `groq` (other models) | ✓ | `?` | JSON mode | `?` |
+| `mistral` | ✓ | ✓ | strict | `?` (Pixtral/multimodal models only, not asserted) |
+| `openrouter` | ✓ | `?` | JSON mode + local validation (strictness depends on the upstream host) | `?` |
+| `openai_compat` | ✓ | `OPENAI_COMPAT_SUPPORTS_TOOLS` (default ✓) | strict if `OPENAI_COMPAT_STRICT_JSON_SCHEMA` else JSON mode | `?` |
+
+"Strict" and "JSON mode" both serve `output_schema=`/`response_format`; only
+strict mode gets constrained decoding from the provider itself — JSON mode
+relies on the schema in the prompt plus the gateway's own validation
+(structured.py), which is why `require_parameters` treats JSON-mode-only
+models as not meeting a hard structured-output requirement. See
+[Structured output: `output_schema=`](#structured-output-output_schema) for
+per-provider request shapes.
+
 #### Cost: `cost_usd`, `max_cost_usd`, budget hook, `sort`
 
 - **`Completion.cost_usd`** is computed from the served call's actual usage:
@@ -958,6 +988,43 @@ and `openrouter` is only as EU as the hosts you pin. Default prices cover
 `mistral/mistral-small-latest` and `openrouter/openai/gpt-oss-120b`; set
 `MODEL_PRICES` for anything else (an `openai_compat` model has no default).
 
+### When no provider can serve the call (0.8.0)
+
+`complete()` / `complete_with_usage()` / `chat()` / `stream_chat()` raise
+`LLMError` when nothing could serve a call, same as always — but now one of
+two `LLMError` subclasses, so a caller can tell them apart without parsing
+the message:
+
+- **`GatewayNotConfiguredError`**: not one provider in `provider_order` has
+  credentials set. A deployment problem — the message names which env vars
+  to set.
+- **`AllProvidersExhaustedError`**: at least one provider is configured, but
+  the call still couldn't be served: every attempt failed (e.g. an Anthropic
+  spend limit, an OpenAI billing lapse and a Groq rate limit, all at the same
+  time), or every configured provider's circuit breaker is already open (or
+  the call deadline ran out before any attempt). This is the transient case —
+  the same providers are expected to recover within
+  `BREAKER_COOLDOWN_SECONDS`, so it's reasonable for the caller to retry
+  after a short wait rather than treat it as a configuration error.
+
+Both existed as plain `LLMError` before 0.8.0 with the same messages; this
+is purely additive (new, more specific exception types), so `except
+LLMError` code keeps working unchanged. Catch the subclasses first if you
+want to react differently:
+
+```python
+from llm_gateway import AllProvidersExhaustedError, GatewayNotConfiguredError, LLMError
+
+try:
+    text = await complete(system=system, prompt=prompt, config=config)
+except GatewayNotConfiguredError:
+    ...  # alert: missing configuration, not a runtime incident
+except AllProvidersExhaustedError:
+    ...  # back off and retry, or serve a "try again shortly" response
+except LLMError:
+    ...  # PolicyViolationError, LLMDeadlineExceeded, or any other LLMError
+```
+
 ## 2. As an HTTP service (OpenAI-compatible)
 
 ```bash
@@ -986,8 +1053,11 @@ client.chat.completions.create(model="auto", messages=[{"role": "user", "content
 
 `model`:
 - `"auto"` (default) — runs the configured provider fallback chain.
-- `"<provider>/<model>"`, e.g. `"anthropic/claude-sonnet-4-6"` — calls that
-  provider directly, no fallback.
+- `"<provider>/<model>"`, e.g. `"anthropic/claude-sonnet-4-6"` or
+  `"openrouter/openai/gpt-oss-120b"` — calls that provider directly, no
+  fallback. Any registered provider id works (`anthropic`, `azure`, `groq`,
+  `openai`, `vertex`, `mistral`, `openrouter`, `openai_compat`); a request
+  for anything else gets a 400.
 
 Endpoints: `POST /v1/chat/completions`, `GET /v1/models`, `GET /v1/usage` (all
 bearer-key auth when `GATEWAY_API_KEYS` is set); `GET /health` (no auth, always).

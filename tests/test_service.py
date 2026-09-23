@@ -132,6 +132,30 @@ def test_chat_completions_forces_azure_from_model_prefix():
     assert mock_chat.await_args.kwargs["model"] == "gpt-oss-120b-prod"
 
 
+@pytest.mark.parametrize(
+    "model_prefix",
+    ["vertex/claude-haiku-4-5", "mistral/mistral-small-latest", "openrouter/openai/gpt-oss-120b"],
+)
+def test_chat_completions_forces_provider_added_after_the_original_four(model_prefix):
+    # Regression: the model="<provider>/<model>" allow-list used to be a
+    # hardcoded tuple of the original four providers (anthropic/azure/groq/
+    # openai), so vertex/mistral/openrouter/openai_compat silently 400'd here
+    # even though they work fine through provider_order. Fixed by checking
+    # against the live CONFIGURED registry instead.
+    client = _client(gateway_api_keys="secret-key")
+    mock_chat = AsyncMock(return_value=_result("forced"))
+    provider_name, _, upstream_model = model_prefix.partition("/")
+    with patch("llm_gateway.service.app.chat_engine", mock_chat):
+        resp = client.post(
+            "/v1/chat/completions",
+            json={"model": model_prefix, "messages": [{"role": "user", "content": "hi"}]},
+            headers={"Authorization": "Bearer secret-key"},
+        )
+    assert resp.status_code == 200
+    assert mock_chat.await_args.kwargs["force_provider"] == provider_name
+    assert mock_chat.await_args.kwargs["model"] == upstream_model
+
+
 def test_models_endpoint_lists_azure_deployment_availability():
     client = _client(
         gateway_api_keys="secret-key",

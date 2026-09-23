@@ -30,7 +30,9 @@ from .breaker import reset as reset_circuit_breakers
 from .chat import chat
 from .config import GatewayConfig
 from .errors import (
+    AllProvidersExhaustedError,
     EmptyCompletionError,
+    GatewayNotConfiguredError,
     InvalidOutputError,
     LLMDeadlineExceeded,
     PolicyViolationError,
@@ -62,6 +64,8 @@ __all__ = [
     "ToolCall",
     "LLMError",
     "LLMDeadlineExceeded",
+    "GatewayNotConfiguredError",
+    "AllProvidersExhaustedError",
     "InvalidOutputError",
     "EmptyCompletionError",
     "ProviderAuthError",
