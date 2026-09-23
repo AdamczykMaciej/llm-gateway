@@ -52,7 +52,7 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
         await azure_provider.aclose()
         await vertex_provider.aclose()
 
-    app = FastAPI(title="llm-gateway", version="0.6.0", lifespan=lifespan)
+    app = FastAPI(title="llm-gateway", version="0.8.0", lifespan=lifespan)
     rate_limit_dep = enforce_rate_limit(config)
     auth_dep = require_api_key(config)
 
@@ -151,7 +151,11 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
         model = body.model
         if model and model != "auto" and "/" in model:
             provider_name, _, upstream_model = model.partition("/")
-            if provider_name not in ("anthropic", "azure", "groq", "openai"):
+            # CONFIGURED (providers/__init__.py) is the live provider registry,
+            # not a hand-maintained list here — so a new provider (vertex,
+            # mistral, openrouter, openai_compat...) is force-selectable over
+            # HTTP the moment it's registered, with no separate list to forget.
+            if provider_name not in CONFIGURED:
                 raise HTTPException(
                     status_code=400,
                     detail=f"Unknown provider '{provider_name}' in model '{model}'",

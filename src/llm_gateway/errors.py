@@ -49,6 +49,19 @@ configuration produces for everyone, typically a reasoning model that spends
 its whole `max_tokens` budget on reasoning (`finish_reason="length"`). The same
 budget gives the same result on a retry, and taking the provider out of
 rotation saves every later caller the latency and the billed reasoning tokens.
+
+When *no* provider serves the call at all, `complete()`/`chat()`/
+`stream_chat()` raise one of two `LLMError` subclasses so a caller can tell
+"fix my deployment" apart from "wait and retry":
+
+- `GatewayNotConfiguredError`: not one provider in `provider_order` has
+  credentials set. A deployment-time problem, not an outage.
+- `AllProvidersExhaustedError`: at least one provider is configured, but
+  every one currently failed, or every one's circuit breaker is open (or the
+  call deadline ran out first) — e.g. every configured provider is down at
+  once (an Anthropic spend limit, an OpenAI billing lapse and a Groq rate
+  limit, all at the same time). This is the transient case: the same
+  providers are expected to recover within `BREAKER_COOLDOWN_SECONDS`.
 """
 
 from dataclasses import dataclass
@@ -66,6 +79,27 @@ class LLMDeadlineExceeded(LLMError):
     """The call's overall deadline (`GatewayConfig.call_deadline_seconds`)
     ran out across retries and failovers. A subclass of `LLMError`, so
     callers that only catch `LLMError` keep working unchanged."""
+
+
+class GatewayNotConfiguredError(LLMError):
+    """No provider in `provider_order` has credentials/configuration set (or
+    is even registered), so none was attempted. A permanent, deployment-time
+    problem: the caller is missing an API key or an env var, not experiencing
+    an outage. Distinguish this from `AllProvidersExhaustedError` (every
+    *configured* provider is unavailable right now) so the calling app can
+    tell "fix my configuration" apart from "retry shortly". A subclass of
+    `LLMError`, so existing `except LLMError` handling is unaffected."""
+
+
+class AllProvidersExhaustedError(LLMError):
+    """At least one provider was configured, but the call could not be
+    served: either every attempt failed (e.g. Anthropic over its spend
+    limit, OpenAI out of credits and Groq rate-limited, all at once), or
+    every configured provider's circuit breaker is currently open (or the
+    call deadline ran out before any could be attempted). This is the
+    "temporarily exhausted, retry shortly" case — the providers are known
+    good configuration-wise, just unavailable right now, typically for no
+    longer than `BREAKER_COOLDOWN_SECONDS`. A subclass of `LLMError`."""
 
 
 class PolicyViolationError(LLMError):

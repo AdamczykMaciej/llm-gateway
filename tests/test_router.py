@@ -4,7 +4,14 @@ import anthropic
 import httpx2
 import pytest
 
-from llm_gateway import GatewayConfig, LLMError, complete, reset_circuit_breakers
+from llm_gateway import (
+    AllProvidersExhaustedError,
+    GatewayConfig,
+    GatewayNotConfiguredError,
+    LLMError,
+    complete,
+    reset_circuit_breakers,
+)
 from llm_gateway.providers.base import ProviderResult
 
 pytestmark = pytest.mark.asyncio
@@ -151,6 +158,61 @@ async def test_all_providers_fail_raises_llm_error():
     with patch("llm_gateway.router.CALLS", {"anthropic": failing, "groq": failing}):
         with pytest.raises(LLMError):
             await complete(system="s", prompt="p", config=_config(provider_order="anthropic,groq"))
+
+
+# ─── Typed "no provider could serve" errors ─────────────────────────────────
+#
+# A caller (e.g. the app embedding this library) needs to tell "nothing is
+# configured, fix the deployment" apart from "everything is configured but
+# temporarily unavailable, retry shortly" without parsing message text.
+
+
+async def test_unconfigured_chain_raises_gateway_not_configured_error_specifically():
+    with pytest.raises(GatewayNotConfiguredError) as info:
+        await complete(
+            system="s",
+            prompt="p",
+            config=_config(
+                anthropic_api_key="",
+                groq_api_key="",
+                openai_api_key="",
+                provider_order="anthropic,groq,openai",
+            ),
+        )
+    assert not isinstance(info.value, AllProvidersExhaustedError)
+
+
+async def test_every_provider_failing_raises_all_providers_exhausted_error_specifically():
+    # The production scenario this models: Anthropic over its spend limit,
+    # OpenAI out of credits, Groq rate-limited — all at once. Every provider
+    # is configured and gets attempted; none can serve the call.
+    failing = AsyncMock(side_effect=RuntimeError("down"))
+    with patch("llm_gateway.router.CALLS", {"anthropic": failing, "groq": failing}):
+        with pytest.raises(AllProvidersExhaustedError) as info:
+            await complete(system="s", prompt="p", config=_config(provider_order="anthropic,groq"))
+    assert not isinstance(info.value, GatewayNotConfiguredError)
+
+
+async def test_every_configured_provider_breaker_open_raises_all_providers_exhausted_error():
+    # Once the breaker has already tripped for every configured provider
+    # (e.g. the incident above, a second or two later), no provider is even
+    # attempted this time — attempted_any is False, same as the unconfigured
+    # case. This must still raise AllProvidersExhaustedError, not
+    # GatewayNotConfiguredError: the providers *are* configured, they are
+    # just cooling down, and the message must not tell an operator to go set
+    # API keys that are already set.
+    failing = AsyncMock(side_effect=RuntimeError("down"))
+    config = _config(provider_order="anthropic,groq", breaker_failure_threshold=1)
+    with patch("llm_gateway.router.CALLS", {"anthropic": failing, "groq": failing}):
+        with pytest.raises(AllProvidersExhaustedError):
+            await complete(system="s", prompt="p", config=config)
+        # Both breakers are now open; nothing is attempted on this call.
+        failing.reset_mock()
+        with pytest.raises(AllProvidersExhaustedError) as info:
+            await complete(system="s", prompt="p", config=config)
+    failing.assert_not_called()
+    assert not isinstance(info.value, GatewayNotConfiguredError)
+    assert "ANTHROPIC_API_KEY" not in str(info.value)
 
 
 async def test_circuit_breaker_skips_provider_after_threshold_failures():

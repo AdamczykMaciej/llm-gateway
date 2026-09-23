@@ -154,6 +154,14 @@ class ChainPlan:
             return ""
         return f" Not attempted (denied by budget_check): {', '.join(self.denied)}."
 
+    def any_configured(self, config: GatewayConfig) -> bool:
+        """Whether any provider left in the chain has credentials/config set,
+        irrespective of circuit-breaker state. Used to tell "nothing is
+        configured at all" (`GatewayNotConfiguredError`) apart from "every
+        configured provider is currently unavailable" — breaker-open or the
+        deadline ran out before a single attempt (`AllProvidersExhaustedError`)."""
+        return any(CONFIGURED[p](config) for p in self.providers if p in CONFIGURED)
+
 
 def _available(provider: str, config: GatewayConfig, registry: Mapping) -> bool:
     if provider not in registry:
