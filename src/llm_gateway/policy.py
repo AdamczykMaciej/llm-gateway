@@ -33,6 +33,8 @@ KNOWN_PROVIDERS: tuple[str, ...] = (
     "openai",
     "azure",
     "vertex",
+    "gemini",
+    "huggingface",
     "mistral",
     "openrouter",
     "openai_compat",
