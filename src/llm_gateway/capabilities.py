@@ -9,8 +9,8 @@ schema enforcement.
 
 Only facts from the vendors' docs are recorded (checked 2026-09-14); every
 model not listed is unknown. `azure` models are deployment names chosen by
-the operator: only a deployment named after gpt-oss is recognized, and every
-other deployment is unknown.
+the operator: only a deployment named after gpt-oss or Llama 4 Scout is
+recognized, and every other deployment is unknown.
 """
 
 from collections.abc import Callable, Iterable
@@ -76,10 +76,42 @@ _GROQ_TOOL_MODELS = ("llama-3.3-70b-versatile", "llama-3.1-8b-instant", "openai/
 _AZURE_GPT_OSS_DEPLOYMENTS = ("gpt-oss-",)
 
 
+# Azure lists Llama-4-Scout-17B-16E-Instruct with text and image input, no tool
+# calling and text response format only
+# (https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-from-partners,
+# checked 2026-09-29). Streaming is not stated, so it stays unknown. Other
+# Llama models are unknown. Recognized only when the deployment is named after
+# the model.
+_AZURE_LLAMA_4_SCOUT_DEPLOYMENTS = ("llama-4-scout-",)
+
+
 def _azure(model: str) -> ModelCapabilities:
-    if not model.startswith(_AZURE_GPT_OSS_DEPLOYMENTS):
+    if model.startswith(_AZURE_GPT_OSS_DEPLOYMENTS):
+        return ModelCapabilities(
+            structured_output="strict", tools=True, images=False, streaming=True
+        )
+    if model.lower().startswith(_AZURE_LLAMA_4_SCOUT_DEPLOYMENTS):
+        return ModelCapabilities(structured_output="unsupported", tools=False, images=True)
+    return UNKNOWN
+
+
+# Gemini on Vertex AI's OpenAI-compatible endpoint documents streaming,
+# function calling, image input and structured output (`response_format` with a
+# JSON schema) for Gemini models
+# (https://docs.cloud.google.com/vertex-ai/generative-ai/docs/multimodal/call-vertex-using-openai-library,
+# checked 2026-09-29). Anything else served under this provider is unknown.
+def _gemini(model: str) -> ModelCapabilities:
+    if not model.removeprefix("google/").startswith("gemini-"):
         return UNKNOWN
-    return ModelCapabilities(structured_output="strict", tools=True, images=False, streaming=True)
+    return ModelCapabilities(structured_output="strict", tools=True, images=True, streaming=True)
+
+
+# Hugging Face model ids are operator-chosen and the router forwards to
+# whichever backend serves them, so nothing is known about the model beyond
+# streaming; providers/huggingface.py requests structured output in JSON mode
+# and validates locally.
+def _huggingface(model: str) -> ModelCapabilities:
+    return ModelCapabilities(structured_output="json_mode", tools=None, images=None, streaming=True)
 
 
 def _anthropic(model: str) -> ModelCapabilities:
@@ -167,6 +199,8 @@ def openai_compat_capabilities(
 _TABLES: dict[str, Callable[[str], ModelCapabilities]] = {
     "anthropic": _anthropic,
     "azure": _azure,
+    "gemini": _gemini,
+    "huggingface": _huggingface,
     "openai": _openai,
     "groq": _groq,
     "mistral": _mistral,

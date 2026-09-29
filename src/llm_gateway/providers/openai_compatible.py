@@ -14,7 +14,7 @@ the latter case the schema is spelled out in the system prompt and
 locally like every other provider.
 """
 
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import aclosing
 from dataclasses import dataclass, field
 
@@ -56,6 +56,14 @@ class OpenAICompatSpec:
     # A `configured` check beyond "the key is set", e.g. a base URL that must
     # also be present.
     also_configured: Callable[[GatewayConfig], bool] = field(default=lambda config: True)
+    # A host authenticated by a short-lived token rather than a static key
+    # (Gemini on Vertex AI): returns the async callable the SDK awaits before
+    # every request, so the token is refreshed instead of baked into the
+    # cached client. `api_key` is then unused for the SDK (it may return ""),
+    # and the host counts as configured whenever `also_configured` says so.
+    token_provider: Callable[[GatewayConfig], Callable[[], Awaitable[str]]] | None = None
+    # Extra values that make two clients differ (e.g. the credential source).
+    client_key: Callable[[GatewayConfig], tuple] = field(default=lambda config: ())
 
 
 class OpenAICompatProvider:
@@ -82,14 +90,16 @@ class OpenAICompatProvider:
             *sdk_client_cache_key(spec.api_key(config), config),
             base_url,
             tuple(sorted(headers.items())),
+            *spec.client_key(config),
         )
         client = self._clients.get(key)
         if client is None:
             # openai>=3.0 is httpx2-based; plain httpx clients are only a
             # temporary legacy escape hatch there, so build an httpx2 one.
             http_client = DefaultAsyncHttpx2Client(verify=False) if not config.ssl_verify else None
+            api_key = spec.token_provider(config) if spec.token_provider else spec.api_key(config)
             client = AsyncOpenAI(
-                api_key=spec.api_key(config),
+                api_key=api_key,
                 base_url=base_url,
                 default_headers=headers or None,
                 http_client=http_client,
@@ -102,7 +112,8 @@ class OpenAICompatProvider:
 
     def configured(self, config: GatewayConfig) -> bool:
         spec = self.spec
-        return bool(spec.api_key(config)) and spec.also_configured(config)
+        has_credential = spec.token_provider is not None or bool(spec.api_key(config))
+        return has_credential and spec.also_configured(config)
 
     def default_model(self, config: GatewayConfig) -> str:
         return self.spec.default_model(config)

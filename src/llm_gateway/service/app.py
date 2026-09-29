@@ -16,6 +16,7 @@ from ..config import GatewayConfig
 from ..errors import PolicyViolationError
 from ..providers import CONFIGURED
 from ..providers import azure as azure_provider
+from ..providers import gemini as gemini_provider
 from ..providers import vertex as vertex_provider
 from ..router import LLMError
 from ..streaming import stream_chat as stream_engine
@@ -50,9 +51,10 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
         yield
         # Entra and managed-identity credentials hold their own HTTP sessions.
         await azure_provider.aclose()
+        await gemini_provider.aclose()
         await vertex_provider.aclose()
 
-    app = FastAPI(title="llm-gateway", version="0.8.0", lifespan=lifespan)
+    app = FastAPI(title="llm-gateway", version="0.9.0", lifespan=lifespan)
     rate_limit_dep = enforce_rate_limit(config)
     auth_dep = require_api_key(config)
 
@@ -84,6 +86,8 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
             "groq": config.groq_model,
             "openai": config.openai_model,
             "vertex": config.vertex_model,
+            "gemini": config.gemini_model,
+            "huggingface": config.huggingface_model,
             "mistral": config.mistral_model,
             "openrouter": config.openrouter_model,
             "openai_compat": config.openai_compat_model,

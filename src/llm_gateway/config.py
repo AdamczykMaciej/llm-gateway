@@ -4,7 +4,7 @@ import json
 import re
 from typing import Literal
 
-from pydantic import field_validator, model_validator
+from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .policy import ProviderMetadata, ProviderPolicy, validate_provider_metadata
@@ -102,6 +102,12 @@ class GatewayConfig(BaseSettings):
     # a local server that needs no key takes any non-empty value.
     openai_compat_api_key: str = ""
     openai_compat_base_url: str = ""
+    # Hugging Face (providers/huggingface.py): a token for the Inference
+    # Providers router or for a dedicated Inference Endpoint. Read from
+    # HUGGINGFACE_API_KEY or HF_TOKEN.
+    huggingface_api_key: str = Field(
+        default="", validation_alias=AliasChoices("huggingface_api_key", "hf_token")
+    )
 
     # ── Provider models ──────────────────────────────────────────────────
     claude_model: str = "claude-haiku-4-5-20251001"
@@ -116,6 +122,14 @@ class GatewayConfig(BaseSettings):
     # OpenRouter ids are "<vendor>/<model>".
     openrouter_model: str = "openai/gpt-oss-120b"
     openai_compat_model: str = ""
+    # Hugging Face model ids are operator-chosen, so there is no default: the
+    # provider stays unconfigured until this is set. On the router an id may
+    # carry a policy or provider suffix (openai/gpt-oss-120b:cheapest).
+    huggingface_model: str = ""
+    # The Inference Providers router by default; set to a dedicated Inference
+    # Endpoint's OpenAI-compatible base URL (https://<id>.<region>.<cloud>.endpoints
+    # .huggingface.cloud/v1) for a deployment whose region you control.
+    huggingface_base_url: str = "https://router.huggingface.co/v1"
 
     # ── OpenRouter routing and attribution ───────────────────────────────
     # Comma-separated upstream host names (https://openrouter.ai/docs/features/provider-routing);
@@ -182,6 +196,19 @@ class GatewayConfig(BaseSettings):
     # publishers/anthropic/models/<model>:structured_outputs, and a denied call
     # is a 400. While off, routing skips vertex for those calls.
     vertex_structured_outputs: bool = False
+
+    # ── Gemini on Google Cloud Vertex AI ─────────────────────────────────
+    # Configured when gemini_project_id is set (deliberately not defaulted from
+    # vertex_project_id, so setting up vertex never turns gemini on). It uses
+    # the vertex_* credential settings (ADC, vertex_credentials_file, Workload
+    # Identity Federation, impersonation) and the `vertex` extra. See
+    # providers/gemini.py and the README.
+    gemini_project_id: str = ""
+    # "global", a multi-region ("eu", "us") or a region; which models are
+    # served where is in the README.
+    gemini_location: str = "eu"
+    # Vertex's OpenAI-compatible endpoint names Gemini models google/<model>.
+    gemini_model: str = "google/gemini-3.5-flash"
 
     # ── Routing ───────────────────────────────────────────────────────────
     # Comma-separated provider names, tried in order. A provider is skipped
@@ -333,6 +360,29 @@ class GatewayConfig(BaseSettings):
             )
         return normalized
 
+    @field_validator("gemini_project_id", "gemini_model", "huggingface_model")
+    @classmethod
+    def _strip_setting(cls, value: str) -> str:
+        return value.strip()
+
+    @field_validator("gemini_project_id")
+    @classmethod
+    def _check_gemini_project_id(cls, value: str) -> str:
+        if value and not _GCP_PROJECT_ID.fullmatch(value):
+            raise ValueError("gemini_project_id must be a Google Cloud project id, e.g. my-project")
+        return value
+
+    @field_validator("gemini_location")
+    @classmethod
+    def _check_gemini_location(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if not _VERTEX_LOCATION.fullmatch(normalized):
+            raise ValueError(
+                "gemini_location must be 'global', a multi-region ('eu', 'us') or a region "
+                "such as 'europe-west4'"
+            )
+        return normalized
+
     @field_validator("vertex_impersonate_service_account")
     @classmethod
     def _check_vertex_impersonation(cls, value: str) -> str:
@@ -414,6 +464,14 @@ class GatewayConfig(BaseSettings):
         value = value.strip()
         if value and not value.startswith(("http://", "https://")):
             raise ValueError("openai_compat_base_url must start with http:// or https://")
+        return value.rstrip("/")
+
+    @field_validator("huggingface_base_url")
+    @classmethod
+    def _check_huggingface_base_url(cls, value: str) -> str:
+        value = value.strip()
+        if not value.startswith(("http://", "https://")):
+            raise ValueError("huggingface_base_url must start with http:// or https://")
         return value.rstrip("/")
 
     @field_validator("provider_metadata")
