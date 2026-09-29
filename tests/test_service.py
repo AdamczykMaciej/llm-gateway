@@ -134,7 +134,13 @@ def test_chat_completions_forces_azure_from_model_prefix():
 
 @pytest.mark.parametrize(
     "model_prefix",
-    ["vertex/claude-haiku-4-5", "mistral/mistral-small-latest", "openrouter/openai/gpt-oss-120b"],
+    [
+        "vertex/claude-haiku-4-5",
+        "mistral/mistral-small-latest",
+        "openrouter/openai/gpt-oss-120b",
+        "gemini/google/gemini-3.5-flash",
+        "huggingface/openai/gpt-oss-120b:cheapest",
+    ],
 )
 def test_chat_completions_forces_provider_added_after_the_original_four(model_prefix):
     # Regression: the model="<provider>/<model>" allow-list used to be a
@@ -168,6 +174,27 @@ def test_models_endpoint_lists_azure_deployment_availability():
     by_id = {m["id"]: m for m in resp.json()["data"]}
     assert by_id["azure/gpt-oss-120b-prod"]["configured"] is True
     assert by_id["azure/gpt-oss-120b-prod"]["available"] is True
+
+
+def test_models_endpoint_lists_gemini_and_huggingface_when_configured():
+    client = _client(
+        gateway_api_keys="secret-key",
+        gemini_project_id="my-project",
+        huggingface_api_key="hf_test",
+        huggingface_model="openai/gpt-oss-120b:cheapest",
+    )
+    resp = client.get("/v1/models", headers={"Authorization": "Bearer secret-key"})
+    by_id = {m["id"]: m for m in resp.json()["data"]}
+    assert by_id["gemini/google/gemini-3.5-flash"]["configured"] is True
+    assert by_id["huggingface/openai/gpt-oss-120b:cheapest"]["configured"] is True
+
+
+def test_models_endpoint_new_providers_unconfigured_by_default():
+    client = _client(gateway_api_keys="secret-key")
+    resp = client.get("/v1/models", headers={"Authorization": "Bearer secret-key"})
+    by_id = {m["id"]: m for m in resp.json()["data"]}
+    assert by_id["gemini/google/gemini-3.5-flash"]["configured"] is False
+    assert not any(i.startswith("huggingface/") and m["configured"] for i, m in by_id.items())
 
 
 def test_models_endpoint_rejects_missing_auth():

@@ -346,6 +346,15 @@ async def test_gateway_fails_over_to_mistral_and_maps_errors():
             await chat(messages=[{"role": "user", "content": "hi"}], max_tokens=5, config=only)
 
 
+def test_llama_4_scout_on_azure_is_recognized_and_other_llamas_are_unknown():
+    scout = capabilities_for("azure", "Llama-4-Scout-17B-16E-Instruct")
+    assert scout.tools is False and scout.structured_output == "unsupported"
+    assert missing_capabilities(
+        "azure", "Llama-4-Scout-17B-16E-Instruct", ["tools"], require_parameters=False
+    )
+    assert capabilities_for("azure", "Llama-3.3-70B-Instruct").tools is None
+
+
 def test_capabilities_for_the_new_providers():
     assert capabilities_for("mistral", "mistral-small-latest").tools is True
     assert capabilities_for("mistral", "mistral-small-latest").structured_output == "strict"
