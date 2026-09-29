@@ -1,7 +1,7 @@
 # llm-gateway
 
 A small, self-hosted multi-provider LLM gateway: a fallback chain across
-Anthropic / Claude on Google Vertex AI / Azure AI Foundry / Groq / OpenAI, a per-provider circuit breaker, PII-masked OTel
+Anthropic / Claude on Google Vertex AI / Gemini on Vertex AI / Azure AI Foundry (incl. Llama) / Groq / OpenAI / Hugging Face (and Mistral, OpenRouter, any OpenAI-compatible host), a per-provider circuit breaker, PII-masked OTel
 tracing, and an OpenAI-compatible HTTP API — so any app can point at one
 provider and quietly keep working when that provider is down, rate-limited,
 or missing a key.
@@ -691,6 +691,7 @@ clients and managed-identity credentials are closed by
 shutdown. `GET /v1/models` lists `vertex/<vertex_model>` with its
 configured/available state.
 
+[vx-openai]: https://docs.cloud.google.com/vertex-ai/generative-ai/docs/multimodal/call-vertex-using-openai-library
 [vx-anthropic]: https://platform.claude.com/docs/en/build-with-claude/claude-on-vertex-ai
 [vx-haiku]: https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/partner-models/claude/haiku-4-5
 [vx-locations]: https://docs.cloud.google.com/gemini-enterprise-agent-platform/resources/locations
@@ -876,6 +877,9 @@ provider might ever serve:
 | `groq` (other models) | ✓ | `?` | JSON mode | `?` |
 | `mistral` | ✓ | ✓ | strict | `?` (Pixtral/multimodal models only, not asserted) |
 | `openrouter` | ✓ | `?` | JSON mode + local validation (strictness depends on the upstream host) | `?` |
+| `gemini` (`gemini-*`, with or without the `google/` prefix) | ✓ | ✓ | strict | ✓ |
+| `huggingface` | ✓ | `?` | JSON mode + local validation (the model id is yours, so strictness is unknown) | `?` |
+| `azure` (deployment named `llama-4-scout-*`) | `?` | `✗` | `✗` | ✓ |
 | `openai_compat` | ✓ | `OPENAI_COMPAT_SUPPORTS_TOOLS` (default ✓) | strict if `OPENAI_COMPAT_STRICT_JSON_SCHEMA` else JSON mode | `?` |
 
 "Strict" and "JSON mode" both serve `output_schema=`/`response_format`; only
@@ -988,6 +992,132 @@ and `openrouter` is only as EU as the hosts you pin. Default prices cover
 `mistral/mistral-small-latest` and `openrouter/openai/gpt-oss-120b`; set
 `MODEL_PRICES` for anything else (an `openai_compat` model has no default).
 
+### Gemini, Llama and Hugging Face (0.9.0)
+
+Three more model families, all **off by default**: with none of the settings
+below, an existing deployment behaves exactly as before. The library asserts no
+residency, retention, training or DPA fact for any of them; those stay in your
+`PROVIDER_METADATA`, and a provider with no entry there fails every
+compliance requirement of a policy (see
+[Provider policy](#provider-policy-and-cost-controls-050)).
+
+#### Gemini on Vertex AI (`gemini`)
+
+Vertex AI's [OpenAI-compatible endpoint][vx-openai] (`.../projects/<project>/locations/<location>/endpoints/openapi`),
+through the shared OpenAI-compatible request code: Chat Completions, streaming,
+tool calling, image input and strict `json_schema` output. Model ids look like
+`google/gemini-3.5-flash`.
+
+```bash
+pip install "llm-gateway[vertex] @ git+https://github.com/AdamczykMaciej/llm-gateway.git"
+```
+
+```python
+config = GatewayConfig(
+    gemini_project_id="my-gcp-project",
+    gemini_location="eu",
+    gemini_model="google/gemini-3.5-flash",
+    provider_order="anthropic,gemini,groq",
+)
+```
+
+| Setting (env var = upper case) | Default | |
+|---|---|---|
+| `gemini_project_id` | — | Google Cloud project. **Switches the provider on.** It does not fall back to `vertex_project_id`, so an existing `vertex` setup never enables Gemini by accident. |
+| `gemini_location` | `eu` | `global`, `eu`/`us` multi-region, or a region such as `europe-west3`. |
+| `gemini_model` | `google/gemini-3.5-flash` | The Vertex model id, sent as `model`. |
+
+**Credentials are the `vertex` provider's**, unchanged: Application Default
+Credentials, `VERTEX_CREDENTIALS_FILE` (Workload Identity Federation),
+`VERTEX_AZURE_APP_ID_URI`, `VERTEX_IMPERSONATE_SERVICE_ACCOUNT`; service-account
+key files are refused. Google access tokens last one hour, so the token is not
+baked into the cached client: the SDK awaits a token callback before every
+request, which returns the current token and refreshes it in a worker thread
+once google-auth says it has expired. The caller needs the *Vertex AI User* role
+(Agent Platform User). Needs the existing `[vertex]` extra (and `[azure]` for
+the Azure supplier); no new extra. A missing extra or any google-auth failure is
+an auth error: the chain moves on and the breaker counts it.
+
+**Locations per model** (Google's docs, checked 2026-09-29; verify before relying
+on them, they change):
+
+- **Gemini 3.5 Flash**: `eu` multi-region, plus `europe-west2` and `europe-west3`.
+- **Gemini 3.8 Flash, 3.5 Flash-Lite, 3.1 Flash-Lite**: the `eu` multi-region.
+- **Gemini 2.5 Flash / 2.5 Pro** retire on Vertex on 2026-10-20; don't start on them.
+
+The library does not hardcode which model is served where: an unsupported
+model/location pair is a 4xx from Google, which fails over without tripping the
+breaker. **Not verified:** Google's OpenAI-compatibility page only shows the
+global host (`aiplatform.googleapis.com`). The library builds the multi-region
+host (`aiplatform.eu.rep.googleapis.com`) and regional hosts
+(`<region>-aiplatform.googleapis.com`) the same way `vertex` does, but we could
+not confirm that the `openapi` path is served on the `eu.rep` host. Test your
+location before relying on it. Data-residency wording ("EU processing" versus
+in-country) is the same as for Claude; see
+[EU endpoints](#eu-endpoints-what-is-actually-guaranteed).
+
+There are **no default prices** for Gemini: a call has `cost_usd=None` until you
+set `MODEL_PRICES='{"gemini/google/gemini-3.5-flash": {...}}'`.
+
+#### Llama: through Azure, no new code path
+
+Llama is served by the `azure` provider you already have, so there is no `llama`
+provider id. Deploy the model in Azure AI Foundry and point `AZURE_MODEL` at the
+deployment. Facts from Azure's model catalog (checked 2026-09-29):
+`Llama-4-Scout-17B-16E-Instruct` is available as **Global Standard only**, i.e.
+processed in any Azure region, so it is **not EU-resident**; it lists **no tool
+calling** and a text response format.
+
+```bash
+AZURE_ENDPOINT=https://my-resource.services.ai.azure.com
+AZURE_MODEL=llama-4-scout-17b-16e-instruct   # your deployment name
+AZURE_AUTH=entra
+AZURE_REASONING_EFFORT=""      # Llama is not a reasoning model; omit the parameter
+AZURE_MAX_TOKENS_PARAM=max_tokens
+```
+
+Capabilities are inferred from the deployment name, so name it after the model
+(`llama-4-scout-*`): the gateway then knows it cannot do tools or structured
+output, and a call that needs them skips it instead of failing. Any other
+deployment name has unknown capabilities. **Not verified:** the exact
+`reasoning_effort` and `max_tokens` behaviour of the `/openai/v1` route for a
+Llama deployment; the settings above are the safe ones.
+
+**Not implemented, on purpose:**
+- *Llama on Vertex AI (Model-as-a-Service).* Google serves Llama 4 Maverick and
+  Scout only from `us-east5` and Llama 3.3 70B from `us-central1` (the latter is
+  deprecated, retirement 2026-10-21). There is no EU location, so it would not
+  serve the residency need behind this work.
+- *Meta's own hosted API.* Not a hyperscaler managed endpoint.
+
+#### Hugging Face (`huggingface`)
+
+Two ways to use one provider id, both OpenAI-compatible with a Bearer token:
+
+| Target | `HUGGINGFACE_BASE_URL` | Use |
+|---|---|---|
+| Inference Providers **router** | `https://router.huggingface.co/v1` (default) | Convenience. |
+| A **dedicated Inference Endpoint** | `https://<id>.<region>.<cloud>.endpoints.huggingface.cloud/v1` | The option you can control for GDPR: you pick the region and cloud. |
+
+> **GDPR warning.** The router is a broker: it **forwards your prompts to
+> third-party inference providers** chosen per request (model suffixes such as
+> `:fastest`, `:cheapest`, `:preferred` or `:<provider>` steer that choice). You
+> cannot state a residency, retention or training position for the router as a
+> whole. If those matter, use a **dedicated Inference Endpoint** in an EU region
+> and record it in `PROVIDER_METADATA`.
+
+| Setting (env var = upper case) | Default | |
+|---|---|---|
+| `huggingface_api_key` | — | Token. Read from `HUGGINGFACE_API_KEY` or `HF_TOKEN`. |
+| `huggingface_model` | — | **Required; no default.** The model id is yours (`openai/gpt-oss-120b:cheapest`, or whatever the endpoint serves), so the provider is unconfigured until it is set. |
+| `huggingface_base_url` | `https://router.huggingface.co/v1` | Must be `http(s)://`; a trailing slash is removed. |
+
+Because the model is operator-chosen, tool support and image input are unknown
+(`?`); streaming and JSON-mode structured output (schema in the prompt, output
+validated locally) are used. With `require_parameters` a call that needs tools is
+skipped for this provider. There are no default prices: set `MODEL_PRICES` or
+`cost_usd` is `None`.
+
 ### When no provider can serve the call (0.8.0)
 
 `complete()` / `complete_with_usage()` / `chat()` / `stream_chat()` raise
@@ -1056,7 +1186,8 @@ client.chat.completions.create(model="auto", messages=[{"role": "user", "content
 - `"<provider>/<model>"`, e.g. `"anthropic/claude-sonnet-4-6"` or
   `"openrouter/openai/gpt-oss-120b"` — calls that provider directly, no
   fallback. Any registered provider id works (`anthropic`, `azure`, `groq`,
-  `openai`, `vertex`, `mistral`, `openrouter`, `openai_compat`); a request
+  `openai`, `vertex`, `gemini`, `mistral`, `openrouter`, `openai_compat`,
+  `huggingface`); a request
   for anything else gets a 400.
 
 Endpoints: `POST /v1/chat/completions`, `GET /v1/models`, `GET /v1/usage` (all
@@ -1217,6 +1348,12 @@ Worst case for one call with the default three-provider chain:
 | `OPENAI_COMPAT_MODEL` | — | Its model id |
 | `OPENAI_COMPAT_SUPPORTS_TOOLS` | `true` | Whether that host takes `tools` |
 | `OPENAI_COMPAT_STRICT_JSON_SCHEMA` | `false` | Whether it enforces `json_schema`; otherwise JSON mode with the schema in the prompt |
+| `GEMINI_PROJECT_ID` | — | Google Cloud project; switches on Gemini on Vertex AI; see [Gemini, Llama and Hugging Face](#gemini-llama-and-hugging-face-090). Reuses the `VERTEX_*` credential settings; needs the `[vertex]` extra |
+| `GEMINI_LOCATION` | `eu` | `global`, `eu`/`us` multi-region, or a region |
+| `GEMINI_MODEL` | `google/gemini-3.5-flash` | Vertex model id (OpenAI-compatible endpoint) |
+| `HUGGINGFACE_API_KEY` / `HF_TOKEN` | — | Hugging Face token. The default router forwards to third parties; see the GDPR warning |
+| `HUGGINGFACE_MODEL` | — | Required to enable Hugging Face; operator-chosen, no default |
+| `HUGGINGFACE_BASE_URL` | `https://router.huggingface.co/v1` | Or a dedicated EU Inference Endpoint's `/v1` URL |
 | `CLAUDE_MODEL` | `claude-haiku-4-5-20251001` | |
 | `GROQ_MODEL` | `openai/gpt-oss-120b` | Groq retired `llama-3.3-70b-versatile` on 2026-08-16 |
 | `OPENAI_MODEL` | `gpt-4o-mini` | |
