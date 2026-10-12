@@ -36,6 +36,8 @@ MIN_CACHEABLE_TOKENS: dict[str, int] = {
     "claude-opus-4": 1024,
     "claude-sonnet-4": 1024,
     "claude-haiku-4-5": 4096,
+    # Haiku 5.5 overview, "Good to know" (checked 2026-10-12): 512.
+    "claude-haiku-5-5": 512,
     "claude-3-5-haiku": 2048,
 }
 # Unknown models get the largest documented minimum.

@@ -59,6 +59,17 @@ _CLAUDE_HAIKU_4_5 = ModelPrice(
     cached_input_per_mtok=0.10,
     cache_write_per_mtok=1.25,
 )
+# https://platform.claude.com/docs/en/models/haiku-5-5/overview (checked
+# 2026-10-12): rates for prompts up to 100,000 tokens. Over 100,000 tokens the
+# whole request costs 5x (input 0.50, output 2.50, cache write 0.625, cache
+# read 0.05), which this flat table does not model: override via MODEL_PRICES
+# if you send such prompts. Uses a ~30% larger tokenizer than Haiku 4.5.
+_CLAUDE_HAIKU_5_5 = ModelPrice(
+    input_per_mtok=0.10,
+    output_per_mtok=0.50,
+    cached_input_per_mtok=0.01,
+    cache_write_per_mtok=0.125,
+)
 # https://cloud.google.com/vertex-ai/generative-ai/pricing ("Anthropic's Claude
 # models", Global tab: input $1.00, output $5.00, 5m cache write $1.25, cache
 # hit $0.10). The europe-west1 / us-east5 tabs list the same model at 1.1x.
@@ -75,6 +86,7 @@ VERTEX_REGIONAL_PREMIUM = 1.1
 DEFAULT_PRICES: dict[str, ModelPrice] = {
     "anthropic/claude-haiku-4-5-20251001": _CLAUDE_HAIKU_4_5,
     "anthropic/claude-haiku-4-5": _CLAUDE_HAIKU_4_5,
+    "anthropic/claude-haiku-5-5": _CLAUDE_HAIKU_5_5,
     # Global-endpoint prices; see VERTEX_REGIONAL_PREMIUM.
     "vertex/claude-haiku-4-5@20251001": _CLAUDE_HAIKU_4_5_VERTEX_GLOBAL,
     "vertex/claude-haiku-4-5": _CLAUDE_HAIKU_4_5_VERTEX_GLOBAL,

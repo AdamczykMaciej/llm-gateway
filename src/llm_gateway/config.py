@@ -111,6 +111,16 @@ class GatewayConfig(BaseSettings):
 
     # ── Provider models ──────────────────────────────────────────────────
     claude_model: str = "claude-haiku-4-5-20251001"
+    # Retried once, before the provider chain moves on, when `claude_model` is
+    # rejected as unknown or because it does not accept the request (404, or a
+    # 400 about the model/a parameter). "" = no model fallback.
+    claude_model_fallback: str = ""
+    # Claude 5.x only (a no-op for older models). `anthropic_thinking`:
+    # "" (the model's default; Haiku 5.5 thinks adaptively by default, billed
+    # as output), "disabled" (Haiku 5.5 only) or "adaptive". `anthropic_effort`:
+    # "" or low|medium|high|xhigh|max, sent as output_config.effort.
+    anthropic_thinking: str = ""
+    anthropic_effort: str = ""
     # Groq retired llama-3.3-70b-versatile on 2026-08-16. gpt-oss-120b is a
     # reasoning model: providers/groq.py sends it reasoning_effort="low".
     groq_model: str = "openai/gpt-oss-120b"
@@ -303,6 +313,22 @@ class GatewayConfig(BaseSettings):
 
     # Set to false only behind a corporate SSL-inspection proxy.
     ssl_verify: bool = True
+
+    @field_validator("anthropic_thinking")
+    @classmethod
+    def _check_anthropic_thinking(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized not in ("", "disabled", "adaptive"):
+            raise ValueError("anthropic_thinking must be one of: '', disabled, adaptive")
+        return normalized
+
+    @field_validator("anthropic_effort")
+    @classmethod
+    def _check_anthropic_effort(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized not in ("", "low", "medium", "high", "xhigh", "max"):
+            raise ValueError("anthropic_effort must be one of: '', low, medium, high, xhigh, max")
+        return normalized
 
     @field_validator("azure_auth")
     @classmethod
