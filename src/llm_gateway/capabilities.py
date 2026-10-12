@@ -50,6 +50,7 @@ _ANTHROPIC_STRICT_OUTPUT_MODELS = (
     "claude-opus-4-8",
     "claude-sonnet-5",
     "claude-haiku-4-5",
+    "claude-haiku-5-5",
     "claude-opus-4-5",
     "claude-opus-4-1",
 )

@@ -215,6 +215,7 @@ when it can actually be cached**. Minimum cacheable prompt lengths from
 | Claude Opus 5, Fable 5 / 5.1, Mythos 5 / 5.1                       | 512            |
 | Claude Opus 4.8, Sonnet 5, Sonnet 4.6, Sonnet 4.5, Opus 4.1, Opus 4, Sonnet 4 | 1,024 |
 | Claude Opus 4.7, Mythos Preview, Haiku 3.5                         | 2,048          |
+| Claude Haiku 5.5                                                   | 512            |
 | **Claude Haiku 4.5** (the default `CLAUDE_MODEL`), Opus 4.6, Opus 4.5 | **4,096**   |
 
 [ant-pc]: https://platform.claude.com/docs/en/build-with-claude/prompt-caching
@@ -1229,7 +1230,9 @@ are accepted and passed through to whichever provider serves the request.
 Groq/OpenAI accept all of them natively; Anthropic supports `temperature`,
 `top_p`, and `stop` (translated to `stop_sequences`) — `seed` and the two
 penalty params have no Anthropic equivalent and are silently dropped rather
-than erroring.
+than erroring. For Claude 5.x models (and Opus 4.7/4.8), which return a 400 for
+non-default `temperature`/`top_p`/`top_k`, the gateway drops `temperature` and
+`top_p` before the request; `stop` still passes.
 
 ### Errors
 
@@ -1355,6 +1358,9 @@ Worst case for one call with the default three-provider chain:
 | `HUGGINGFACE_MODEL` | — | Required to enable Hugging Face; operator-chosen, no default |
 | `HUGGINGFACE_BASE_URL` | `https://router.huggingface.co/v1` | Or a dedicated EU Inference Endpoint's `/v1` URL |
 | `CLAUDE_MODEL` | `claude-haiku-4-5-20251001` | |
+| `CLAUDE_MODEL_FALLBACK` | — | Retried once (same provider, before the chain moves on) when `CLAUDE_MODEL` is rejected: 404, or a 400 about the model or an unsupported parameter. Not used when a call names its own model |
+| `ANTHROPIC_THINKING` | — | Claude 5.x only. `disabled` (Haiku 5.5 only; not sent with effort `xhigh`/`max`) or `adaptive`. Empty = the model default; Haiku 5.5 thinks by default and bills thinking as output |
+| `ANTHROPIC_EFFORT` | — | Claude 5.x only. `low` \| `medium` \| `high` \| `xhigh` \| `max`, sent as `output_config.effort`. Haiku 5.5 defaults to `medium` |
 | `GROQ_MODEL` | `openai/gpt-oss-120b` | Groq retired `llama-3.3-70b-versatile` on 2026-08-16 |
 | `OPENAI_MODEL` | `gpt-4o-mini` | |
 | `PROVIDER_ORDER` | `anthropic,groq,openai` | Comma-separated, tried in order |

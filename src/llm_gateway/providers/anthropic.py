@@ -8,11 +8,18 @@ functions to `AsyncAnthropicVertex`, so both serve identical request bodies.
 """
 
 import json
+import logging
+import re
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import aclosing
 from typing import Any
 
-from anthropic import AsyncAnthropic, DefaultAsyncHttpxClient
+from anthropic import (
+    AsyncAnthropic,
+    BadRequestError,
+    DefaultAsyncHttpxClient,
+    NotFoundError,
+)
 
 from ..config import GatewayConfig
 from ..errors import InvalidOutputError
@@ -44,6 +51,38 @@ from .base import (
 )
 
 PROVIDER = "anthropic"
+
+logger = logging.getLogger(__name__)
+
+# Models that return a 400 for any non-default `temperature`/`top_p`/`top_k`
+# (docs: platform.claude.com/docs/en/models/haiku-5-5/migration-guide, checked
+# 2026-10-12): the 5.x generation and Opus 4.7/4.8. For these the sampling
+# keys are dropped before the request, so a caller written for older models
+# keeps working instead of failing every call.
+_REJECTS_SAMPLING = re.compile(
+    r"^claude-(?:(?:haiku|sonnet|opus|fable|mythos)-5(?:-\d+)?|opus-4-[78])(?:$|[-@])"
+)
+# Models that take `output_config.effort` and, for Haiku, `thinking: disabled`.
+_TAKES_EFFORT = re.compile(r"^claude-(?:haiku|sonnet|opus|fable|mythos)-5(?:-\d+)?(?:$|[-@])")
+_CAN_DISABLE_THINKING = re.compile(r"^claude-haiku-5(?:-\d+)?(?:$|[-@])")
+# "disabled" is a 400 at these effort levels on Haiku 5.5.
+_EFFORTS_WITHOUT_DISABLED_THINKING = frozenset({"xhigh", "max"})
+
+# Words in a 400 body that mean "this model does not accept this request",
+# as opposed to a bad prompt (too long, malformed). Only these trigger the
+# model fallback.
+_MODEL_REJECTION_HINTS = (
+    "model",
+    "temperature",
+    "top_p",
+    "top_k",
+    "thinking",
+    "effort",
+    "prefill",
+    "output_config",
+    "not supported",
+    "unsupported",
+)
 
 # Returns the SDK client to send one request with: `AsyncAnthropic` or
 # `AsyncAnthropicVertex`, which share the `messages` resource.
@@ -91,14 +130,69 @@ def default_model(config: GatewayConfig) -> str:
 _BODY_ONLY_SAMPLING_KEYS = ("temperature", "top_p")
 
 
-def _sampling_kwargs(sampling: dict | None) -> dict:
+def _sampling_kwargs(sampling: dict | None, model: str | None = None) -> dict:
     """SDK-call kwargs for translated sampling params. Shared by chat() and
-    stream_chat()."""
+    stream_chat(). `temperature`/`top_p` are dropped for a model that rejects
+    them (see _REJECTS_SAMPLING); `stop_sequences` always passes."""
     params = to_anthropic_sampling(sampling)
+    if model and _REJECTS_SAMPLING.match(model):
+        params.pop("temperature", None)
+        params.pop("top_p", None)
     body = {k: params.pop(k) for k in _BODY_ONLY_SAMPLING_KEYS if k in params}
     if body:
         params["extra_body"] = body
     return params
+
+
+def _apply_thinking_effort(kwargs: dict, model: str, thinking: str, effort: str) -> None:
+    """Add `output_config.effort` and `thinking` to the request for the models
+    that take them; a no-op for any other model (so the same config is safe
+    after a fallback to an older model). Haiku 5.5 thinks by default and bills
+    thinking as output tokens: `thinking="disabled"` / a low effort keep that
+    spend predictable. "disabled" is not sent together with effort xhigh/max
+    (a 400 on Haiku 5.5)."""
+    if not _TAKES_EFFORT.match(model):
+        return
+    if effort:
+        kwargs["output_config"] = {**kwargs.get("output_config", {}), "effort": effort}
+    body = None
+    if thinking == "disabled":
+        if _CAN_DISABLE_THINKING.match(model) and effort not in _EFFORTS_WITHOUT_DISABLED_THINKING:
+            body = {"type": "disabled"}
+    elif thinking == "adaptive":
+        body = {"type": "adaptive"}
+    if body:
+        kwargs["extra_body"] = {**kwargs.get("extra_body", {}), "thinking": body}
+
+
+def is_model_rejection(exc: BaseException) -> bool:
+    """True for a 404 (model not found) or a 400 whose message says the model
+    does not accept the request (unknown model, unsupported parameter). Other
+    400s, such as an over-long prompt, are not model problems."""
+    if isinstance(exc, NotFoundError):
+        return True
+    if not isinstance(exc, BadRequestError):
+        return False
+    message = str(getattr(exc, "message", "") or exc).lower()
+    return any(hint in message for hint in _MODEL_REJECTION_HINTS)
+
+
+def _fallback_model(config: GatewayConfig, requested: str | None, exc: BaseException) -> str | None:
+    """The model to retry once with, or None. Only for the configured default
+    model (an explicit per-call model is the caller's choice). Logs one
+    WARNING with the status and model names only, never request text."""
+    fallback = config.claude_model_fallback
+    if requested or not fallback or fallback == config.claude_model:
+        return None
+    if not is_model_rejection(exc):
+        return None
+    logger.warning(
+        "anthropic model %s rejected the request (status %s); retrying once with %s",
+        config.claude_model,
+        getattr(exc, "status_code", "?"),
+        fallback,
+    )
+    return fallback
 
 
 def _resolve_tool_kwargs(
@@ -138,16 +232,27 @@ async def call(
     output_schema: OutputSchema | None = None,
     cache_system: bool = False,
 ) -> ProviderResult:
-    return await messages_call(
-        _client_factory(config),
-        provider=PROVIDER,
-        model=model or default_model(config),
-        system=system,
-        prompt=prompt,
-        max_tokens=max_tokens,
-        output_schema=output_schema,
-        cache_system=cache_system,
-    )
+    async def run(chosen: str) -> ProviderResult:
+        return await messages_call(
+            _client_factory(config),
+            provider=PROVIDER,
+            model=chosen,
+            system=system,
+            prompt=prompt,
+            max_tokens=max_tokens,
+            output_schema=output_schema,
+            cache_system=cache_system,
+            thinking=config.anthropic_thinking,
+            effort=config.anthropic_effort,
+        )
+
+    try:
+        return await run(model or default_model(config))
+    except (NotFoundError, BadRequestError) as exc:
+        fallback = _fallback_model(config, model, exc)
+        if fallback is None:
+            raise
+        return await run(fallback)
 
 
 async def messages_call(
@@ -160,6 +265,8 @@ async def messages_call(
     max_tokens: int,
     output_schema: OutputSchema | None,
     cache_system: bool,
+    thinking: str = "",
+    effort: str = "",
 ) -> ProviderResult:
     """Plain completion. The answer is every `text` block joined in order:
     a model that thinks returns `thinking`/`redacted_thinking` blocks before
@@ -176,6 +283,7 @@ async def messages_call(
                 "schema": output_schema.strict_schema(require_all_properties=False),
             }
         }
+    _apply_thinking_effort(kwargs, model, thinking, effort)
     resp = await (await get_client()).messages.create(
         model=model,
         max_tokens=max_tokens,
@@ -217,17 +325,28 @@ async def chat(
     sampling: dict | None = None,
     response_format: dict | None = None,
 ) -> ChatResult:
-    return await messages_chat(
-        _client_factory(config),
-        provider=PROVIDER,
-        model=model or default_model(config),
-        messages=messages,
-        tools=tools,
-        max_tokens=max_tokens,
-        tool_choice=tool_choice,
-        sampling=sampling,
-        response_format=response_format,
-    )
+    async def run(chosen: str) -> ChatResult:
+        return await messages_chat(
+            _client_factory(config),
+            provider=PROVIDER,
+            model=chosen,
+            messages=messages,
+            tools=tools,
+            max_tokens=max_tokens,
+            tool_choice=tool_choice,
+            sampling=sampling,
+            response_format=response_format,
+            thinking=config.anthropic_thinking,
+            effort=config.anthropic_effort,
+        )
+
+    try:
+        return await run(model or default_model(config))
+    except (NotFoundError, BadRequestError) as exc:
+        fallback = _fallback_model(config, model, exc)
+        if fallback is None:
+            raise
+        return await run(fallback)
 
 
 async def messages_chat(
@@ -241,12 +360,15 @@ async def messages_chat(
     tool_choice: object,
     sampling: dict | None,
     response_format: dict | None,
+    thinking: str = "",
+    effort: str = "",
 ) -> ChatResult:
     system, anthropic_messages = to_anthropic_messages(messages)
     tool_kwargs, emulating_structured_output = _resolve_tool_kwargs(
         tools, tool_choice, response_format
     )
-    kwargs: dict = {**_sampling_kwargs(sampling), **tool_kwargs}
+    kwargs: dict = {**_sampling_kwargs(sampling, model), **tool_kwargs}
+    _apply_thinking_effort(kwargs, model, thinking, effort)
 
     resp = await (await get_client()).messages.create(
         model=model,
@@ -292,20 +414,35 @@ async def _stream_chat(
     sampling: dict | None = None,
     response_format: dict | None = None,
 ) -> AsyncIterator[StreamDelta]:
-    deltas = messages_stream(
-        _client_factory(config),
-        model=model or default_model(config),
-        messages=messages,
-        tools=tools,
-        max_tokens=max_tokens,
-        tool_choice=tool_choice,
-        sampling=sampling,
-        response_format=response_format,
-        request_options=stream_request_options(config),
-    )
-    async with aclosing(deltas):
-        async for delta in deltas:
-            yield delta
+    chosen = model or default_model(config)
+    started = False
+    while True:
+        deltas = messages_stream(
+            _client_factory(config),
+            model=chosen,
+            messages=messages,
+            tools=tools,
+            max_tokens=max_tokens,
+            tool_choice=tool_choice,
+            sampling=sampling,
+            response_format=response_format,
+            request_options=stream_request_options(config),
+            thinking=config.anthropic_thinking,
+            effort=config.anthropic_effort,
+        )
+        try:
+            async with aclosing(deltas):
+                async for delta in deltas:
+                    started = True
+                    yield delta
+            return
+        except (NotFoundError, BadRequestError) as exc:
+            # Retry once, and only before the first chunk reached the caller.
+            fallback = None if started else _fallback_model(config, model, exc)
+            if fallback is None:
+                raise
+            chosen = fallback
+            model = fallback  # now explicit: no second fallback
 
 
 async def messages_stream(
@@ -319,6 +456,8 @@ async def messages_stream(
     sampling: dict | None,
     response_format: dict | None,
     request_options: dict,
+    thinking: str = "",
+    effort: str = "",
 ) -> AsyncIterator[StreamDelta]:
     """Translate Anthropic's raw SSE event stream into normalized
     StreamDelta chunks. Anthropic's tool-call streaming already arrives
@@ -331,7 +470,8 @@ async def messages_stream(
     tool_kwargs, emulating_structured_output = _resolve_tool_kwargs(
         tools, tool_choice, response_format
     )
-    kwargs: dict = {**_sampling_kwargs(sampling), **tool_kwargs}
+    kwargs: dict = {**_sampling_kwargs(sampling, model), **tool_kwargs}
+    _apply_thinking_effort(kwargs, model, thinking, effort)
 
     # Raw Anthropic usage fields. message_start carries the input side;
     # message_delta carries cumulative counts, where any field it includes
