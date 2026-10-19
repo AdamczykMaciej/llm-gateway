@@ -359,6 +359,8 @@ async def call(
             max_tokens=max_tokens,
             output_schema=output_schema,
             cache_system=cache_system,
+            thinking=config.anthropic_thinking,
+            effort=config.anthropic_effort,
         )
     except auth_errors as e:
         raise _auth_failure(e) from e
@@ -387,6 +389,8 @@ async def chat(
             tool_choice=tool_choice,
             sampling=sampling,
             response_format=response_format,
+            thinking=config.anthropic_thinking,
+            effort=config.anthropic_effort,
         )
     except auth_errors as e:
         raise _auth_failure(e) from e
@@ -413,6 +417,8 @@ async def _stream_chat(
         sampling=sampling,
         response_format=response_format,
         request_options=stream_request_options(config),
+        thinking=config.anthropic_thinking,
+        effort=config.anthropic_effort,
     )
     auth_errors = _auth_error_types()
     async with aclosing(deltas):

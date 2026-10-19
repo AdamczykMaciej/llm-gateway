@@ -182,9 +182,11 @@ class GatewayConfig(BaseSettings):
     # Configured when vertex_project_id and vertex_model are set. Needs the
     # `vertex` extra. See providers/vertex.py and the README.
     vertex_project_id: str = ""
-    # "global", a multi-region ("eu", "us") or a region. Claude Haiku 4.5 is
-    # offered regionally in europe-west1 (ML processing inside the EU) but
-    # not on the eu multi-region endpoint.
+    # "global", a multi-region ("eu", "us") or a region. Regional endpoints
+    # serve Claude up to Sonnet 4.6 (Haiku 4.5 is in europe-west1); Claude 5.5
+    # (claude-haiku-5-5, claude-sonnet-5-5, claude-opus-5-5, no @date) is on
+    # "global" or the "eu"/"us" multi-region endpoints
+    # (https://aiplatform.eu.rep.googleapis.com), which cost 10% more.
     vertex_location: str = "europe-west1"
     vertex_model: str = "claude-haiku-4-5@20251001"
     # A credential configuration file (e.g. an external_account config for
