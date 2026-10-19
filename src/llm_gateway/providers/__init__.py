@@ -77,6 +77,19 @@ DEFAULT_MODEL = {
     "vertex": vertex.default_model,
 }
 
+RESIDENCY = {
+    "anthropic": anthropic.residency,
+    "azure": azure.residency,
+    "gemini": gemini.residency,
+    "groq": groq.residency,
+    "huggingface": huggingface.residency,
+    "mistral": mistral.residency,
+    "openai": openai.residency,
+    "openai_compat": openai_compat.residency,
+    "openrouter": openrouter.residency,
+    "vertex": vertex.residency,
+}
+
 __all__ = [
     "ProviderResult",
     "ChatResult",
@@ -88,4 +101,5 @@ __all__ = [
     "STREAM_CALLS",
     "CONFIGURED",
     "DEFAULT_MODEL",
+    "RESIDENCY",
 ]

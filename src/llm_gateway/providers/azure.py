@@ -32,6 +32,7 @@ from openai import AsyncOpenAI, DefaultAsyncHttpx2Client
 
 from ..config import GatewayConfig
 from ..errors import ProviderAuthError
+from ..residency import azure_residency
 from ..structured import OutputSchema
 from .base import (
     ChatResult,
@@ -330,3 +331,13 @@ async def stream_chat(
     async with aclosing(guarded):
         async for delta in guarded:
             yield delta
+
+
+def residency(config: GatewayConfig) -> str:
+    """The data zone (`azure_data_zone`), else an EU region (`azure_region` or
+    in the endpoint host), else "unknown". See residency.py."""
+    return azure_residency(
+        data_zone=config.azure_data_zone,
+        region=config.azure_region,
+        endpoint=config.azure_endpoint,
+    )

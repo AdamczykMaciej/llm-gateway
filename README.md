@@ -974,6 +974,58 @@ Not covered yet: `chat()` / `stream_chat()` results don't carry `cost_usd`;
 `GET /v1/models` availability ignores the policy; the HTTP service has no
 budget hook.
 
+### EU residency (0.11.0)
+
+**Claude 5.5 on the Vertex `eu` multi-region endpoint.** Claude Haiku 5.5, Sonnet
+5.5 and Opus 5.5 are not served from single EU regions: use `global` or the
+`eu`/`us` multi-region endpoints ([Claude on Vertex][vx-anthropic], checked
+2026-10-19). `VERTEX_LOCATION=eu` sends requests to
+`https://aiplatform.eu.rep.googleapis.com/v1` with the path
+`/v1/projects/<project>/locations/eu/publishers/anthropic/models/<model>:rawPredict`
+(`:streamRawPredict` when streaming). Model ids carry no `@date`:
+`claude-haiku-5-5`, `claude-sonnet-5-5`, `claude-opus-5-5`.
+
+```bash
+VERTEX_PROJECT_ID=my-project
+VERTEX_LOCATION=eu
+VERTEX_MODEL=claude-haiku-5-5
+```
+
+The host is built by the library (`vertex.base_url()`), so any `anthropic[vertex]>=1.5`
+works. 5.x request safety (no `temperature`/`top_p`, `ANTHROPIC_EFFORT`,
+`ANTHROPIC_THINKING`) now applies to `vertex` too; before 0.11.0 only the
+`anthropic` provider sent thinking/effort. Multi-region endpoints cost 10% more
+than `global` (`VERTEX_REGIONAL_PREMIUM`).
+
+**`residency` per provider.** Derived from configuration, never from the network:
+
+| Provider | Residency |
+| --- | --- |
+| `vertex`, `gemini` | location: `eu` and `europe-*` -> `eu`; `us`, `us-*` -> `us`; `global` -> `global`; else `unknown` |
+| `azure` | `AZURE_DATA_ZONE` (`eu`, `us`, `global`), else `AZURE_REGION` or an endpoint host label that is an EU region -> `eu`, else `unknown` |
+| `mistral` | `eu` while the host is `api.mistral.ai` |
+| `anthropic`, `openai`, `huggingface`, `openrouter` | `global` (may route anywhere) |
+| `groq` | `us` |
+| `openai_compat` | `unknown` |
+
+```python
+from llm_gateway import GatewayConfig, residency_report
+
+residency_report(GatewayConfig())  # chain only: {"vertex": "eu", "anthropic": "global"}
+residency_report(GatewayConfig(), all_providers=True)
+```
+
+**Strict mode.** `REQUIRE_RESIDENCY=eu` (`GatewayConfig.require_residency`, default
+unset) makes routing refuse any provider whose residency is not `eu`, and an
+`unknown` residency is never allowed. It applies to `complete`, `chat`,
+`stream_chat`, `force_provider` and an edited `provider_order`, is checked per
+call before any network request, and never falls through: if the EU providers
+fail you get the usual `AllProvidersExhaustedError`, and if none is eligible you
+get `ResidencyViolationError` (a `PolicyViolationError`; HTTP 400 on the
+service). It is independent of `POLICY_RESIDENCY`, which compares operator
+asserted `PROVIDER_METADATA`. Unset, behaviour is unchanged. Residency says where
+the configuration sends prompts; it is not a vendor audit or a contract.
+
 ### OpenAI-compatible hosts: Mistral, OpenRouter, any (0.7.0)
 
 Three more provider ids share one implementation (`providers/openai_compatible.py`)
@@ -1334,7 +1386,9 @@ Worst case for one call with the default three-provider chain:
 | `AZURE_REASONING_EFFORT` | `low` | `reasoning_effort` on every azure request; `""` omits it |
 | `AZURE_MAX_TOKENS_PARAM` | `max_completion_tokens` | Token-budget field for azure requests: `max_completion_tokens` or `max_tokens` |
 | `VERTEX_PROJECT_ID` | — | Google Cloud project for Claude on Vertex AI; see [Claude on Google Vertex AI](#claude-on-google-vertex-ai-060). Needs the `[vertex]` extra |
-| `VERTEX_LOCATION` | `europe-west1` | `global`, `eu`/`us` multi-region, or a region |
+| `VERTEX_LOCATION` | `europe-west1` | `global`, `eu`/`us` multi-region, or a region. Claude 5.5 needs `global` or `eu`/`us` |
+| `REQUIRE_RESIDENCY` | — | e.g. `eu`: refuse providers whose residency differs; see [EU residency](#eu-residency-0110) |
+| `AZURE_DATA_ZONE` / `AZURE_REGION` | — | Where the azure deployment processes prompts (`eu`/`us`/`global`; an EU region name) |
 | `VERTEX_MODEL` | `claude-haiku-4-5@20251001` | Vertex model id |
 | `VERTEX_CREDENTIALS_FILE` | — | Credential configuration file (e.g. Workload Identity Federation `external_account`); unset uses ADC. Key files are rejected |
 | `VERTEX_IMPERSONATE_SERVICE_ACCOUNT` | — | Service account email to impersonate |

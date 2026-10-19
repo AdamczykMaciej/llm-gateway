@@ -587,3 +587,8 @@ async def stream_chat(
     async with aclosing(guarded):
         async for delta in guarded:
             yield delta
+
+
+def residency(config: GatewayConfig) -> str:
+    """Where prompts are processed: 'global'. See residency.py."""
+    return "global"

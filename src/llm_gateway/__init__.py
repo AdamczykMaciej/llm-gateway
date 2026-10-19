@@ -37,12 +37,14 @@ from .errors import (
     LLMDeadlineExceeded,
     PolicyViolationError,
     ProviderAuthError,
+    ResidencyViolationError,
     UnsupportedCapabilityError,
 )
 from .pii import mask_pii
 from .policy import BudgetCheck, ProviderMetadata, ProviderPolicy
 from .pricing import ModelPrice
 from .providers.base import ChatResult, StreamDelta, ToolCall, Usage
+from .residency import residency_report
 from .router import Completion, LLMError, complete, complete_with_usage
 from .streaming import stream_chat
 
@@ -53,6 +55,8 @@ __all__ = [
     "BudgetCheck",
     "PolicyViolationError",
     "UnsupportedCapabilityError",
+    "ResidencyViolationError",
+    "residency_report",
     "complete",
     "complete_with_usage",
     "Completion",

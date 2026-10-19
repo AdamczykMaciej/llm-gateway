@@ -41,3 +41,8 @@ default_model = _provider.default_model
 call = _provider.call
 chat = _provider.chat
 stream_chat = _provider.stream_chat
+
+
+def residency(config: GatewayConfig) -> str:
+    """Where prompts are processed: 'unknown'. See residency.py."""
+    return "unknown"

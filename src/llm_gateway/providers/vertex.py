@@ -58,6 +58,7 @@ from ..config import (
     service_account_impersonation_url,
 )
 from ..errors import ProviderAuthError
+from ..residency import vertex_location_residency
 from ..structured import OutputSchema
 from . import anthropic as anthropic_messages
 from .base import (
@@ -359,6 +360,8 @@ async def call(
             max_tokens=max_tokens,
             output_schema=output_schema,
             cache_system=cache_system,
+            thinking=config.anthropic_thinking,
+            effort=config.anthropic_effort,
         )
     except auth_errors as e:
         raise _auth_failure(e) from e
@@ -387,6 +390,8 @@ async def chat(
             tool_choice=tool_choice,
             sampling=sampling,
             response_format=response_format,
+            thinking=config.anthropic_thinking,
+            effort=config.anthropic_effort,
         )
     except auth_errors as e:
         raise _auth_failure(e) from e
@@ -413,6 +418,8 @@ async def _stream_chat(
         sampling=sampling,
         response_format=response_format,
         request_options=stream_request_options(config),
+        thinking=config.anthropic_thinking,
+        effort=config.anthropic_effort,
     )
     auth_errors = _auth_error_types()
     async with aclosing(deltas):
@@ -450,3 +457,9 @@ async def stream_chat(
     async with aclosing(guarded):
         async for delta in guarded:
             yield delta
+
+
+def residency(config: GatewayConfig) -> str:
+    """Residency of `vertex_location`: "eu" for `eu` and europe-*, "us", "global"
+    or "unknown". See residency.py."""
+    return vertex_location_residency(config.vertex_location)
