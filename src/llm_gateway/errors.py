@@ -12,6 +12,9 @@ failed provider call, so the rules below are the whole policy:
 | `AUTH`            | 401, 403; `ProviderAuthError` (e.g. no Entra   | no    | counts  |
 |                   | token for Azure, a google-auth refresh error   |       |         |
 |                   | or a missing extra for Vertex)                 |       |         |
+| `BILLING`         | 400/402/429 whose message says the account is  | no    | counts, |
+|                   | out of credit or over a spend limit (see       |       | opens   |
+|                   | `_BILLING_MARKERS`)                            |       | at once |
 | `INVALID_REQUEST` | 400, 404, 413, 422 and every other 4xx,        | no    | ignored |
 |                   | including Azure's 400 `content_filter`         |       |         |
 | `INVALID_OUTPUT`  | no text, a refusal, or structured output that  | no    | ignored |
@@ -175,6 +178,7 @@ class ErrorKind(StrEnum):
     TIMEOUT = "timeout"
     RATE_LIMITED = "rate_limited"
     AUTH = "auth"
+    BILLING = "billing"
     INVALID_REQUEST = "invalid_request"
     INVALID_OUTPUT = "invalid_output"
     EMPTY_RESPONSE = "empty_response"
@@ -188,6 +192,11 @@ class ErrorPolicy:
     """Worth another attempt on the same provider after a short backoff."""
     trips_breaker: bool
     """Counts toward that provider's circuit breaker."""
+    opens_immediately: bool = False
+    """One occurrence opens the breaker for the cooldown, regardless of the
+    failure threshold: the condition (an empty balance) cannot clear by itself
+    within a few requests, so waiting for N more failing round trips only
+    adds latency and noise."""
 
 
 POLICIES: dict[ErrorKind, ErrorPolicy] = {
@@ -195,6 +204,7 @@ POLICIES: dict[ErrorKind, ErrorPolicy] = {
     ErrorKind.TIMEOUT: ErrorPolicy(retry=False, trips_breaker=True),
     ErrorKind.RATE_LIMITED: ErrorPolicy(retry=False, trips_breaker=True),
     ErrorKind.AUTH: ErrorPolicy(retry=False, trips_breaker=True),
+    ErrorKind.BILLING: ErrorPolicy(retry=False, trips_breaker=True, opens_immediately=True),
     ErrorKind.INVALID_REQUEST: ErrorPolicy(retry=False, trips_breaker=False),
     ErrorKind.INVALID_OUTPUT: ErrorPolicy(retry=False, trips_breaker=False),
     ErrorKind.EMPTY_RESPONSE: ErrorPolicy(retry=False, trips_breaker=True),
@@ -285,6 +295,51 @@ def _body_error_code(body: object) -> object:
     return nested.get("code") if isinstance(nested, dict) else body.get("code")
 
 
+# Stable, lower-case fragments of provider billing/quota messages. Matched as
+# substrings of the lower-cased message/code/type, so wording changes around
+# them do not matter. Deliberately specific: a bare "billing" or "quota" would
+# also match genuine request errors.
+_BILLING_MARKERS = (
+    "credit balance is too low",  # Anthropic 400
+    "reached your specified api usage limits",  # Anthropic spend limit 400
+    "api usage limits",
+    "insufficient_quota",  # OpenAI code/type, 429 or 400
+    "exceeded your current quota",  # OpenAI message
+    "plans and billing",
+    "billing hard limit",
+    "spend limit",
+    "spending limit",
+    "insufficient credits",
+    "insufficient balance",
+    "out of credits",
+)
+# Only these statuses (or none, inside a 200 stream) can mean "billing".
+_BILLING_STATUSES = frozenset({400, 402, 429})
+
+
+def _error_text(exc: BaseException) -> str:
+    parts: list[str] = [str(getattr(exc, "message", "") or "")]
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        nested = body.get("error")
+        source = nested if isinstance(nested, dict) else body
+        parts += [str(source.get(k) or "") for k in ("message", "code", "type")]
+    return " ".join(parts).lower()
+
+
+def is_billing_error(exc: BaseException) -> bool:
+    """True for a provider error saying the account is out of credit, over a
+    spend limit or out of quota. Reads only the error's own message/code/type,
+    never request content."""
+    if not isinstance(exc, _SDK_ERRORS):
+        return False
+    status = getattr(exc, "status_code", None)
+    if isinstance(status, int) and status >= 400 and status not in _BILLING_STATUSES:
+        return False
+    text = _error_text(exc)
+    return any(marker in text for marker in _BILLING_MARKERS)
+
+
 def classify(exc: BaseException) -> ErrorKind:
     if isinstance(exc, PolicyViolationError):
         return ErrorKind.POLICY_VIOLATION
@@ -298,6 +353,8 @@ def classify(exc: BaseException) -> ErrorKind:
         return ErrorKind.TIMEOUT
     if isinstance(exc, _CONNECTION_ERRORS):
         return ErrorKind.TRANSIENT
+    if is_billing_error(exc):
+        return ErrorKind.BILLING
     if isinstance(exc, _STATUS_ERRORS) and exc.status_code >= 400:
         if exc.status_code == 400 and _body_error_code(exc.body) in _OUTPUT_ERROR_CODES:
             return ErrorKind.INVALID_OUTPUT
