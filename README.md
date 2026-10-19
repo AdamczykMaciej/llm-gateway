@@ -1254,6 +1254,7 @@ and — always — failing over to the next provider in `PROVIDER_ORDER`.
 | Timeout | SDK `APITimeoutError`, gateway per-attempt timeout | no | yes | yes |
 | Rate limited | 429 | no | yes | yes |
 | Auth | 401, 403; `ProviderAuthError` (e.g. no Entra token for Azure) | no | yes | yes |
+| Billing | 400/402/429 whose message says the account is out of credit, over a spend limit or out of quota (Anthropic "credit balance is too low" / "reached your specified API usage limits", OpenAI `insufficient_quota`); matched case-insensitively on stable markers | no | yes, and one occurrence opens the breaker for `BREAKER_COOLDOWN_SECONDS` | yes |
 | Invalid request | 400 (including Azure's `content_filter`), 404, 413, 422, any other 4xx | no | **no** | yes |
 | Unknown | anything else (e.g. a response-parsing bug) | no | yes | yes |
 

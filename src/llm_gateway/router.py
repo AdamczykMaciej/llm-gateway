@@ -16,9 +16,11 @@ from . import breaker
 from .config import GatewayConfig
 from .errors import (
     AllProvidersExhaustedError,
+    ErrorKind,
     GatewayNotConfiguredError,
     LLMDeadlineExceeded,
     LLMError,
+    classify,
     deadline_exceeded,
 )
 from .policy import ProviderPolicy
@@ -52,6 +54,14 @@ def record_provider_failure(
     budget than about this one."""
     if deadline.expired and isinstance(error, TimeoutError):
         return
+    if classify(error) is ErrorKind.BILLING:
+        # Operator-actionable and distinguishable in logs; no message body.
+        logger.warning(
+            "llm_gateway billing: provider=%s kind=billing billing=True "
+            "(out of credit, spend limit or quota); breaker opened for %gs",
+            provider,
+            config.breaker_cooldown_seconds,
+        )
     breaker.record_error(
         provider,
         error,

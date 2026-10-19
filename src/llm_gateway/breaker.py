@@ -40,9 +40,14 @@ def record_error(
 ) -> bool:
     """Record `error` as a failure only if its classification trips the
     breaker. Returns whether it was counted."""
-    if not policy_for(error).trips_breaker:
+    policy = policy_for(error)
+    if not policy.trips_breaker:
         return False
-    record_failure(provider, threshold=threshold, cooldown_seconds=cooldown_seconds)
+    record_failure(
+        provider,
+        threshold=1 if policy.opens_immediately else threshold,
+        cooldown_seconds=cooldown_seconds,
+    )
     return True
 
 
