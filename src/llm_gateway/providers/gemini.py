@@ -37,6 +37,7 @@ from openai import AsyncOpenAI
 
 from ..config import GatewayConfig
 from ..errors import ProviderAuthError
+from ..residency import vertex_location_residency
 from . import vertex
 from .openai_compatible import OpenAICompatProvider, OpenAICompatSpec
 
@@ -124,3 +125,8 @@ default_model = _provider.default_model
 call = _provider.call
 chat = _provider.chat
 stream_chat = _provider.stream_chat
+
+
+def residency(config: GatewayConfig) -> str:
+    """Residency of `gemini_location`. See residency.py."""
+    return vertex_location_residency(config.gemini_location)

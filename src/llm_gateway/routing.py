@@ -30,14 +30,15 @@ from opentelemetry import trace
 
 from .capabilities import missing_capabilities, openai_compat_capabilities
 from .config import GatewayConfig
-from .errors import PolicyViolationError, UnsupportedCapabilityError
+from .errors import PolicyViolationError, ResidencyViolationError, UnsupportedCapabilityError
 from .policy import ProviderPolicy, call_budget_check, compliance_reasons, metadata_for
 from .pricing import json_chars, lookup_price, message_chars, worst_case_cost_usd
-from .providers import CONFIGURED, DEFAULT_MODEL
+from .providers import CONFIGURED, DEFAULT_MODEL, RESIDENCY
 
 logger = logging.getLogger("llm_gateway")
 
 _POLICY = "policy"
+_RESIDENCY = "residency"
 _CAPABILITY = "capability"
 _COST = "cost"
 _BUDGET = "budget"
@@ -137,6 +138,10 @@ class ChainPlan:
             for provider, items in reasons.items()
         )
         kinds = {kind for items in self.exclusions.values() for kind, _ in items}
+        if _RESIDENCY in kinds:
+            return ResidencyViolationError(
+                f"No provider satisfies require_residency. Excluded: {detail}.", reasons
+            )
         if kinds == {_CAPABILITY}:
             return UnsupportedCapabilityError(
                 f"No provider can serve this request's features. Excluded: {detail}.", reasons
@@ -206,6 +211,15 @@ def plan_chain(
         plan.models[provider] = model
         plan.estimated_costs[provider] = estimate
 
+        if config.require_residency:
+            actual = RESIDENCY[provider](config) if provider in RESIDENCY else "unknown"
+            if actual != config.require_residency:
+                plan._exclude(
+                    provider,
+                    _RESIDENCY,
+                    f"residency={actual} does not match require_residency="
+                    f"{config.require_residency}",
+                )
         metadata = metadata_for(config.provider_metadata, provider)
         for reason in compliance_reasons(effective, provider, metadata):
             plan._exclude(provider, _POLICY, reason)

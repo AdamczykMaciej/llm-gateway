@@ -7,7 +7,12 @@ from typing import Literal
 from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from .policy import ProviderMetadata, ProviderPolicy, validate_provider_metadata
+from .policy import (
+    ProviderMetadata,
+    ProviderPolicy,
+    normalize_region,
+    validate_provider_metadata,
+)
 from .pricing import ModelPrice, validate_price_table
 
 AZURE_AUTH_MODES = ("entra", "api_key")
@@ -177,6 +182,13 @@ class GatewayConfig(BaseSettings):
     # suits reasoning deployments (gpt-oss, o-series); set "max_tokens" for a
     # deployment that rejects it. Per-deployment acceptance isn't verified.
     azure_max_tokens_param: str = "max_completion_tokens"
+    # Where the deployment processes prompts, asserted by the operator (the
+    # endpoint alone doesn't say): "eu" for a Data Zone EU deployment (SKU
+    # DataZoneStandard), "us" for the US Data Zone, "global" for GlobalStandard.
+    # "" = not stated. Feeds the azure provider's `residency` (residency.py).
+    azure_data_zone: str = ""
+    # Alternative to azure_data_zone for a regional deployment, e.g. "swedencentral".
+    azure_region: str = ""
 
     # ── Anthropic Claude on Google Cloud Vertex AI ───────────────────────
     # Configured when vertex_project_id and vertex_model are set. Needs the
@@ -300,6 +312,12 @@ class GatewayConfig(BaseSettings):
     # The global policy. A per-call `policy=` (or the HTTP request's
     # `policy` object) can only narrow it. All off by default.
     policy_residency: str = ""
+    # Strict EU mode: when set (e.g. "eu"), routing refuses to call any provider
+    # whose `residency` (residency.py, derived from its configuration) differs,
+    # and an "unknown" residency is never allowed. Raises ResidencyViolationError
+    # before any network call and never falls through to another provider.
+    # None = off (the default; behaviour unchanged).
+    require_residency: str | None = None
     policy_require_zero_retention: bool = False
     policy_forbid_training: bool = False
     policy_require_dpa: bool = False
@@ -347,6 +365,21 @@ class GatewayConfig(BaseSettings):
         if normalized not in AZURE_REASONING_EFFORTS:
             raise ValueError('azure_reasoning_effort must be "" (omit it), low, medium or high')
         return normalized
+
+    @field_validator("azure_data_zone", "azure_region")
+    @classmethod
+    def _check_azure_residency_hint(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized and not re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", normalized):
+            raise ValueError("must be a short lowercase code such as 'eu', 'us' or 'swedencentral'")
+        return normalized
+
+    @field_validator("require_residency")
+    @classmethod
+    def _check_require_residency(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
+        return normalize_region(value, field_name="require_residency")
 
     @field_validator("azure_max_tokens_param")
     @classmethod

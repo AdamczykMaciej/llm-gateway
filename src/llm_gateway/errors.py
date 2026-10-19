@@ -119,6 +119,13 @@ class PolicyViolationError(LLMError):
         self.exclusions: dict[str, tuple[str, ...]] = dict(exclusions or {})
 
 
+class ResidencyViolationError(PolicyViolationError):
+    """`GatewayConfig.require_residency` is set and no provider in the chain has
+    that residency (an "unknown" residency never counts). Raised before any
+    network call; the gateway never falls back to a provider outside the
+    required residency. A subclass of `PolicyViolationError`."""
+
+
 class UnsupportedCapabilityError(PolicyViolationError):
     """Every provider was excluded only because its model can't serve a
     feature the request uses (structured output, tools, images, streaming).

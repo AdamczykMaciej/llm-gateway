@@ -12,6 +12,7 @@ follow the OpenAI shapes (https://docs.mistral.ai/api/, checked 2026-09-22).
 from openai import AsyncOpenAI
 
 from ..config import GatewayConfig
+from ..residency import host_residency
 from .openai_compatible import OpenAICompatProvider, OpenAICompatSpec
 
 BASE_URL = "https://api.mistral.ai/v1"
@@ -41,3 +42,9 @@ default_model = _provider.default_model
 call = _provider.call
 chat = _provider.chat
 stream_chat = _provider.stream_chat
+
+
+def residency(config: GatewayConfig) -> str:
+    """ "eu" while requests go to api.mistral.ai (Mistral AI's EU-hosted API),
+    "unknown" if BASE_URL points anywhere else. See residency.py."""
+    return host_residency(BASE_URL, eu_hosts=frozenset({"api.mistral.ai"}))
