@@ -10,7 +10,8 @@ only ever calls the `anthropic` provider (a server tool exists nowhere else).
 Everything returned is third-party web content. Treat it as untrusted data.
 
 Cost: Anthropic bills each search ($10 per 1,000 at 2026-10) on top of tokens.
-`searches` is read from `usage.server_tool_use.web_search_requests`; `cost_usd` is the search fee only (tokens are in `usage`), at
+`searches` is read from `usage.server_tool_use.web_search_requests`; `cost_usd` is
+the search fee only (tokens are in `usage`), at
 `_PRICE_PER_SEARCH_USD`, so a caller can meter spend.
 """
 
