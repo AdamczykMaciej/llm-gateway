@@ -253,6 +253,31 @@ the deployments that support prompt caching. `cache_system` changes nothing
 in their requests, and their hits show up as
 `usage.cache_read_input_tokens`.
 
+### Prompt caching when streaming (0.13.0)
+
+`stream_chat()` takes the same `cache_system=True`. Because `messages` can hold
+several system messages, you choose the cacheable part by ordering them: the
+**first** system message is the static prefix and gets
+`cache_control: {"type": "ephemeral"}`; every later system message is sent
+after the breakpoint, uncached. A lone system message is cached whole. The
+minimum-length rule above applies to the first message.
+
+```python
+async for chunk in stream_chat(
+    messages=[
+        {"role": "system", "content": STATIC_INSTRUCTIONS},  # cached
+        {"role": "system", "content": per_request_context},  # not cached
+        {"role": "user", "content": answer},
+    ],
+    cache_system=True,
+):
+    if chunk.usage_details:  # final chunk
+        chunk.usage_details.cache_creation_input_tokens
+        chunk.usage_details.cache_read_input_tokens
+```
+
+Anthropic and Claude on Vertex honour it; every other provider ignores it.
+
 ### Azure AI Foundry (0.4.2)
 
 The `azure` provider calls a model deployment through the

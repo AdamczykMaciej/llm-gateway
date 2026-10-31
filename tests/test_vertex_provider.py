@@ -1326,3 +1326,21 @@ async def test_aclose_closes_clients_and_azure_credentials():
     client.close.assert_awaited_once()
     managed_identity.close.assert_called_once()
     assert vertex._clients == {} and vertex._credentials == {}
+
+
+async def test_vertex_stream_forwards_cache_system():
+    from unittest.mock import patch
+
+    from llm_gateway.config import GatewayConfig
+    from llm_gateway.providers import vertex
+
+    async def no_events():
+        return
+        yield
+
+    with patch.object(vertex.anthropic_messages, "messages_stream", return_value=no_events()) as ms:
+        async for _ in vertex._stream_chat(
+            GatewayConfig(), [{"role": "user", "content": "x"}], None, 10, cache_system=True
+        ):
+            pass
+    assert ms.call_args.kwargs["cache_system"] is True

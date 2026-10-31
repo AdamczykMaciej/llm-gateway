@@ -313,6 +313,7 @@ async def stream_chat(
     tool_choice: object = None,
     sampling: dict | None = None,
     response_format: dict | None = None,
+    cache_system: bool = False,
 ) -> AsyncIterator[StreamDelta]:
     """`_stream_chat()` behind `guard_empty_stream()`: a stream with no text
     and no tool calls (e.g. only `finish_reason="content_filter"`) raises

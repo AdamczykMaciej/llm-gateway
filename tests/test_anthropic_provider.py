@@ -320,3 +320,107 @@ async def test_stream_structured_output_hides_synthetic_tool_and_emits_json_text
     assert text_deltas == ['{"answer": 42}']
     # Unwrapped structured output is a normal "stop", not "tool_calls".
     assert deltas[-1].finish_reason == "stop"
+
+
+# ─── Streaming prompt caching ──────────────────────────────────────────────
+
+_STATIC = "s" * 20000  # well above every model's minimum cacheable length
+_DYNAMIC = "per-request context"
+
+
+def _stream_client(events=None):
+    client = MagicMock()
+    client.messages.stream = MagicMock(
+        return_value=_FakeAnthropicStream(events or _text_events("ok"))
+    )
+    return client
+
+
+async def _run_stream(client, messages, **kwargs):
+    with patch("llm_gateway.providers.anthropic._client", return_value=client):
+        return [
+            d
+            async for d in anthropic.stream_chat(
+                _config(), messages, tools=None, max_tokens=100, **kwargs
+            )
+        ]
+
+
+_MSGS = [
+    {"role": "system", "content": _STATIC},
+    {"role": "system", "content": _DYNAMIC},
+    {"role": "user", "content": "hi"},
+]
+
+
+async def test_stream_cache_system_marks_static_prefix_only():
+    client = _stream_client()
+    await _run_stream(client, _MSGS, cache_system=True)
+    assert client.messages.stream.call_args.kwargs["system"] == [
+        {"type": "text", "text": _STATIC, "cache_control": {"type": "ephemeral"}},
+        {"type": "text", "text": _DYNAMIC},
+    ]
+
+
+async def test_stream_cache_system_single_message_cached_whole():
+    client = _stream_client()
+    await _run_stream(client, [_MSGS[0], _MSGS[2]], cache_system=True)
+    assert client.messages.stream.call_args.kwargs["system"] == [
+        {"type": "text", "text": _STATIC, "cache_control": {"type": "ephemeral"}}
+    ]
+
+
+async def test_stream_without_flag_sends_plain_string():
+    client = _stream_client()
+    await _run_stream(client, _MSGS)
+    assert client.messages.stream.call_args.kwargs["system"] == _STATIC + "\n" + _DYNAMIC
+
+
+async def test_stream_cache_system_skips_marker_below_minimum():
+    client = _stream_client()
+    msgs = [{"role": "system", "content": "short"}, _MSGS[1], _MSGS[2]]
+    await _run_stream(client, msgs, cache_system=True)
+    assert client.messages.stream.call_args.kwargs["system"] == "short\n" + _DYNAMIC
+
+
+async def test_stream_usage_reports_cache_fields():
+    events = _text_events("ok")
+    events[0] = _event(
+        "message_start",
+        message=MagicMock(
+            usage=MagicMock(
+                input_tokens=7, cache_read_input_tokens=900, cache_creation_input_tokens=300
+            )
+        ),
+    )
+    deltas = await _run_stream(_stream_client(events), _MSGS, cache_system=True)
+    usage = deltas[-1].usage_details
+    assert usage.cache_read_input_tokens == 900
+    assert usage.cache_creation_input_tokens == 300
+    assert usage.input_tokens == 7 + 900 + 300
+
+
+async def test_gateway_stream_chat_forwards_flag_only_when_set():
+    from llm_gateway import streaming
+    from llm_gateway.providers.base import StreamDelta
+
+    seen: list[dict] = []
+
+    async def fake(config, messages, tools, max_tokens, **kwargs):
+        seen.append(kwargs)
+        yield StreamDelta(content="x", model="m")
+        yield StreamDelta(finish_reason="stop", model="m", usage=(1, 1))
+
+    with (
+        patch.dict(streaming.STREAM_CALLS, {"anthropic": fake}),
+        patch.dict(streaming.CONFIGURED, {"anthropic": lambda c: True}),
+    ):
+        for flag in (False, True):
+            _ = [
+                d
+                async for d in streaming.stream_chat(
+                    messages=_MSGS, force_provider="anthropic", cache_system=flag
+                )
+            ]
+    assert "cache_system" not in seen[0]
+    assert seen[1]["cache_system"] is True
