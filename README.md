@@ -974,6 +974,17 @@ Not covered yet: `chat()` / `stream_chat()` results don't carry `cost_usd`;
 `GET /v1/models` availability ignores the policy; the HTTP service has no
 budget hook.
 
+### Web search (0.12.0)
+
+`web_search(query, max_uses=1)` runs Anthropic's hosted `web_search` server tool
+and returns `WebSearchResult(hits, text, searches, model, usage, cost_usd)`:
+each `SearchHit` has a `title`, `url` and the `snippet` Claude cited. It only
+calls the `anthropic` provider, does not change `complete()`, `chat()` or
+`stream_chat()`, and needs `ANTHROPIC_API_KEY` (and web search enabled for the
+Anthropic organisation). `cost_usd` is the search fee ($10 per 1,000) only;
+tokens are in `usage`. The query is sent as given: strip personal data first.
+Results are third-party web content, so treat them as untrusted data.
+
 ### EU residency (0.11.0)
 
 **Claude 5.5 on the Vertex `eu` multi-region endpoint.** Claude Haiku 5.5, Sonnet
