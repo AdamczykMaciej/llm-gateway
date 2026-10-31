@@ -407,6 +407,7 @@ async def _stream_chat(
     tool_choice: object = None,
     sampling: dict | None = None,
     response_format: dict | None = None,
+    cache_system: bool = False,
 ) -> AsyncIterator[StreamDelta]:
     deltas = anthropic_messages.messages_stream(
         lambda: _client(config),
@@ -420,6 +421,7 @@ async def _stream_chat(
         request_options=stream_request_options(config),
         thinking=config.anthropic_thinking,
         effort=config.anthropic_effort,
+        cache_system=cache_system,
     )
     auth_errors = _auth_error_types()
     async with aclosing(deltas):
@@ -440,6 +442,7 @@ async def stream_chat(
     tool_choice: object = None,
     sampling: dict | None = None,
     response_format: dict | None = None,
+    cache_system: bool = False,
 ) -> AsyncIterator[StreamDelta]:
     """`_stream_chat()` behind `guard_empty_stream()`: a stream with no text
     and no tool calls raises `EmptyCompletionError` before its first chunk."""
@@ -452,6 +455,7 @@ async def stream_chat(
         tool_choice=tool_choice,
         sampling=sampling,
         response_format=response_format,
+        cache_system=cache_system,
     )
     guarded = guard_empty_stream(deltas, provider=PROVIDER, model=model or default_model(config))
     async with aclosing(guarded):

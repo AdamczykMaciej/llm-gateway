@@ -24,7 +24,7 @@ from anthropic import (
 from ..config import GatewayConfig
 from ..errors import InvalidOutputError
 from ..structured import OutputSchema
-from ._anthropic_caching import system_param
+from ._anthropic_caching import system_param, system_param_from_messages
 from ._anthropic_translate import (
     STRUCTURED_OUTPUT_TOOL_NAME,
     from_anthropic_response,
@@ -413,6 +413,7 @@ async def _stream_chat(
     tool_choice: object = None,
     sampling: dict | None = None,
     response_format: dict | None = None,
+    cache_system: bool = False,
 ) -> AsyncIterator[StreamDelta]:
     chosen = model or default_model(config)
     started = False
@@ -429,6 +430,7 @@ async def _stream_chat(
             request_options=stream_request_options(config),
             thinking=config.anthropic_thinking,
             effort=config.anthropic_effort,
+            cache_system=cache_system,
         )
         try:
             async with aclosing(deltas):
@@ -458,6 +460,7 @@ async def messages_stream(
     request_options: dict,
     thinking: str = "",
     effort: str = "",
+    cache_system: bool = False,
 ) -> AsyncIterator[StreamDelta]:
     """Translate Anthropic's raw SSE event stream into normalized
     StreamDelta chunks. Anthropic's tool-call streaming already arrives
@@ -465,8 +468,14 @@ async def messages_stream(
     subsequent input_json_delta events carry only argument fragments) —
     the same shape OpenAI's own streaming uses, so no re-chunking is needed,
     just a translation of event names/fields.
+
+    `cache_system`: send the system prompt as content blocks with
+    `cache_control` on the first system message (the static prefix); see
+    `system_param_from_messages()`.
     """
     system, anthropic_messages = to_anthropic_messages(messages)
+    if cache_system:
+        system = system_param_from_messages(messages, model, cache_system=True)
     tool_kwargs, emulating_structured_output = _resolve_tool_kwargs(
         tools, tool_choice, response_format
     )
@@ -570,6 +579,7 @@ async def stream_chat(
     tool_choice: object = None,
     sampling: dict | None = None,
     response_format: dict | None = None,
+    cache_system: bool = False,
 ) -> AsyncIterator[StreamDelta]:
     """`_stream_chat()` behind `guard_empty_stream()`: a stream with no text
     and no tool calls raises `EmptyCompletionError` before its first chunk."""
@@ -582,6 +592,7 @@ async def stream_chat(
         tool_choice=tool_choice,
         sampling=sampling,
         response_format=response_format,
+        cache_system=cache_system,
     )
     guarded = guard_empty_stream(deltas, provider=PROVIDER, model=model or default_model(config))
     async with aclosing(guarded):

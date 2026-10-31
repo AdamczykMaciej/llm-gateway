@@ -63,3 +63,28 @@ def system_param(system: str, model: str, cache_system: bool) -> str | list[dict
     if cache_system and system and estimate_tokens(system) >= min_cacheable_tokens(model):
         return [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
     return system
+
+
+def system_param_from_messages(
+    messages: list[dict], model: str, cache_system: bool
+) -> str | list[dict]:
+    """The `system` argument for a chat/stream request built from `messages`.
+
+    Without `cache_system`, or with nothing cacheable, the system messages are
+    joined with newlines (the plain string `to_anthropic_messages()` returns).
+    With it, each system message becomes one text block and the **first**
+    carries `cache_control`, so a caller passes `[static, dynamic]` system
+    messages and only the static prefix is cached. A lone system message is
+    cached whole. The marker is skipped when the static block is below the
+    model's minimum cacheable length."""
+    parts = [m["content"] for m in messages if m["role"] == "system" and m.get("content")]
+    joined = "\n".join(parts)
+    if not (cache_system and parts):
+        return joined
+    if estimate_tokens(parts[0]) < min_cacheable_tokens(model):
+        return joined
+    blocks: list[dict] = [
+        {"type": "text", "text": parts[0], "cache_control": {"type": "ephemeral"}}
+    ]
+    blocks.extend({"type": "text", "text": text} for text in parts[1:])
+    return blocks

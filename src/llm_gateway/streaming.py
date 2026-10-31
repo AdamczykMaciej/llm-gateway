@@ -56,12 +56,22 @@ async def stream_chat(
     sampling: dict | None = None,
     response_format: dict | None = None,
     policy: ProviderPolicy | None = None,
+    cache_system: bool = False,
 ):
     """Stream a chat completion. `policy` narrows `config.policy` as in
     `complete_with_usage()`; the chain is filtered before the first provider
     is opened, so pre-flight failover never reaches an excluded provider, and
-    `PolicyViolationError` is raised before any chunk when none is left."""
+    `PolicyViolationError` is raised before any chunk when none is left.
+
+    `cache_system`: prompt caching, as in `complete_with_usage()`. On
+    Anthropic and Vertex Claude the **first** system message is the cacheable
+    static prefix (it gets `cache_control`); pass the per-request part as a
+    second system message. Other providers ignore it. Cache hits and writes
+    arrive in the final chunk's `usage_details`."""
     config = config or GatewayConfig()
+    # Only passed when used, so provider callables written against the older
+    # signature keep working.
+    extra: dict = {"cache_system": True} if cache_system else {}
     order = [force_provider] if force_provider else config.provider_order_list
     model_override = model if force_provider else None
 
@@ -117,6 +127,7 @@ async def stream_chat(
                     tool_choice=tool_choice,
                     sampling=sampling,
                     response_format=response_format,
+                    **extra,
                 )
                 try:
                     return generator, await generator.__anext__()
