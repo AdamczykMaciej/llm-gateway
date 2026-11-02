@@ -47,6 +47,15 @@ from .providers.base import ChatResult, StreamDelta, ToolCall, Usage
 from .residency import residency_report
 from .router import Completion, LLMError, complete, complete_with_usage
 from .streaming import stream_chat
+from .web_search import (
+    SearchAttempt,
+    SearchHit,
+    SearchResults,
+    SearchUsage,
+    WebSearchError,
+    WebSearchResult,
+    web_search,
+)
 
 __all__ = [
     "ProviderPolicy",
@@ -63,6 +72,13 @@ __all__ = [
     "Usage",
     "chat",
     "stream_chat",
+    "web_search",
+    "WebSearchResult",
+    "SearchResults",
+    "SearchUsage",
+    "SearchAttempt",
+    "WebSearchError",
+    "SearchHit",
     "ChatResult",
     "StreamDelta",
     "ToolCall",

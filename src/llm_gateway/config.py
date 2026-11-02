@@ -95,6 +95,9 @@ class GatewayConfig(BaseSettings):
 
     # ── Provider credentials ─────────────────────────────────────────────
     anthropic_api_key: str = ""
+    # web_search() only: Tavily Search API key and endpoint (see web_search.py).
+    tavily_api_key: str = ""
+    tavily_url: str = "https://api.tavily.com/search"
     groq_api_key: str = ""
     openai_api_key: str = ""
     # Only used when azure_auth == "api_key".
