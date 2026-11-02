@@ -999,6 +999,40 @@ Not covered yet: `chat()` / `stream_chat()` results don't carry `cost_usd`;
 `GET /v1/models` availability ignores the policy; the HTTP service has no
 budget hook.
 
+### Web search with a fallback chain (0.14.0)
+
+```python
+res = await web_search(
+    "Acme Corp rekrutacja",
+    providers=["tavily", "anthropic"],
+    max_results=3,
+    allowed={"tavily": dpa_signed},
+)
+res.hits  # [SearchHit(title, url, snippet, provider)]
+res.provider  # who served it
+res.usage  # SearchUsage(provider, units, unit="searches"|"credits", model, cost_usd, tokens)
+res.attempts  # one SearchAttempt per provider tried: served, or skipped with a reason
+```
+
+Providers are tried in order. **Tavily** is plain httpx2 (already installed with
+the SDKs) against its search API with `TAVILY_API_KEY`: query and `max_results`
+only, `include_raw_content=false`, snippets capped at `snippet_chars` (300),
+`retries` for transient failures. **Anthropic** uses the hosted
+`web_search_20250305` server tool (`max_uses`, `model`, domain filters) and
+normalizes result blocks and citations. `vertex` (Google grounding) is accepted
+and always skipped as `not_implemented`.
+
+A provider is skipped, and the next one tried, on `not_configured` (no key),
+`not_allowed` (caller set `allowed[name]=False`, for example until a DPA is
+signed), `auth`, `billing`, `rate_limited`, `timeout`, `server_error`
+(5xx/connection) and `empty` (`fall_through_on_empty=True`; if nothing does
+better the empty result is returned). A caller-side validation error (bad
+arguments, or a provider's own 400/422) raises `WebSearchError(reason=
+"invalid_request")` at once. If every provider is skipped, `WebSearchError(reason=
+"all_failed")` carries `attempts`. The gateway sends the query as given: strip
+personal data first. Results are third-party web content: untrusted data.
+Supersedes the 0.12.0 draft (`web_search(query, max_uses)`).
+
 ### EU residency (0.11.0)
 
 **Claude 5.5 on the Vertex `eu` multi-region endpoint.** Claude Haiku 5.5, Sonnet
@@ -1401,6 +1435,7 @@ Worst case for one call with the default three-provider chain:
 | Variable | Default | Purpose |
 |---|---|---|
 | `ANTHROPIC_API_KEY` | — | Primary provider |
+| `TAVILY_API_KEY` | — | `web_search()` only: enables the Tavily provider. |
 | `GROQ_API_KEY` | — | Fallback provider (free tier available) |
 | `OPENAI_API_KEY` | — | Fallback provider |
 | `AZURE_ENDPOINT` | — | Azure AI Foundry / Azure OpenAI resource endpoint; see [Azure AI Foundry](#azure-ai-foundry-042) |
