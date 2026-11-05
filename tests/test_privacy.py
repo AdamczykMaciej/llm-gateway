@@ -349,6 +349,26 @@ async def test_chat_redacts_in_and_restores_tool_arguments_out():
         privacy=pol(OutputPolicy.RESTORE),
     )
     assert "Anna" not in repr(seen["messages"])
-    assert res.content == "Hi Anna Nowak" and res.tool_calls[0].arguments == {
-        "to": "anna@example.com"
-    }
+    assert res.content == "Hi Anna Nowak"
+    assert res.tool_calls[0].arguments == {"to": "anna@example.com"}
+
+
+async def test_system_messages_can_use_their_own_redactor():
+    class OnlyEmail:
+        def detect(self, text):
+            return [Span(m.start(), m.end(), "email") for m in EMAIL.finditer(text)]
+
+    p = Privacy(redactor=Rx(), output=OutputPolicy.STRIP, system_redactor=OnlyEmail())
+    layer, seen = make_layer(comp("x"))
+    await layer.complete_with_usage(
+        system="Example: Anna Nowak a@b.pl", prompt="Anna Nowak a@b.pl", privacy=p
+    )
+    assert seen["system"] == "Example: Anna Nowak [email_1]"
+    assert seen["prompt"] == "[person_1] [email_1]"
+    out = redact_messages(
+        [{"role": "system", "content": "Anna Nowak"}, {"role": "user", "content": "Anna Nowak"}],
+        Rx(),
+        Vault(),
+        OnlyEmail(),
+    )
+    assert out[0]["content"] == "Anna Nowak" and out[1]["content"] == "[person_1]"

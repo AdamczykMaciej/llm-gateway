@@ -174,6 +174,10 @@ class Privacy:
     strip_pattern: re.Pattern[str] | None = None
     reason: str | None = None
     label: str = ""
+    # Redactor for system messages when it must differ from the user-side one
+    # (a prompt template holds instructions and example names, not user text).
+    # None: the same `redactor`.
+    system_redactor: Redactor | None = None
 
     @classmethod
     def passthrough(cls, reason: str, label: str = "") -> Privacy:
@@ -264,10 +268,21 @@ def _map_message(msg: dict, fn: Callable[[str], str]) -> dict:
     return out
 
 
-def redact_messages(messages: list[dict], redactor: Redactor | None, vault: Vault) -> list[dict]:
+def redact_messages(
+    messages: list[dict],
+    redactor: Redactor | None,
+    vault: Vault,
+    system_redactor: Redactor | None = None,
+) -> list[dict]:
     """Messages with system, user, assistant, tool results AND tool-call
-    arguments redacted (a copy; the caller's list is untouched)."""
-    return [_map_message(m, lambda t: redact_text(t, redactor, vault)) for m in messages]
+    arguments redacted (a copy; the caller's list is untouched). System
+    messages use `system_redactor` when given."""
+    sys_r = system_redactor or redactor
+    out = []
+    for m in messages:
+        r = sys_r if m.get("role") == "system" else redactor
+        out.append(_map_message(m, lambda t, r=r: redact_text(t, r, vault)))
+    return out
 
 
 # ── output ───────────────────────────────────────────────────────────────────
@@ -397,7 +412,7 @@ class PrivacyLayer:
             if fn is None:
                 from .router import complete_with_usage as fn  # noqa: PLC0415
             completion = await fn(
-                system=redact_text(system, p.redactor, vault),
+                system=redact_text(system, p.system_redactor or p.redactor, vault),
                 prompt=redact_text(prompt, p.redactor, vault),
                 **kwargs,
             )
@@ -429,7 +444,9 @@ class PrivacyLayer:
             fn = self._chat
             if fn is None:
                 from .chat import chat as fn  # noqa: PLC0415
-            result = await fn(messages=redact_messages(messages, p.redactor, vault), **kwargs)
+            result = await fn(
+                messages=redact_messages(messages, p.redactor, vault, p.system_redactor), **kwargs
+            )
             if p.output is not OutputPolicy.PASSTHROUGH:
                 calls = [
                     replace(tc, arguments=out.apply_json(tc.arguments)) for tc in result.tool_calls
@@ -457,7 +474,9 @@ class PrivacyLayer:
         fn = self._stream
         if fn is None:
             from .streaming import stream_chat as fn  # noqa: PLC0415
-        stream = fn(messages=redact_messages(messages, p.redactor, vault), **kwargs)
+        stream = fn(
+            messages=redact_messages(messages, p.redactor, vault, p.system_redactor), **kwargs
+        )
         try:
             async for delta in stream:
                 yield self._filter_delta(delta, text_filter, arg_filters)
