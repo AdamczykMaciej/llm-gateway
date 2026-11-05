@@ -182,6 +182,20 @@ async def test_restore_also_removes_placeholders_nobody_can_restore():
     assert out.text == "Hi Anna Nowak, meet  and  and "
 
 
+async def test_tidy_closes_the_gap_a_removed_token_leaves_but_not_in_a_stream():
+    def tidy(t):
+        return " ".join(t.split())
+
+    p = pol(OutputPolicy.STRIP, tidy=tidy)
+    layer, _ = make_layer(comp("Hi [person_1]  and   [email_1] there"))
+    out = await layer.complete_with_usage(
+        system="s", prompt="Anna Nowak anna@example.com", privacy=p
+    )
+    assert out.text == "Hi and there"
+    text, _ = await drain(PrivacyLayer(), ["Hi ", "[person_1]", " there"], p)
+    assert text == "Hi  there"  # chunks are never trimmed: that would eat word gaps
+
+
 async def test_passthrough_is_untouched_and_audited_with_reason():
     events: list[AuditEvent] = []
     layer, seen = make_layer(comp("[person_1]"), events)

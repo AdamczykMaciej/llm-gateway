@@ -178,6 +178,9 @@ class Privacy:
     # (a prompt template holds instructions and example names, not user text).
     # None: the same `redactor`.
     system_redactor: Redactor | None = None
+    # Tidies a finished (non-streamed) text after placeholders were removed from
+    # it: closes the gap a removed token leaves. Not applied to streamed chunks.
+    tidy: Callable[[str], str] | None = None
 
     @classmethod
     def passthrough(cls, reason: str, label: str = "") -> Privacy:
@@ -330,8 +333,16 @@ class _Output:
 
         return self._re.sub(sub, text)
 
+    def apply_final(self, text: str) -> str:
+        """`apply` for a complete text: tidied when something was removed."""
+        before = self.stripped
+        out = self.apply(text)
+        if self.stripped != before and self.privacy.tidy is not None:
+            out = self.privacy.tidy(out)
+        return out
+
     def apply_json(self, value: Any) -> Any:
-        return _map_strings(value, self.apply)
+        return _map_strings(value, self.apply_final)
 
 
 class StreamFilter:
@@ -433,7 +444,7 @@ class PrivacyLayer:
     def _finish_completion(self, completion: Any, out: _Output, schema: Any) -> Any:
         if out.privacy.output is OutputPolicy.PASSTHROUGH:
             return completion
-        text = out.apply(completion.text)
+        text = out.apply_final(completion.text)
         parsed = getattr(completion, "parsed", None)
         new_parsed = parsed
         if parsed is not None:
@@ -461,7 +472,7 @@ class PrivacyLayer:
                 ]
                 result = replace(
                     result,
-                    content=out.apply(result.content) if result.content else result.content,
+                    content=out.apply_final(result.content) if result.content else result.content,
                     tool_calls=calls,
                 )
             self._audit("chat", p, vault, out)
