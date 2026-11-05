@@ -303,24 +303,32 @@ class _Output:
         if pol is OutputPolicy.PASSTHROUGH or not text:
             return text
 
+        # Placeholders this call did not issue (an app's older vocabulary, or a
+        # token the model made up) are removed under RESTORE and STRIP alike:
+        # nothing can restore them and they must not reach a reader.
+        pattern = self.privacy.strip_pattern
+        if pattern is not None:
+
+            def foreign(m: re.Match[str]) -> str:
+                if self.vault.original(m.group(0)) is not None:
+                    return m.group(0)
+                self.stripped += 1
+                return ""
+
+            text = pattern.sub(foreign, text)
+
         def sub(m: re.Match[str]) -> str:
             token = m.group(0)
             original = self.vault.original(token)
+            if original is None:
+                return token
             if pol is OutputPolicy.RESTORE:
-                if original is not None:
-                    self.restored += 1
-                    return original
-                return token  # not ours: left for the app's display boundary
-            if original is not None:
-                self.stripped += 1
-                return ""
-            return token
+                self.restored += 1
+                return original
+            self.stripped += 1
+            return ""
 
-        out = self._re.sub(sub, text)
-        if pol is OutputPolicy.STRIP and self.privacy.strip_pattern is not None:
-            out, n = self.privacy.strip_pattern.subn("", out)
-            self.stripped += n
-        return out
+        return self._re.sub(sub, text)
 
     def apply_json(self, value: Any) -> Any:
         return _map_strings(value, self.apply)

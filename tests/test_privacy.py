@@ -175,6 +175,13 @@ async def test_strip_pattern_removes_the_apps_own_vocabulary_too():
     assert out.text == "Hi  and "
 
 
+async def test_restore_also_removes_placeholders_nobody_can_restore():
+    p = pol(OutputPolicy.RESTORE, strip_pattern=re.compile(r"\[(?:osoba|person|person_\d+)\]"))
+    layer, _ = make_layer(comp("Hi [person_1], meet [osoba] and [person_7] and [person]"))
+    out = await layer.complete_with_usage(system="s", prompt="Anna Nowak", privacy=p)
+    assert out.text == "Hi Anna Nowak, meet  and  and "
+
+
 async def test_passthrough_is_untouched_and_audited_with_reason():
     events: list[AuditEvent] = []
     layer, seen = make_layer(comp("[person_1]"), events)
