@@ -40,7 +40,7 @@ import copy
 import json
 import re
 from collections import Counter
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Iterable
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import Any, Protocol
@@ -484,7 +484,7 @@ class PrivacyLayer:
 
     async def stream_chat(
         self, *, messages: list[dict], privacy: Privacy | None = None, **kwargs: Any
-    ) -> AsyncIterator[Any]:
+    ) -> AsyncGenerator[Any, None]:
         p = self._resolve(privacy, "stream_chat")
         vault = Vault(p.fmt)
         out = _Output(p, vault)
