@@ -102,6 +102,16 @@ def allow(provider: str, model: str | None = None) -> bool:
         return True
 
 
+def release_probe(provider: str, model: str | None = None) -> None:
+    """Give back a half-open probe lease without recording an outcome: the
+    admitted call was cancelled before the provider answered, so it says
+    nothing about health and the next caller may probe at once instead of
+    waiting out the lease. A no-op when no probe is in flight."""
+    with _lock:
+        for key in _keys(provider, model):
+            _probe_until.pop(key, None)
+
+
 def record_success(provider: str, model: str | None = None) -> None:
     with _lock:
         for key in _keys(provider, model):

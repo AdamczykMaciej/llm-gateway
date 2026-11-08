@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.16.6
+
+Reliability pass 4: cancellation and resource cleanup.
+
+- A call cancelled (`task.cancel()`, consumer `aclose()`, client disconnect) while it held a
+  half-open circuit-breaker probe now hands the probe back at once, in `complete`, `chat` and
+  `stream_chat`; before, the provider stayed closed to everyone for a full cooldown.
+- Attempt spans now carry `llm_gateway.outcome="cancelled"` for a cancelled call or a stream the
+  consumer abandoned (the latter used to read `ok`), and `complete`/`chat` emit one on cancel
+  (previously none). Cancellation is still never a breaker failure, never fails over, and
+  `CancelledError` is never swallowed.
+- `stream_chat`: a provider generator whose `aclose()` raises no longer masks the consumer's own
+  exit (a close, a cancellation) with that error.
+- Timeout classes, documented: no chunk within `stream_idle_timeout_seconds` (before the first
+  token or mid-stream) is a provider `TimeoutError` and counts toward the breaker;
+  `call_deadline_seconds` running out raises `LLMDeadlineExceeded` and is not counted.
+
 ## 0.16.5
 
 Correctness pass 3: provider adapters' less-travelled paths.

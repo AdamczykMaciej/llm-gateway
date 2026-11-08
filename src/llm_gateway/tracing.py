@@ -8,6 +8,7 @@ SDK's default no-op behavior — so tracing never has to be "enabled" for the
 gateway to work.
 """
 
+import asyncio
 import re
 import time
 import uuid
@@ -127,7 +128,10 @@ def resolve_request_id(request_id: object = None) -> str:
 
 
 def outcome_of(error: BaseException | None) -> str:
-    """ "ok", or the `ErrorKind` value of the failure (e.g. "timeout")."""
+    """ "ok", "cancelled" (the caller cancelled or closed the stream: not a
+    provider failure), or the `ErrorKind` value of the failure (e.g. "timeout")."""
+    if isinstance(error, asyncio.CancelledError | GeneratorExit):
+        return "cancelled"
     return "ok" if error is None else str(classify(error) or ErrorKind.UNKNOWN)
 
 

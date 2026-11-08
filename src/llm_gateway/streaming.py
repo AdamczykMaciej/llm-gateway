@@ -186,6 +186,20 @@ async def stream_chat(
                     attempt_timeout_seconds=config.stream_idle_timeout_seconds,
                     deadline=deadline,
                 )
+            except asyncio.CancelledError as e:
+                # Cancelled while opening the stream (the provider generator is
+                # closed by the cancellation itself): not a provider failure.
+                breaker.release_probe(provider, resolved_model)
+                emit_attempt_span(
+                    tracer,
+                    request_id=rid,
+                    attempt=attempt_no,
+                    provider=provider,
+                    model=resolved_model,
+                    started_ns=attempt_started_ns,
+                    error=e,
+                )
+                raise
             except Exception as e:  # noqa: BLE001 — pre-flight failure tries the next provider
                 record_provider_failure(
                     provider, e, config=config, deadline=deadline, model=resolved_model
@@ -263,6 +277,11 @@ async def stream_chat(
             except LLMError as e:
                 stream_error = e
                 raise
+            except (asyncio.CancelledError, GeneratorExit) as e:
+                # Cancelled task or consumer `aclose()`: a terminal "cancelled"
+                # attempt span, never a breaker failure.
+                stream_error = e
+                raise
             except Exception as e:  # noqa: BLE001 — a mid-stream failure: counted, then propagated
                 stream_error = e
                 record_provider_failure(
@@ -279,14 +298,17 @@ async def stream_chat(
                     provider=provider,
                     model=resolved_model,
                     started_ns=attempt_started_ns,
-                    error=stream_error if isinstance(stream_error, Exception) else None,
+                    error=stream_error,
                     input_tokens=input_tokens,
                     output_tokens=output_tokens,
                 )
                 # Consumer stopped reading (close, cancel, disconnect) or the
                 # stream failed: close the provider's generator so its HTTP
                 # response is released and the upstream request stops.
-                await generator.aclose()
+                try:
+                    await generator.aclose()
+                except Exception:  # noqa: BLE001 — a failing close must not mask the real exit (e.g. a cancellation)
+                    logger.debug("llm_gateway: closing a provider stream failed", exc_info=True)
 
             latency = time.monotonic() * 1000 - start
             set_chat_attributes(
