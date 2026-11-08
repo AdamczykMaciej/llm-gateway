@@ -50,6 +50,7 @@ from .providers.base import StreamDelta
 from .retry import Deadline, call_with_retry
 from .router import record_provider_failure
 from .routing import RequestProfile, plan_chain
+from .tool_validation import validate_chat_request
 from .tracing import get_tracer, set_chat_attributes
 
 logger = logging.getLogger("llm_gateway")
@@ -79,6 +80,7 @@ async def stream_chat(
     static prefix (it gets `cache_control`); pass the per-request part as a
     second system message. Other providers ignore it. Cache hits and writes
     arrive in the final chunk's `usage_details`."""
+    validate_chat_request(messages, tools, tool_choice)
     config = config or GatewayConfig()
     # Only passed when used, so provider callables written against the older
     # signature keep working.

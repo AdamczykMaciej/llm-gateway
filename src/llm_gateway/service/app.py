@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from .. import breaker
 from ..chat import chat as chat_engine
 from ..config import GatewayConfig
-from ..errors import PolicyViolationError, redact_secrets
+from ..errors import InvalidRequestError, PolicyViolationError, redact_secrets
 from ..providers import CONFIGURED
 from ..providers import azure as azure_provider
 from ..providers import gemini as gemini_provider
@@ -207,7 +207,7 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
                                 input_tokens, output_tokens = delta.usage
                             for line in stream_chunk_sse(delta, chunk_id=chunk_id, created=created):
                                 yield line
-                except PolicyViolationError as exc:
+                except (PolicyViolationError, InvalidRequestError) as exc:
                     yield sse_error_event(str(exc), error_type="invalid_request_error", code=400)
                 except LLMError as exc:
                     # Headers (200 + SSE) are already committed by the time a
@@ -234,7 +234,7 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
 
         try:
             result = await chat_engine(**engine_kwargs)
-        except PolicyViolationError as exc:
+        except (PolicyViolationError, InvalidRequestError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except LLMError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc

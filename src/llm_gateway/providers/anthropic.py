@@ -199,6 +199,7 @@ def _resolve_tool_kwargs(
     tools: list[dict] | None,
     tool_choice: object,
     response_format: dict | None,
+    messages: list[dict] | None = None,
 ) -> tuple[dict, bool]:
     """Shared by chat() and stream_chat(). Returns (kwargs, emulating_structured_output)."""
     structured_tool = to_anthropic_structured_output_tool(response_format)
@@ -210,9 +211,16 @@ def _resolve_tool_kwargs(
             },
             True,
         )
-    if tool_choice == "none":
-        return {}, False  # omit tools entirely — the only way to hard-block tool use
     anthropic_tools = to_anthropic_tools(tools)
+    if tool_choice == "none":
+        # Omitting the tools hard-blocks tool use, but Anthropic rejects a
+        # history holding tool_use/tool_result blocks without their tool
+        # definitions, so then keep them and say `none` explicitly.
+        if anthropic_tools and any(
+            m.get("role") == "tool" or m.get("tool_calls") for m in messages or []
+        ):
+            return {"tools": anthropic_tools, "tool_choice": {"type": "none"}}, False
+        return {}, False
     if not anthropic_tools:
         return {}, False
     kwargs: dict = {"tools": anthropic_tools}
@@ -365,7 +373,7 @@ async def messages_chat(
 ) -> ChatResult:
     system, anthropic_messages = to_anthropic_messages(messages)
     tool_kwargs, emulating_structured_output = _resolve_tool_kwargs(
-        tools, tool_choice, response_format
+        tools, tool_choice, response_format, messages
     )
     kwargs: dict = {**_sampling_kwargs(sampling, model), **tool_kwargs}
     _apply_thinking_effort(kwargs, model, thinking, effort)
@@ -477,7 +485,7 @@ async def messages_stream(
     if cache_system:
         system = system_param_from_messages(messages, model, cache_system=True)
     tool_kwargs, emulating_structured_output = _resolve_tool_kwargs(
-        tools, tool_choice, response_format
+        tools, tool_choice, response_format, messages
     )
     kwargs: dict = {**_sampling_kwargs(sampling, model), **tool_kwargs}
     _apply_thinking_effort(kwargs, model, thinking, effort)

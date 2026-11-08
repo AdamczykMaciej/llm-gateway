@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.14.0
+
+Agentic pass.
+
+- New `InvalidRequestError` (an `LLMError` and `ValueError`; the service answers 400). `chat()` and
+  `stream_chat()` now validate before any provider call: tool names and uniqueness, JSON Schema
+  structure of `parameters` (type, enum, required, properties, anyOf), `tool_choice` naming a
+  known tool, and tool-call/tool-result pairing (orphan or duplicate result, missing
+  `tool_call_id`, unanswered parallel call). Previously these became a provider 400 that failed
+  over and counted against the breaker, or a bare `KeyError` on Anthropic.
+- Anthropic and Vertex Claude: `tool_choice="none"` on a history that already holds tool calls
+  keeps the tool definitions and sends `{"type": "none"}`; omitting them made Anthropic reject
+  the request.
+
 ## 0.13.3
 
 Correctness pass.
