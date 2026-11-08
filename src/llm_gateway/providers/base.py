@@ -16,18 +16,29 @@ import asyncio
 import dataclasses
 import json
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import aclosing
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 # The same class as anthropic.Timeout — both SDKs re-export httpx2.Timeout.
 from openai import Timeout
+from openai.types.chat import ChatCompletionMessageParam
 
 from ..config import GatewayConfig
 from ..errors import EmptyCompletionError, InvalidOutputError
 
 logger = logging.getLogger("llm_gateway")
+
+
+def sdk_messages(messages: list[dict]) -> list[ChatCompletionMessageParam]:
+    """The gateway's OpenAI-format message dicts, typed for the OpenAI SDK.
+
+    The shape is validated by `chat()` before any provider is called, so this
+    is a typing-only cast (the SDK's TypedDict union cannot express a plain
+    `dict`)."""
+    return cast("list[ChatCompletionMessageParam]", messages)
+
 
 # Kept at the SDKs' own default: a TCP connect that takes longer than this
 # is not going to succeed, however long the request timeout is.
@@ -516,7 +527,7 @@ def provider_result_from_openai_style(
         reasoning_tokens=usage.reasoning_tokens,
     )
     return ProviderResult(
-        text=content.strip(),
+        text=(content or "").strip(),
         model=model,
         input_tokens=usage.input_tokens,
         output_tokens=usage.output_tokens,
@@ -564,7 +575,7 @@ def parse_openai_style_chunk(chunk: Any, model: str) -> StreamDelta:
     )
 
 
-async def _strip_think_stream(deltas: AsyncIterator[StreamDelta]) -> AsyncIterator[StreamDelta]:
+async def _strip_think_stream(deltas: AsyncGenerator[StreamDelta]) -> AsyncGenerator[StreamDelta]:
     stripper = _ThinkStripper()
     async with aclosing(deltas):
         async for delta in deltas:
@@ -586,8 +597,8 @@ async def _strip_think_stream(deltas: AsyncIterator[StreamDelta]) -> AsyncIterat
 
 
 async def guard_empty_stream(
-    deltas: AsyncIterator[StreamDelta], *, provider: str, model: str, strip_think: bool = False
-) -> AsyncIterator[StreamDelta]:
+    deltas: AsyncGenerator[StreamDelta], *, provider: str, model: str, strip_think: bool = False
+) -> AsyncGenerator[StreamDelta]:
     """Hold a stream's chunks back until one carries non-whitespace text or a
     tool call, then pass everything through in order.
 
@@ -599,12 +610,11 @@ async def guard_empty_stream(
     `strip_think` removes a leading inline `<think>...</think>` block from the
     content first (see `strip_think()`), so reasoning-only streams count as
     empty."""
-    if strip_think:
-        deltas = _strip_think_stream(deltas)
+    stream: AsyncGenerator[StreamDelta] = _strip_think_stream(deltas) if strip_think else deltas
     pending: list[StreamDelta] = []
     started = False
-    async with aclosing(deltas):
-        async for delta in deltas:
+    async with aclosing(stream):
+        async for delta in stream:
             if started:
                 yield delta
                 continue

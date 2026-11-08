@@ -88,7 +88,17 @@ async def stream_chat(
 
     `request_id`, `parallel_tool_calls` and `max_tool_result_chars` behave as
     in `chat()`; the request id arrives on the final (usage) chunk and is on
-    every span."""
+    every span.
+
+    Raises:
+        InvalidRequestError: malformed request (see `chat()`), before any chunk.
+        PolicyViolationError: no provider satisfies the routing policy, before
+            any chunk.
+        LLMDeadlineExceeded: the call deadline ran out.
+        GatewayNotConfiguredError, AllProvidersExhaustedError: no provider could
+            open the stream. Once a chunk was yielded there is no failover, so a
+            later failure propagates to the consumer.
+    """
     rid = resolve_request_id(request_id)
     validate_chat_request(messages, tools, tool_choice)
     config = config or GatewayConfig()

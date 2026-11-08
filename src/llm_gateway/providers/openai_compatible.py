@@ -14,7 +14,7 @@ the latter case the schema is spelled out in the system prompt and
 locally like every other provider.
 """
 
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import aclosing
 from dataclasses import dataclass, field
 
@@ -35,6 +35,7 @@ from .base import (
     remember_client,
     sdk_client_cache_key,
     sdk_client_options,
+    sdk_messages,
     stream_request_options,
 )
 
@@ -207,7 +208,7 @@ class OpenAICompatProvider:
         resp = await self._sdk(config).chat.completions.create(
             model=model,
             max_tokens=max_tokens,
-            messages=messages,
+            messages=sdk_messages(messages),
             **self._chat_kwargs(
                 config, tools, tool_choice, sampling, response_format, parallel_tool_calls
             ),
@@ -226,12 +227,12 @@ class OpenAICompatProvider:
         sampling: dict | None = None,
         response_format: dict | None = None,
         parallel_tool_calls: bool | None = None,
-    ) -> AsyncIterator[StreamDelta]:
+    ) -> AsyncGenerator[StreamDelta]:
         model = model or self.default_model(config)
         stream = await self._sdk(config).chat.completions.create(
             model=model,
             max_tokens=max_tokens,
-            messages=messages,
+            messages=sdk_messages(messages),
             stream=True,
             stream_options={"include_usage": True},
             **self._chat_kwargs(
@@ -255,7 +256,7 @@ class OpenAICompatProvider:
         response_format: dict | None = None,
         parallel_tool_calls: bool | None = None,
         cache_system: bool = False,
-    ) -> AsyncIterator[StreamDelta]:
+    ) -> AsyncGenerator[StreamDelta]:
         """`_stream_chat()` behind `guard_empty_stream()`: a stream with no
         text and no tool calls raises `EmptyCompletionError` before its first
         chunk."""

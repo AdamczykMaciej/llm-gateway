@@ -136,7 +136,9 @@ async def complete(
     Raises `LLMError` when no provider succeeds, its subclass
     `LLMDeadlineExceeded` when `config.call_deadline_seconds` runs out first,
     or its subclass `PolicyViolationError` when no provider satisfies the
-    routing policy (see `complete_with_usage`).
+    routing policy (see `complete_with_usage`). Also raises
+    `GatewayNotConfiguredError` / `AllProvidersExhaustedError` (subclasses of
+    `LLMError`) and `InvalidRequestError` for a malformed `request_id`.
     """
     completion = await complete_with_usage(
         system=system,
@@ -210,6 +212,18 @@ async def complete_with_usage(
     `max_cost_usd` are skipped before any call, and `PolicyViolationError` is
     raised when none is left (routing.py). This applies to `force_provider`
     too.
+
+    Raises:
+        InvalidRequestError: bad `request_id`, `repair_attempts`, `validate`
+            spec; nothing was sent.
+        PolicyViolationError: no provider satisfies the routing policy
+            (`ResidencyViolationError`, `UnsupportedCapabilityError` are
+            subclasses).
+        LLMDeadlineExceeded: `config.call_deadline_seconds` ran out.
+        GatewayNotConfiguredError: no provider in the chain is configured.
+        AllProvidersExhaustedError: every configured provider failed.
+        InvalidOutputError: `validate=` failed on the served text (`.paths`
+            names the fields), or privacy post-processing left `parsed` invalid.
     """
     rid = resolve_request_id(request_id)
     if (

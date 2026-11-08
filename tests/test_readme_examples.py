@@ -1,7 +1,10 @@
 """The README's library examples, run against fake providers (no network)."""
 
+import ast
 import importlib.resources
+import inspect
 import json
+import re
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -150,3 +153,133 @@ async def test_readme_error_table_covers_every_public_error():
     errors = [n for n in llm_gateway.__all__ if n.endswith(("Error", "Exceeded"))] + ["LLMError"]
     for name in errors:
         assert f"| `{name}`" in text, f"{name} missing from the README error table"
+
+
+# ── README blocks tagged `<!-- example: name -->`, executed as written ───────
+
+_README = (Path(__file__).parent.parent / "README.md").read_text(encoding="utf-8")
+
+
+def _example(name: str) -> str:
+    marker = f"<!-- example: {name} -->\n```python\n"
+    assert marker in _README, f"README example {name!r} not found"
+    return _README.split(marker, 1)[1].split("\n```", 1)[0]
+
+
+async def _run(name: str, namespace: dict | None = None) -> dict:
+    """Run a README block (top-level await allowed) and return its namespace."""
+    ns: dict = dict(namespace or {})
+    code = compile(_example(name), f"README:{name}", "exec", flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT)
+    result = eval(code, ns)  # noqa: S307 - our own README
+    if inspect.isawaitable(result):
+        await result
+    return ns
+
+
+_FAKE_KEYS = {
+    "ANTHROPIC_API_KEY": "sk-ant-fake",
+    "GROQ_API_KEY": "gsk-fake",
+    "OPENAI_API_KEY": "sk-fake",
+    "RETRY_ATTEMPTS": "1",
+}
+
+
+@pytest.fixture
+def fake_env(monkeypatch):
+    for k, v in _FAKE_KEYS.items():
+        monkeypatch.setenv(k, v)
+
+
+def _ok(text: str = "ok") -> ProviderResult:
+    return ProviderResult(text=text, model="m", input_tokens=1, output_tokens=1)
+
+
+async def test_readme_validate_example(fake_env):
+    good = json.dumps({"name": "Ada", "address": {"zip": "00-001"}})
+    bad = json.dumps({"name": "Ada", "address": {}})
+    with patch("llm_gateway.router.CALLS", {"anthropic": AsyncMock(return_value=_ok(good))}):
+        ns = await _run("validate")
+    assert ns["person"].address.zip == "00-001"
+    with patch("llm_gateway.router.CALLS", {"anthropic": AsyncMock(return_value=_ok(bad))}):
+        ns = await _run("validate")
+    assert ns["paths"] == ("address.zip",)
+
+
+async def test_readme_request_id_example(fake_env):
+    with patch("llm_gateway.router.CALLS", {"anthropic": AsyncMock(return_value=_ok())}):
+        await _run("request_id", {"order_id": 7})
+
+
+async def test_readme_parallel_tool_calls_example(fake_env):
+    reply = ChatResult(
+        content=None,
+        model="m",
+        input_tokens=1,
+        output_tokens=1,
+        tool_calls=[ToolCall(id="t1", name="get_weather", arguments={"city": "Warsaw"})],
+        finish_reason="tool_calls",
+    )
+    fake = AsyncMock(return_value=reply)
+    with patch("llm_gateway.chat.CHAT_CALLS", {"anthropic": fake}):
+        ns = await _run("parallel_tool_calls", {"weather_tool": _TOOL})
+    assert fake.call_args.kwargs["parallel_tool_calls"] is False
+    assert ns["honoured"] is True
+
+
+async def test_readme_tool_result_cap_example(fake_env):
+    fake = AsyncMock(
+        return_value=ChatResult(content="done", model="m", input_tokens=1, output_tokens=1)
+    )
+    tool = {
+        "type": "function",
+        "function": {"name": "read_file", "parameters": {"type": "object", "properties": {}}},
+    }
+    with patch("llm_gateway.chat.CHAT_CALLS", {"anthropic": fake}):
+        await _run("tool_result_cap", {"huge_file_text": "x" * 50_000, "read_file_tool": tool})
+    sent = fake.call_args.args[1]
+    tool_msg = next(m for m in sent if m["role"] == "tool")
+    assert len(tool_msg["content"]) < 21_000 and "truncated" in tool_msg["content"]
+
+
+async def test_readme_privacy_example(fake_env):
+    fake = AsyncMock(return_value=_ok("Dear [email_1], hello"))
+    with patch("llm_gateway.router.CALLS", {"anthropic": fake}):
+        ns = await _run("privacy")
+    assert "ada@example.com" not in fake.call_args.args[2]
+    assert ns["completion"].text == "Dear ada@example.com, hello"
+    assert len(ns["events"]) == 1
+
+
+async def test_readme_lifespan_example(fake_env):
+    from starlette.testclient import TestClient
+
+    ns = await _run("lifespan")
+    closed = AsyncMock()
+    with (
+        patch("llm_gateway.router.CALLS", {"anthropic": AsyncMock(return_value=_ok("hi"))}),
+        patch.dict(ns, {"aclose": closed}),
+        TestClient(ns["app"]) as client,
+    ):
+        assert client.get("/hello").json() == {"text": "hi"}
+        closed.assert_not_awaited()
+    closed.assert_awaited_once()
+
+
+async def test_readme_documented_names_are_exported():
+    imported = set()
+    for m in re.finditer(r"^from llm_gateway import ([^\n(]+)$", _README, re.M):
+        imported |= {n.strip() for n in m.group(1).split(",")}
+    assert imported
+    assert imported <= set(llm_gateway.__all__), imported - set(llm_gateway.__all__)
+
+
+async def test_nothing_private_is_exported_and_all_public_names_listed():
+    assert not [n for n in llm_gateway.__all__ if n.startswith("_")]
+    import types
+
+    public = {
+        n
+        for n, v in vars(llm_gateway).items()
+        if not n.startswith("_") and not isinstance(v, types.ModuleType)
+    }
+    assert public == set(llm_gateway.__all__), public ^ set(llm_gateway.__all__)

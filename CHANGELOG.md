@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.16.2
+
+API ergonomics, types and docs pass 2. No behaviour change.
+
+- Types: `pyright src` 29 errors -> 0 (26 reported by the first pass plus 3 new). Streaming provider
+  functions are `AsyncGenerator[StreamDelta]` (subtype of the old `AsyncIterator`, so `aclosing`
+  type-checks); OpenAI-format messages go through a typed `sdk_messages()` helper instead of
+  `list[dict]` overload noise; two narrowing fixes; one targeted `pyright: ignore` for the SDK's
+  lazy `AsyncAnthropicVertex` export.
+- Docs: README examples for `validate=`, `request_id`, `parallel_tool_calls` (with support matrix),
+  the tool result cap, the privacy layer (with limits) and `aclose()` in a FastAPI lifespan; new
+  `MIGRATION.md` (0.13 -> 0.16). Docstrings of the public entry points list what they raise.
+- Tests: tagged README blocks are executed as written; `__all__` is checked against documented
+  names and against accidental private or missing exports.
+
 ## 0.16.1
 
 Test-coverage pass 2 (96.30% -> 96.81%, floor 95.8%) and two fixes it exposed.

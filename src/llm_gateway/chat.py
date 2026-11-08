@@ -75,6 +75,17 @@ async def chat(
     `max_tool_result_chars`: truncate `role: "tool"` message text longer than
     this (with a marker) before sending; overrides
     `config.tool_result_max_chars`, 0 disables (see tool_results.py).
+
+    Raises:
+        InvalidRequestError: malformed messages, tools, `tool_choice`,
+            `request_id` or `max_tool_result_chars`; nothing was sent.
+        PolicyViolationError: no provider satisfies the routing policy
+            (`ResidencyViolationError`, `UnsupportedCapabilityError` are
+            subclasses).
+        LLMDeadlineExceeded: `config.call_deadline_seconds` ran out.
+        GatewayNotConfiguredError: no provider in the chain is configured.
+        AllProvidersExhaustedError: every configured provider failed.
+        PrivacyPolicyMissingError: only via `PrivacyLayer(strict=True)`.
     """
     rid = resolve_request_id(request_id)
     validate_chat_request(messages, tools, tool_choice)

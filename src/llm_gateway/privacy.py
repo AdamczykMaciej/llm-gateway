@@ -204,6 +204,10 @@ class Privacy:
     def passthrough(cls, reason: str, label: str = "") -> Privacy:
         if not reason or not reason.strip():
             raise ValueError("a passthrough policy needs a reason")
+        """A policy that sends text unredacted, for a stated `reason`.
+
+        Raises:
+            ValueError: `reason` is empty or whitespace."""
         return cls(None, OutputPolicy.PASSTHROUGH, reason=reason, label=label)
 
 
@@ -456,6 +460,14 @@ class PrivacyLayer:
     async def complete_with_usage(
         self, *, system: str, prompt: str, privacy: Privacy | None = None, **kwargs: Any
     ) -> Any:
+        """`complete_with_usage()` with `system` and `prompt` redacted and the
+        reply post-processed per `privacy.output`. Other keywords go to
+        `complete_with_usage()`.
+
+        Raises:
+            PrivacyPolicyMissingError: strict layer and no `privacy=`.
+            InvalidOutputError: the output policy left `parsed` invalid.
+            Plus everything `complete_with_usage()` raises."""
         p = self._resolve(privacy, "complete_with_usage")
         vault = Vault(p.fmt)
         out = _Output(p, vault)
@@ -491,6 +503,12 @@ class PrivacyLayer:
     async def chat(
         self, *, messages: list[dict], privacy: Privacy | None = None, **kwargs: Any
     ) -> Any:
+        """`chat()` with every message redacted and the reply (text and tool-call
+        arguments) post-processed per `privacy.output`.
+
+        Raises:
+            PrivacyPolicyMissingError: strict layer and no `privacy=`.
+            Plus everything `chat()` raises."""
         p = self._resolve(privacy, "chat")
         vault = Vault(p.fmt)
         out = _Output(p, vault)
@@ -520,6 +538,13 @@ class PrivacyLayer:
     async def stream_chat(
         self, *, messages: list[dict], privacy: Privacy | None = None, **kwargs: Any
     ) -> AsyncGenerator[Any, None]:
+        """`stream_chat()` with redaction in and restore/strip on the stream; a
+        token split across chunks is held back until complete.
+
+        Raises:
+            PrivacyPolicyMissingError: strict layer and no `privacy=`, on first
+                iteration.
+            Plus everything `stream_chat()` raises."""
         p = self._resolve(privacy, "stream_chat")
         vault = Vault(p.fmt)
         out = _Output(p, vault)

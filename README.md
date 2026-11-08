@@ -204,14 +204,28 @@ against a pydantic model or a JSON Schema dict (a subset: `type`, `enum`,
 `anyOf`/`oneOf`, local `$ref`). It does not change the request, so pair it with
 `output_schema=` when you want the provider constrained too.
 
+<!-- example: validate -->
 ```python
+from pydantic import BaseModel
 from llm_gateway import InvalidOutputError, complete_with_usage
 
+
+class Address(BaseModel):
+    zip: str
+
+
+class Person(BaseModel):
+    name: str
+    address: Address
+
+
 try:
-    result = await complete_with_usage(system=..., prompt=..., validate=Person)
-    person = result.parsed            # a Person
+    result = await complete_with_usage(
+        system="Reply with a JSON person.", prompt="Ada, 00-001", validate=Person
+    )
+    person = result.parsed  # a Person
 except InvalidOutputError as e:
-    e.paths                           # ("address.zip",): field paths, never values
+    paths = e.paths  # ("address.zip",): field paths, never values
 ```
 
 A failed check raises `InvalidOutputError` after the provider was already
@@ -235,6 +249,21 @@ chunk's `StreamDelta.request_id`), and is on the call span as
 `timeout`, `rate_limited`), `llm_gateway.latency_ms` and the token counts.
 Spans carry ids, classes and counts only: no prompts, replies, error text or
 keys.
+
+<!-- example: request_id -->
+```python
+from llm_gateway import complete_with_usage
+
+result = await complete_with_usage(
+    system="Be brief.", prompt="Hi", request_id=f"order-{order_id}-step-2"
+)
+assert result.request_id == f"order-{order_id}-step-2"  # same id on every span
+```
+
+Reuse your own correlation id (an order id, an incoming `X-Request-ID`) to find
+every attempt of one logical call in your traces. A repair call made by
+`repair_attempts=` shares the id. Ids are not required to be unique: the
+gateway does not deduplicate on them.
 
 ### Prompt caching: `cache_system=True`
 
@@ -1343,11 +1372,61 @@ works but may still return several tool calls, so keep handling a list.
 `llm_gateway.providers.PARALLEL_TOOL_CALLS_SUPPORTED` says which is which.
 Leaving it unset (`None`, the default) sends nothing.
 
+| Provider | `parallel_tool_calls=False` honoured | Sent as |
+|---|---|---|
+| `openai`, `azure`, `groq`, `mistral`, `openrouter` | yes | `parallel_tool_calls: false` |
+| `anthropic`, `vertex` (Claude) | yes | `disable_parallel_tool_use: true` on `tool_choice` |
+| `gemini`, `huggingface`, `openai_compat` | no (ignored) | nothing |
+
+<!-- example: parallel_tool_calls -->
+```python
+from llm_gateway import chat
+from llm_gateway.providers import PARALLEL_TOOL_CALLS_SUPPORTED
+
+result = await chat(
+    messages=[{"role": "user", "content": "Weather in Warsaw and Paris?"}],
+    tools=[weather_tool],
+    parallel_tool_calls=False,
+)
+for call in result.tool_calls:  # still a list: handle one or many
+    ...
+honoured = PARALLEL_TOOL_CALLS_SUPPORTED["openai"]  # True
+```
+
 **Tool result size guard (0.16.0).** `TOOL_RESULT_MAX_CHARS` (default `0`,
 off) or `chat(..., max_tool_result_chars=N)` cuts any `role: "tool"` message
 longer than N characters (text parts included) to N characters plus a marker
 stating how much was omitted, so one giant tool output is not resent on every
 turn. Your own message list is not modified.
+
+<!-- example: tool_result_cap -->
+```python
+from llm_gateway import chat
+
+result = await chat(
+    messages=[
+        {"role": "user", "content": "Summarise the file."},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "t1",
+                    "type": "function",
+                    "function": {"name": "read_file", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "t1", "content": huge_file_text},
+    ],
+    tools=[read_file_tool],
+    max_tool_result_chars=20_000,  # 0 disables; None uses TOOL_RESULT_MAX_CHARS
+)
+```
+
+The cap counts characters, not tokens, and only touches `role: "tool"` messages
+(system, user and assistant text are never cut). A negative or non-integer
+value raises `InvalidRequestError`.
 
 ### Structured output
 
@@ -1576,17 +1655,27 @@ Messages never contain prompt content, model output or credentials.
 explicit policy on what comes back. It is provider-agnostic and adds no
 dependency.
 
+<!-- example: privacy -->
 ```python
+import re
 from llm_gateway import PrivacyLayer, Privacy, OutputPolicy, Span
+
+EMAIL = re.compile(r"[\w.+-]+@[\w-]+\.[\w.]+")
 
 
 class MyRedactor:  # the Redactor protocol: text -> spans
-    def detect(self, text): ...  # yield Span(start, end, "email") ...
+    def detect(self, text):
+        for m in EMAIL.finditer(text):
+            yield Span(m.start(), m.end(), "email")
 
 
-layer = PrivacyLayer(strict=True, on_audit=lambda ev: log.info("%s", ev))
+events = []
+layer = PrivacyLayer(strict=True, on_audit=events.append)
 privacy = Privacy(redactor=MyRedactor(), output=OutputPolicy.RESTORE)
-completion = await layer.complete_with_usage(system=..., prompt=..., privacy=privacy)
+completion = await layer.complete_with_usage(
+    system="Draft a reply.", prompt="Write to ada@example.com", privacy=privacy
+)
+# The provider saw "Write to [email_1]"; completion.text has the address back.
 # also: layer.chat(messages=..., privacy=...) and layer.stream_chat(...)
 ```
 
@@ -1624,6 +1713,43 @@ completion = await layer.complete_with_usage(system=..., prompt=..., privacy=pri
   to the (already redacted) request.
 - **Audit hook**: `on_audit(AuditEvent)` receives counts per kind, the policy,
   the number restored and stripped, and the passthrough reason. Never a value.
+
+**Limits.** The layer is only as good as your `Redactor`: it finds nothing by
+itself (the built-in `mask_pii()` is a separate, log-oriented masker). It
+redacts message *text*; `tools` definitions, `tool_choice`, `model`, image
+parts and other keyword arguments are sent as given. A model that rewrites a
+token (`[email_1]` becomes "email 1") cannot be restored. The vault lives for
+one call, so a token from one call means nothing in the next. Redaction
+reduces what the provider sees; it is not an anonymisation guarantee.
+
+## Shutdown: `aclose()`
+
+The gateway caches one SDK client (and, for Azure/Vertex, credentials) per
+provider. Call `await llm_gateway.aclose()` once when your application stops so
+connections close cleanly; it never raises, and clients are rebuilt lazily if
+you call the gateway again. The HTTP service does this for you.
+
+<!-- example: lifespan -->
+```python
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI
+from llm_gateway import aclose, complete
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    yield  # the app serves requests here
+    await aclose()  # shutdown: close provider clients
+
+
+app = FastAPI(lifespan=lifespan)
+
+
+@app.get("/hello")
+async def hello() -> dict[str, str]:
+    return {"text": await complete(system="Be brief.", prompt="Say hello.")}
+```
 
 ## PII masking
 

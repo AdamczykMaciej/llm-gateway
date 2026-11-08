@@ -129,7 +129,10 @@ __all__ = [
 
 async def aclose_all() -> None:
     """Close every provider's cached SDK clients and credentials. Call on
-    application shutdown; the clients are rebuilt lazily if used again."""
+    application shutdown; the clients are rebuilt lazily if used again.
+
+    Never raises: a failure closing one provider is logged and the rest are
+    still closed."""
     for module in (
         anthropic,
         azure,

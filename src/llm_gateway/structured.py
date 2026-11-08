@@ -355,6 +355,7 @@ class OutputValidator:
             raise InvalidOutputError(
                 "Structured output is nested too deeply.", ("<root>",)
             ) from None
+        assert isinstance(self.spec, dict)  # a model spec returned above
         paths: list[str] = []
         _schema_errors(data, self.spec, self.spec, "", paths)
         if paths:

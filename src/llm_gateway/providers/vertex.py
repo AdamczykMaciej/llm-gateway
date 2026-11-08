@@ -47,7 +47,7 @@ INVALID_REQUEST.
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import aclosing
 from typing import Any
 
@@ -299,7 +299,10 @@ async def _google_credentials(config: GatewayConfig) -> Any:
 def _load_sdk() -> tuple[Any, Any]:
     try:
         import google.auth  # noqa: F401
-        from anthropic import AsyncAnthropicVertex, DefaultAsyncHttpxClient
+        from anthropic import (
+            AsyncAnthropicVertex,  # pyright: ignore[reportPrivateImportUsage]  # lazy export the stubs omit
+            DefaultAsyncHttpxClient,
+        )
     except ImportError as e:
         raise _missing_extra(e, extra="vertex", library="google-auth") from None
     return AsyncAnthropicVertex, DefaultAsyncHttpxClient
@@ -416,7 +419,7 @@ async def _stream_chat(
     response_format: dict | None = None,
     parallel_tool_calls: bool | None = None,
     cache_system: bool = False,
-) -> AsyncIterator[StreamDelta]:
+) -> AsyncGenerator[StreamDelta]:
     deltas = anthropic_messages.messages_stream(
         lambda: _client(config),
         model=model or default_model(config),
@@ -453,7 +456,7 @@ async def stream_chat(
     response_format: dict | None = None,
     parallel_tool_calls: bool | None = None,
     cache_system: bool = False,
-) -> AsyncIterator[StreamDelta]:
+) -> AsyncGenerator[StreamDelta]:
     """`_stream_chat()` behind `guard_empty_stream()`: a stream with no text
     and no tool calls raises `EmptyCompletionError` before its first chunk."""
     deltas = _stream_chat(
