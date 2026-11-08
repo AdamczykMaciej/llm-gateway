@@ -1637,6 +1637,10 @@ Messages never contain prompt content, model output or credentials.
 | `MAX_TOKENS_CEILING` | `4000` | Reject a request if `max_tokens` exceeds this. `0` disables it. |
 | `MAX_PROMPT_CHARS` | `32000` | Reject a request if total message content exceeds this many characters. `0` disables it. |
 | `MAX_IMAGE_BYTES` | `10000000` | Reject a request if the total decoded size of all `data:` URI images exceeds this. `0` disables it. |
+| `STREAM_WRITE_TIMEOUT_SECONDS` | `30` | HTTP service: close an SSE stream (and its upstream request) when one write to the client blocks this long. `0` disables it. |
+| `MAX_CONCURRENT_STREAMS` | `256` | HTTP service: open SSE streams per process; over it, `503`. `0` disables it. |
+| `STREAM_HEARTBEAT_SECONDS` | `15` | HTTP service: send an SSE `: keepalive` comment after this many idle seconds. `0` disables it. |
+| `SHUTDOWN_GRACE_SECONDS` | `20` | HTTP service: on shutdown, wait this long for in-flight non-streaming calls before ending open streams with an error event. `0` skips the wait. |
 | `SSL_VERIFY` | `true` | TLS certificate verification for provider calls. Set `false` only behind a corporate SSL-inspection proxy. |
 | `PROVIDER_METADATA` | `{}` | JSON object: per-provider residency / retention / training / DPA assertions; see [Provider policy](#provider-policy-and-cost-controls-050) |
 | `POLICY_RESIDENCY` | — | Only providers whose asserted region equals this (e.g. `eu`) |

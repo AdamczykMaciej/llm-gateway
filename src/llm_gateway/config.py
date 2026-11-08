@@ -339,6 +339,20 @@ class GatewayConfig(BaseSettings):
     # the fact). Default covers max_image_bytes as base64 plus text. 0 disables.
     max_request_bytes: int = 16_777_216
 
+    # SSE resilience (service/app.py). A client that stops reading must not pin
+    # an upstream provider stream: a single write blocked longer than
+    # stream_write_timeout_seconds closes the stream (and the upstream request).
+    # max_concurrent_streams bounds open streams per process; over it, new
+    # streaming requests get 503. stream_heartbeat_seconds sends an SSE comment
+    # when the stream is idle that long, so proxies keep the connection.
+    # shutdown_grace_seconds is how long lifespan shutdown lets in-flight
+    # non-streaming calls finish before open streams get a final error event.
+    # 0 disables each of the four.
+    stream_write_timeout_seconds: float = 30.0
+    max_concurrent_streams: int = 256
+    stream_heartbeat_seconds: float = 15.0
+    shutdown_grace_seconds: float = 20.0
+
     # ── Provider policy and cost controls (policy.py, routing.py) ────────
     # Operator-asserted compliance facts per provider id, as JSON:
     #   PROVIDER_METADATA='{"anthropic": {"region": "us", "retention": "zero",
