@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.17.0
+
+Per-attempt usage/cost hook and a first-token timeout for streams. New optional parameters only.
+
+- Feature: `on_attempt` (`GatewayConfig.on_attempt`, or per call on `chat`, `stream_chat`,
+  `complete`, `complete_with_usage`; sync or async) receives an `AttemptReport` once per provider
+  attempt: provider, model, request id, attempt number, outcome (succeeded, failed, cancelled),
+  error type name, usage (partial when the provider reported it before failing, else `None`) and
+  `cost_usd` from the price table. No prompt, reply or error message in it. Hook exceptions are
+  logged by type and never affect the call.
+- Feature: `first_token_timeout_seconds` (config field and `stream_chat()` argument, default
+  `None`): no first chunk in time raises `FirstTokenTimeoutError` (a `TimeoutError`) for that
+  attempt and fails over before anything is yielded. Interaction with
+  `stream_idle_timeout_seconds` and `call_deadline_seconds` is documented in the README.
+
 ## 0.16.9
 
 Stream size caps, budget-hook contract, provider-shape fixtures.

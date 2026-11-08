@@ -37,9 +37,11 @@ from collections.abc import AsyncGenerator
 from opentelemetry.trace import StatusCode
 
 from . import breaker
+from .attempts import AttemptHook, report_attempt, usage_of
 from .config import GatewayConfig
 from .errors import (
     AllProvidersExhaustedError,
+    FirstTokenTimeoutError,
     GatewayNotConfiguredError,
     LLMError,
     StreamTooLargeError,
@@ -48,7 +50,7 @@ from .errors import (
 )
 from .policy import ProviderPolicy
 from .providers import CONFIGURED, DEFAULT_MODEL, STREAM_CALLS
-from .providers.base import StreamDelta
+from .providers.base import StreamDelta, Usage
 from .retry import Deadline, call_with_retry
 from .router import record_provider_failure
 from .routing import RequestProfile, plan_chain
@@ -92,6 +94,10 @@ def _check_stream_size(
     return total
 
 
+def _positive(seconds: float | None) -> float | None:
+    return seconds if seconds is not None and seconds > 0 else None
+
+
 async def stream_chat(
     *,
     messages: list[dict],
@@ -108,6 +114,8 @@ async def stream_chat(
     request_id: str | None = None,
     parallel_tool_calls: bool | None = None,
     max_tool_result_chars: int | None = None,
+    on_attempt: AttemptHook | None = None,
+    first_token_timeout_seconds: float | None = None,
 ) -> AsyncGenerator[StreamDelta, None]:
     """Stream a chat completion. `policy` narrows `config.policy` as in
     `complete_with_usage()`; the chain is filtered before the first provider
@@ -123,6 +131,22 @@ async def stream_chat(
     `request_id`, `parallel_tool_calls` and `max_tool_result_chars` behave as
     in `chat()`; the request id arrives on the final (usage) chunk and is on
     every span.
+
+    `on_attempt`: a sync or async callable receiving an `AttemptReport` once
+    per provider attempt; replaces `config.on_attempt` for this call. A stream
+    that fails after its usage chunk, or is closed early, reports the usage
+    seen so far (else `None`), and an early close is reported as "cancelled".
+
+    `first_token_timeout_seconds`: fail an attempt that yields no first chunk
+    within this many seconds with a `FirstTokenTimeoutError` (a builtin
+    `TimeoutError`, so a provider timeout: counts for the breaker, no retry)
+    and fail over to the next provider, which is safe because nothing was
+    yielded. Overrides `config.first_token_timeout_seconds`; `None` there
+    too means no such bound. It only tightens the wait for the first chunk,
+    which `stream_idle_timeout_seconds` and `call_deadline_seconds` already
+    cap: the smallest of the three applies, so a value above the idle bound
+    changes nothing. After the first chunk only the idle bound (the
+    SDK's read timeout) and the deadline apply.
 
     Raises:
         InvalidRequestError: malformed request (see `chat()`), before any chunk.
@@ -146,6 +170,11 @@ async def stream_chat(
         extra["parallel_tool_calls"] = parallel_tool_calls
     order = [force_provider] if force_provider else config.provider_order_list
     model_override = model if force_provider else None
+    first_token_limit = _positive(
+        first_token_timeout_seconds
+        if first_token_timeout_seconds is not None
+        else config.first_token_timeout_seconds
+    )
 
     tracer = get_tracer()
     start = time.monotonic() * 1000
@@ -208,7 +237,20 @@ async def stream_chat(
                     **extra,
                 )
                 try:
-                    return generator, await generator.__anext__()
+                    # Its own timeout scope, so a miss is told apart from the
+                    # idle bound and the deadline (which wrap this whole call).
+                    limit = asyncio.timeout(first_token_limit)
+                    try:
+                        async with limit:
+                            return generator, await generator.__anext__()
+                    except TimeoutError:
+                        if first_token_limit is not None and limit.expired():
+                            await generator.aclose()
+                            raise FirstTokenTimeoutError(
+                                "No first chunk within first_token_timeout_seconds "
+                                f"({first_token_limit:g} s)."
+                            ) from None
+                        raise
                 except StopAsyncIteration:
                     return generator, None
 
@@ -233,6 +275,19 @@ async def stream_chat(
                     started_ns=attempt_started_ns,
                     error=e,
                 )
+                await report_attempt(
+                    on_attempt,
+                    config,
+                    request_id=rid,
+                    attempt=attempt_no,
+                    provider=provider,
+                    model=resolved_model,
+                    outcome="cancelled",
+                    usage=None,
+                    error=e,
+                    is_fallback=is_fallback,
+                    latency_ms=(time.time_ns() - attempt_started_ns) / 1e6,
+                )
                 raise
             except Exception as e:  # noqa: BLE001 — pre-flight failure tries the next provider
                 record_provider_failure(
@@ -247,6 +302,19 @@ async def stream_chat(
                     model=resolved_model,
                     started_ns=attempt_started_ns,
                     error=e,
+                )
+                await report_attempt(
+                    on_attempt,
+                    config,
+                    request_id=rid,
+                    attempt=attempt_no,
+                    provider=provider,
+                    model=resolved_model,
+                    outcome="failed",
+                    usage=None,
+                    error=e,
+                    is_fallback=is_fallback,
+                    latency_ms=(time.time_ns() - attempt_started_ns) / 1e6,
                 )
                 latency = time.monotonic() * 1000 - start
                 set_chat_attributes(
@@ -275,8 +343,22 @@ async def stream_chat(
                     model=resolved_model,
                     started_ns=attempt_started_ns,
                 )
+                await report_attempt(
+                    on_attempt,
+                    config,
+                    request_id=rid,
+                    attempt=attempt_no,
+                    provider=provider,
+                    model=resolved_model,
+                    outcome="succeeded",
+                    usage=None,
+                    error=None,
+                    is_fallback=is_fallback,
+                    latency_ms=(time.time_ns() - attempt_started_ns) / 1e6,
+                )
                 return
             cache_read_input_tokens = cache_creation_input_tokens = reasoning_tokens = 0
+            usage_seen: Usage | None = None
             finish_reason = "stop"
             tool_call_count = 0
             total_chars = 0
@@ -289,6 +371,7 @@ async def stream_chat(
                         tool_call_count += sum(1 for d in delta.tool_call_deltas if "id" in d)
                     if delta.usage:
                         input_tokens, output_tokens = delta.usage
+                        usage_seen = usage_of(input_tokens, output_tokens, delta.usage_details)
                         if delta.usage_details:
                             cache_read_input_tokens = delta.usage_details.cache_read_input_tokens
                             cache_creation_input_tokens = (
@@ -338,6 +421,25 @@ async def stream_chat(
                     error=stream_error,
                     input_tokens=input_tokens,
                     output_tokens=output_tokens,
+                )
+                await report_attempt(
+                    on_attempt,
+                    config,
+                    request_id=rid,
+                    attempt=attempt_no,
+                    provider=provider,
+                    model=resolved_model,
+                    outcome=(
+                        "succeeded"
+                        if stream_error is None
+                        else "cancelled"
+                        if isinstance(stream_error, asyncio.CancelledError | GeneratorExit)
+                        else "failed"
+                    ),
+                    usage=usage_seen,
+                    error=stream_error,
+                    is_fallback=is_fallback,
+                    latency_ms=(time.time_ns() - attempt_started_ns) / 1e6,
                 )
                 # Consumer stopped reading (close, cancel, disconnect) or the
                 # stream failed: close the provider's generator so its HTTP

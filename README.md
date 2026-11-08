@@ -235,6 +235,50 @@ that answered, each with the failing paths and its previous reply appended to
 the prompt. Usage and cost on the returned `Completion` are summed over all
 calls.
 
+### Per-attempt usage hook and first-token timeout (0.17.0)
+
+`on_attempt` is called once per provider **attempt** (after that provider's own
+retries): served, failed (the chain moved on or ended) or cancelled. A failed
+attempt may still have been billed, so a spend ledger that only reads
+`Completion.usage` misses it. Set it on `GatewayConfig(on_attempt=...)` for
+every call, or per call on `chat()`, `stream_chat()`, `complete()` and
+`complete_with_usage()` (a per-call hook replaces the config one). It may be a
+plain function or a coroutine function.
+
+```python
+from llm_gateway import AttemptReport, GatewayConfig, complete_with_usage
+
+async def meter(r: AttemptReport) -> None:
+    # r.request_id, r.attempt (from 1), r.provider, r.model,
+    # r.outcome ("succeeded" | "failed" | "cancelled"), r.error_type,
+    # r.usage (Usage or None), r.cost_usd (price table; None if unknown), r.is_fallback
+    await ledger.add(r.request_id, r.provider, r.model, r.cost_usd)
+
+config = GatewayConfig(on_attempt=meter)
+```
+
+`usage` is what the provider reported for that attempt: a reply that then
+failed `output_schema` validation, or a stream that failed after its usage
+chunk, still shows it; otherwise it is `None` (as is `cost_usd`). An
+early-closed or cancelled stream reports "cancelled". The report holds ids,
+numbers and the error's class name only: never prompt or reply text, and never
+an error message. A hook that raises is logged by exception type and ignored; it
+cannot fail or change the call (a slow hook does delay it, so keep it short).
+
+`first_token_timeout_seconds` (config field or `stream_chat()` argument, default
+`None`): if a provider sends no first chunk within it, the attempt fails with
+`FirstTokenTimeoutError` (a builtin `TimeoutError`: a provider timeout that
+counts for the breaker and is not retried on the same provider) and the chain
+moves to the next provider. This is safe because nothing has been yielded yet.
+How it combines with the other bounds: before the first chunk the **smallest** of
+`first_token_timeout_seconds`, `stream_idle_timeout_seconds` and the remaining
+`call_deadline_seconds` applies, so a value above the idle bound changes nothing;
+after the first chunk only the idle bound (a gap between chunks) and the
+deadline apply, never the first-token timeout. A deadline that runs out still
+raises `LLMDeadlineExceeded`. Some providers legitimately hold back the first
+normalized chunk until generation ends (structured-output emulation), so leave it
+unset for those.
+
 ### Request ids and attempt spans (0.16.0)
 
 `chat()`, `stream_chat()`, `complete()` and `complete_with_usage()` take
@@ -1517,6 +1561,7 @@ ends the stream — see [Streaming](#streaming).
 |---|---|---|
 | `REQUEST_TIMEOUT_SECONDS` | `45` | One non-streaming attempt on one provider. Passed to the SDK client (5 s connect) and enforced by the gateway around the whole attempt. |
 | `STREAM_IDLE_TIMEOUT_SECONDS` | `30` | Streaming: the wait for the response to start and every gap between chunks (SDK read timeout). Not a cap on a stream that keeps flowing. |
+| `FIRST_TOKEN_TIMEOUT_SECONDS` | unset | `stream_chat()` only: fail over when no first chunk arrives within this many seconds. Unset = no extra bound. See "Per-attempt usage hook and first-token timeout". |
 | `CALL_DEADLINE_SECONDS` | `90` | One whole `complete()`/`chat()`/`stream_chat()` call — every attempt, retry, backoff and failover, including a stream that has already started. |
 
 When the deadline runs out the call raises `LLMDeadlineExceeded`, a subclass
@@ -1558,6 +1603,7 @@ you finally see.
 | `InvalidOutputError` | A provider answered with unusable output (refusal, invalid JSON, schema failure). Fails over; surfaces only inside `LLMError` | no | rarely; a different prompt or schema |
 | `ToolCallTruncatedError` | The reply hit `max_tokens` inside a tool call (subclass of `InvalidOutputError`; fails over the same way) | no | yes, with a larger `max_tokens` |
 | `StreamTooLargeError` | A streamed reply passed `stream_max_tool_arguments_chars` or `stream_max_total_chars` (subclass of `InvalidOutputError`; fails over the same way) | no | no |
+| `FirstTokenTimeoutError` | A streaming attempt sent no first chunk within `first_token_timeout_seconds` (subclass of the builtin `TimeoutError`: a provider timeout, fails over before anything is yielded) | no | yes |
 | `EmptyCompletionError` | A provider returned no text and no tool calls (often a reasoning model out of budget). Fails over | no | raise `max_tokens` |
 | `ProviderAuthError` | A provider could not authenticate before sending (e.g. no Entra token). Fails over | no | no, fix credentials |
 
@@ -1629,6 +1675,7 @@ Messages never contain prompt content, model output or credentials.
 | `REQUEST_TIMEOUT_SECONDS` | `45` | Per-attempt timeout for non-streaming calls. `0` falls back to the SDK default (600 s). |
 | `STREAM_IDLE_TIMEOUT_SECONDS` | `30` | Streaming: max wait for the stream to start and between chunks. `0` falls back to the SDK default. |
 | `SDK_MAX_RETRIES` | `0` | The provider SDKs' own retry count. The gateway owns retries; leave at `0`. |
+| `FIRST_TOKEN_TIMEOUT_SECONDS` | unset | `stream_chat()`: fail over if no first chunk within this many seconds (tightens `STREAM_IDLE_TIMEOUT_SECONDS` for the first chunk only). |
 | `CALL_DEADLINE_SECONDS` | `90` | Wall-clock budget for one call across all retries and failovers. `0` disables it. |
 | `TOOL_RESULT_MAX_CHARS` | `0` | Truncate `role: "tool"` message text above this many characters, with a marker, before `chat()`/`stream_chat()` send it. `0` disables it. |
 | `TRACE_INCLUDE_PROMPTS` | `false` | Include (PII-masked) prompt text in traces |

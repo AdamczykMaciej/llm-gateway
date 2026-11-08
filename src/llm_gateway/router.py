@@ -15,6 +15,7 @@ from opentelemetry.trace import StatusCode
 from pydantic import BaseModel
 
 from . import breaker
+from .attempts import AttemptHook, report_attempt
 from .config import GatewayConfig
 from .errors import (
     AllProvidersExhaustedError,
@@ -126,6 +127,7 @@ async def complete(
     cache_system: bool = False,
     policy: ProviderPolicy | None = None,
     request_id: str | None = None,
+    on_attempt: AttemptHook | None = None,
 ) -> str:
     """Return a text completion, trying providers in `config.provider_order`.
 
@@ -157,6 +159,7 @@ async def complete(
         cache_system=cache_system,
         policy=policy,
         request_id=request_id,
+        on_attempt=on_attempt,
     )
     return completion.text
 
@@ -176,12 +179,18 @@ async def complete_with_usage(
     request_id: str | None = None,
     validate: dict | type[BaseModel] | None = None,
     repair_attempts: int = 0,
+    on_attempt: AttemptHook | None = None,
 ) -> Completion:
     """`complete()`, returning a `Completion` instead of a string.
 
     `request_id`: a correlation id (1-128 of letters, digits, `. _ : -`) put
     on every span of the call and returned as `Completion.request_id`; one is
     generated when omitted.
+
+    `on_attempt`: a sync or async callable receiving an `AttemptReport` once
+    per provider attempt (served, failed or cancelled), with that attempt's
+    usage when known and its cost; replaces `config.on_attempt` for this call.
+    Exceptions inside it are logged and ignored (see attempts.py).
 
     `validate`: opt-in check of the served text against a pydantic model
     class (full validation) or a JSON Schema dict (a documented subset: type,
@@ -252,6 +261,7 @@ async def complete_with_usage(
         "cache_system": cache_system,
         "policy": policy,
         "request_id": rid,
+        "on_attempt": on_attempt,
     }
     completion = await _complete_once(prompt=prompt, **options)
     if validator is None:
@@ -312,6 +322,7 @@ async def _complete_once(
     cache_system: bool,
     policy: ProviderPolicy | None,
     request_id: str,
+    on_attempt: AttemptHook | None = None,
 ) -> Completion:
     schema = (
         OutputSchema.from_spec(output_schema, schema_name) if output_schema is not None else None
@@ -372,8 +383,12 @@ async def _complete_once(
             attempt_no += 1
             attempt_started_ns = time.time_ns()
 
-            async def attempt(call=call):
+            billed: list[Usage] = []
+
+            async def attempt(call=call, billed=billed):
                 result = await call(config, system, prompt, max_tokens, model_override, **extra)
+                # Paid for even if the reply then fails schema validation.
+                billed[:] = [result.usage]
                 # Inside the attempt, so invalid structured output is a
                 # failure of this provider and the chain moves on.
                 parsed = schema.parse(result.text) if schema is not None else None
@@ -401,6 +416,19 @@ async def _complete_once(
                     started_ns=attempt_started_ns,
                     error=e,
                 )
+                await report_attempt(
+                    on_attempt,
+                    config,
+                    request_id=request_id,
+                    attempt=attempt_no,
+                    provider=provider,
+                    model=resolved_model,
+                    outcome="cancelled",
+                    usage=billed[0] if billed else None,
+                    error=e,
+                    is_fallback=is_fallback,
+                    latency_ms=(time.time_ns() - attempt_started_ns) / 1e6,
+                )
                 raise
             except Exception as e:  # noqa: BLE001 — any provider failure (after its retries) tries the next
                 record_provider_failure(
@@ -415,6 +443,19 @@ async def _complete_once(
                     model=resolved_model,
                     started_ns=attempt_started_ns,
                     error=e,
+                )
+                await report_attempt(
+                    on_attempt,
+                    config,
+                    request_id=request_id,
+                    attempt=attempt_no,
+                    provider=provider,
+                    model=resolved_model,
+                    outcome="failed",
+                    usage=billed[0] if billed else None,
+                    error=e,
+                    is_fallback=is_fallback,
+                    latency_ms=(time.time_ns() - attempt_started_ns) / 1e6,
                 )
                 latency = time.monotonic() * 1000 - start
                 set_call_attributes(
@@ -479,6 +520,19 @@ async def _complete_once(
                 usage,
             )
             record_cost(span, cost)
+            await report_attempt(
+                on_attempt,
+                config,
+                request_id=request_id,
+                attempt=attempt_no,
+                provider=provider,
+                model=result.model,
+                outcome="succeeded",
+                usage=usage,
+                error=None,
+                is_fallback=is_fallback,
+                latency_ms=(time.time_ns() - attempt_started_ns) / 1e6,
+            )
             return Completion(
                 text=result.text,
                 provider=provider,

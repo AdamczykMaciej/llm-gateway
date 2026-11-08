@@ -183,6 +183,13 @@ class ToolCallTruncatedError(InvalidOutputError):
         self.tool_names = tool_names
 
 
+class FirstTokenTimeoutError(TimeoutError):
+    """A streaming attempt sent no first chunk within
+    `first_token_timeout_seconds`. A builtin `TimeoutError`, so it is
+    classified as a provider timeout (counts for the breaker, not retried on
+    the same provider) and the stream fails over before anything was yielded."""
+
+
 class StreamTooLargeError(InvalidOutputError):
     """A streamed reply grew past a configured size cap
     (`stream_max_tool_arguments_chars` for one tool call's arguments,

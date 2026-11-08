@@ -18,6 +18,7 @@ import time
 from opentelemetry.trace import StatusCode
 
 from . import breaker
+from .attempts import AttemptHook, report_attempt
 from .config import GatewayConfig
 from .errors import (
     AllProvidersExhaustedError,
@@ -27,7 +28,7 @@ from .errors import (
 )
 from .policy import ProviderPolicy
 from .providers import CHAT_CALLS, CONFIGURED, DEFAULT_MODEL
-from .providers.base import ChatResult
+from .providers.base import ChatResult, Usage
 from .retry import Deadline, call_with_retry
 from .router import record_provider_failure
 from .routing import RequestProfile, plan_chain
@@ -59,6 +60,7 @@ async def chat(
     request_id: str | None = None,
     parallel_tool_calls: bool | None = None,
     max_tool_result_chars: int | None = None,
+    on_attempt: AttemptHook | None = None,
 ) -> ChatResult:
     """Return a ChatResult (text and/or tool_calls), trying providers in
     `config.provider_order` — same fallback/circuit-breaker semantics as
@@ -71,6 +73,11 @@ async def chat(
 
     `request_id`: a correlation id put on every span of the call and returned
     as `ChatResult.request_id`; generated when omitted (see tracing.py).
+
+    `on_attempt`: a sync or async callable receiving an `AttemptReport` once
+    per provider attempt (served, failed or cancelled); replaces
+    `config.on_attempt` for this call. Exceptions inside it are logged and
+    ignored (see attempts.py). A failed `chat()` attempt reports no usage.
 
     `parallel_tool_calls`: `False` asks the model for at most one tool call
     per turn, where the provider has such a switch (OpenAI-style
@@ -187,6 +194,19 @@ async def chat(
                     started_ns=attempt_started_ns,
                     error=e,
                 )
+                await report_attempt(
+                    on_attempt,
+                    config,
+                    request_id=rid,
+                    attempt=attempt_no,
+                    provider=provider,
+                    model=resolved_model,
+                    outcome="cancelled",
+                    usage=None,
+                    error=e,
+                    is_fallback=is_fallback,
+                    latency_ms=(time.time_ns() - attempt_started_ns) / 1e6,
+                )
                 raise
             except Exception as e:  # noqa: BLE001 — any provider failure (after its retries) tries the next
                 record_provider_failure(
@@ -201,6 +221,19 @@ async def chat(
                     model=resolved_model,
                     started_ns=attempt_started_ns,
                     error=e,
+                )
+                await report_attempt(
+                    on_attempt,
+                    config,
+                    request_id=rid,
+                    attempt=attempt_no,
+                    provider=provider,
+                    model=resolved_model,
+                    outcome="failed",
+                    usage=None,
+                    error=e,
+                    is_fallback=is_fallback,
+                    latency_ms=(time.time_ns() - attempt_started_ns) / 1e6,
                 )
                 latency = time.monotonic() * 1000 - start
                 set_chat_attributes(
@@ -226,6 +259,24 @@ async def chat(
                 started_ns=attempt_started_ns,
                 input_tokens=result.input_tokens,
                 output_tokens=result.output_tokens,
+            )
+            await report_attempt(
+                on_attempt,
+                config,
+                request_id=rid,
+                attempt=attempt_no,
+                provider=provider,
+                model=result.model,
+                outcome="succeeded",
+                usage=Usage(
+                    result.input_tokens,
+                    result.output_tokens,
+                    result.cache_read_input_tokens,
+                    result.cache_creation_input_tokens,
+                    result.reasoning_tokens,
+                ),
+                is_fallback=is_fallback,
+                latency_ms=(time.time_ns() - attempt_started_ns) / 1e6,
             )
             latency = time.monotonic() * 1000 - start
             set_chat_attributes(
