@@ -60,10 +60,23 @@ def _parse_tool_arguments(arguments: str | None) -> Any:
         raise ValueError("tool call arguments are not valid JSON") from None
 
 
+def _system_text(content: str | list[dict]) -> str:
+    """A system message's text: OpenAI also allows a list of text parts."""
+    if isinstance(content, str):
+        return content
+    return "\n".join(
+        str(part.get("text", ""))
+        for part in content
+        if isinstance(part, dict) and part.get("type") == "text"
+    )
+
+
 def to_anthropic_messages(messages: list[dict]) -> tuple[str, list[dict]]:
     """Return (system_prompt, anthropic_messages)."""
-    system_parts = [m["content"] for m in messages if m["role"] == "system" and m.get("content")]
-    system = "\n".join(system_parts)
+    system_parts = [
+        _system_text(m["content"]) for m in messages if m["role"] == "system" and m.get("content")
+    ]
+    system = "\n".join(part for part in system_parts if part)
 
     anthropic_messages: list[dict] = []
     for m in messages:

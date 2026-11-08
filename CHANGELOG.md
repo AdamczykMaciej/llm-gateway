@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.13.3
+
+Correctness pass.
+
+- Streaming (OpenAI-compatible providers): usage sent on the last chunk that also carries
+  `choices` (Mistral and other hosts) is no longer dropped, so tokens, cost and quota are counted.
+- Streaming (Anthropic, Vertex Claude): tool-call `index` is now the tool-call ordinal from 0,
+  not the content-block index, so text before a tool call no longer shifts indexes.
+- Non-streaming OpenAI-style providers: malformed or non-object tool-call arguments raise
+  `InvalidOutputError` (fails over, no breaker count) instead of an unclassified `UNKNOWN` error.
+- Structured output: a reply with a sentence before or after the JSON, or a fence inside prose,
+  now parses; the strict parse still runs first and unusable text is still rejected.
+- Anthropic: system messages given as a list of text parts no longer raise `TypeError`.
+
 ## 0.13.2
 
 Reliability pass.

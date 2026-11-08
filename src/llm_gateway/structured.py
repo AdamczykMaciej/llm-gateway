@@ -116,6 +116,36 @@ def _unfence(text: str) -> str:
     return match.group(1) if match else text
 
 
+_ANY_FENCE = re.compile(r"```(?:json)?[ \t]*\n?(.*?)```", re.DOTALL | re.IGNORECASE)
+_MAX_EMBEDDED_CANDIDATES = 5
+
+
+def _loads_lenient(text: str) -> Any:
+    """`json.loads` of the reply, tolerating what JSON mode without
+    constrained decoding adds around the value: a code fence, a sentence
+    before it, or a closing remark after it. The strict parse always runs
+    first; only when it fails is the first fenced block, then the first JSON
+    object/array embedded in the text, tried. Raises the strict parse's
+    `JSONDecodeError` when nothing usable is found."""
+    try:
+        return json.loads(_unfence(text))
+    except json.JSONDecodeError as error:
+        strict_error = error
+    for fenced in _ANY_FENCE.findall(text)[:1]:
+        try:
+            return json.loads(fenced)
+        except json.JSONDecodeError:
+            pass
+    decoder = json.JSONDecoder()
+    starts = [m.start() for m in re.finditer(r"[{\[]", text)][:_MAX_EMBEDDED_CANDIDATES]
+    for start in starts:
+        try:
+            return decoder.raw_decode(text, start)[0]
+        except json.JSONDecodeError:
+            continue
+    raise strict_error
+
+
 def _safe_name(name: str) -> str:
     # OpenAI requires ^[a-zA-Z0-9_-]{1,64}$ for json_schema.name.
     return re.sub(r"[^a-zA-Z0-9_-]", "_", name)[:64] or "response"
@@ -168,7 +198,7 @@ class OutputSchema:
         checked: the gateway deliberately has no JSON Schema validator
         dependency, so pass a pydantic model for full validation."""
         try:
-            data = json.loads(_unfence(text))
+            data = _loads_lenient(text)
         except json.JSONDecodeError as e:
             raise InvalidOutputError(
                 f"Structured output is not valid JSON ({e.msg} at position {e.pos})."

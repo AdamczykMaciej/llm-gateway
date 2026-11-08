@@ -494,6 +494,9 @@ async def messages_stream(
     reasoning_tokens: object = None
     stop_reason = "end_turn"
     structured_tool_index: int | None = None
+    # Anthropic's content-block index counts text/thinking blocks too; OpenAI
+    # tool-call indexes count tool calls only, from 0.
+    tool_ordinals: dict[int, int] = {}
     structured_output_parts: list[str] = []
 
     async with (await get_client()).messages.stream(
@@ -515,10 +518,11 @@ async def messages_stream(
                 if emulating_structured_output and block.name == STRUCTURED_OUTPUT_TOOL_NAME:
                     structured_tool_index = event.index
                     continue  # synthetic tool — never surfaced to the caller
+                tool_ordinals[event.index] = len(tool_ordinals)
                 yield StreamDelta(
                     tool_call_deltas=[
                         {
-                            "index": event.index,
+                            "index": tool_ordinals[event.index],
                             "id": block.id,
                             "type": "function",
                             "function": {"name": block.name, "arguments": ""},
@@ -537,7 +541,10 @@ async def messages_stream(
                         continue
                     yield StreamDelta(
                         tool_call_deltas=[
-                            {"index": event.index, "function": {"arguments": delta.partial_json}}
+                            {
+                                "index": tool_ordinals.get(event.index, event.index),
+                                "function": {"arguments": delta.partial_json},
+                            }
                         ],
                         model=model,
                     )
