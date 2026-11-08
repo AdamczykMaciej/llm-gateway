@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.15.0
+
+Privacy layer (`llm_gateway.privacy`, opt-in; existing calls are unchanged).
+
+- `PrivacyLayer` wraps `complete_with_usage`, `chat` and `stream_chat` with reversible redaction
+  (per-call in-memory `Vault`), per-call output policies (`RESTORE`, `STRIP`, `PASSTHROUGH`),
+  strict mode (`PrivacyPolicyMissingError`), structured-output and tool-argument handling, and a
+  counts-only audit hook.
+- Hardening over the first draft: a placeholder-shaped literal in the input is reserved so it can
+  never restore to another value; kinds with `_`/digits no longer leak unmatched tokens and
+  invalid kinds raise `ValueError`; restored values in streamed tool-call arguments are
+  JSON-escaped; held-back text is flushed before the finishing delta; multi-character
+  delimiters split across chunks are held; the vault is cleared even if closing the stream fails.
+
 ## 0.14.1
 
 Docs and typing pass; no behavior change.
