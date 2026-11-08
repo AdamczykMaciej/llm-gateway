@@ -10,7 +10,7 @@ Test-coverage pass (94% -> 97% statement+branch) and two request-validation fixe
   pattern used `$`; it now uses `fullmatch`.
 - Tests: tool-validation rejection branches with hypothesis properties, Groq/OpenAI request
   options, breaker-open paths, tracing never-raise, privacy message mapping, Vertex credential
-  dispatch. `pytest-cov` and `hypothesis` are dev dependencies; coverage floor 96%.
+  dispatch. `pytest-cov` and `hypothesis` are dev dependencies; coverage floor 95%.
 
 ## 0.15.0
 
