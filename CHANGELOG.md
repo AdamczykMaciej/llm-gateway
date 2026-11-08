@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.16.3
+
+Repo hygiene. No behaviour change.
+
+- `.gitignore` covers coverage data, caches, `.venv*/` and build output.
+- Upper bounds on the OpenTelemetry, azure-identity and aiohttp dependencies; `pyright` and
+  `build` added to the `dev` extra. `pip-audit` on the resolved set is clean.
+- CI: pyright and a coverage floor run with the tests, the package build is checked, and every
+  action is pinned by commit SHA.
+- `CONTRIBUTING.md` added.
+
 ## 0.16.2
 
 API ergonomics, types and docs pass 2. No behaviour change.
