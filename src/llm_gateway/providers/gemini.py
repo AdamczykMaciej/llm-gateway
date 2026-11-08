@@ -110,10 +110,7 @@ def _client(config: GatewayConfig) -> AsyncOpenAI:
 async def aclose() -> None:
     """Close every cached SDK client, then the credentials shared with the
     `vertex` provider (e.g. on shutdown)."""
-    clients = list(_clients.values())
-    _clients.clear()
-    for client in clients:
-        await client.close()
+    await _provider.aclose()
     await vertex.aclose()
 
 

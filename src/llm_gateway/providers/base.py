@@ -12,6 +12,7 @@ Every provider module exposes:
 Providers own their own client caching internally.
 """
 
+import asyncio
 import json
 import logging
 from collections.abc import AsyncIterator
@@ -71,6 +72,60 @@ def sdk_client_options(config: GatewayConfig) -> dict:
     if timeout is not None:
         options["timeout"] = timeout
     return options
+
+
+# SDK clients are cached per (credential, settings) so every call reuses one
+# connection pool. The cache is capped so credential rotation or per-tenant
+# configs cannot grow it without bound; the least recently created client is
+# evicted and closed after a grace period that lets its in-flight calls end.
+MAX_CACHED_CLIENTS = 16
+EVICTED_CLIENT_GRACE_SECONDS = 120.0
+_closing: set[asyncio.Task] = set()
+
+
+async def _close_later(client: Any, grace: float) -> None:
+    try:
+        await asyncio.sleep(grace)
+    finally:
+        try:
+            await client.close()
+        except Exception:  # noqa: BLE001 — best effort, nothing to report to
+            logger.debug("llm_gateway: closing an evicted client failed", exc_info=True)
+
+
+def remember_client(cache: dict, key: tuple, client: Any) -> Any:
+    """Store `client` under `key`, evicting the oldest entries beyond
+    MAX_CACHED_CLIENTS. Returns `client`."""
+    cache[key] = client
+    while len(cache) > MAX_CACHED_CLIENTS:
+        evicted = cache.pop(next(iter(cache)))
+        try:
+            task = asyncio.get_running_loop().create_task(
+                _close_later(evicted, EVICTED_CLIENT_GRACE_SECONDS)
+            )
+        except RuntimeError:  # no running loop: nothing is in flight
+            continue
+        _closing.add(task)
+        task.add_done_callback(_closing.discard)
+    return client
+
+
+async def close_clients(cache: dict) -> None:
+    """Empty `cache` and close every client in it (and any evicted client
+    still waiting out its grace period). One failing close does not stop the
+    rest; cancellation still propagates."""
+    clients = list(cache.values())
+    cache.clear()
+    pending = list(_closing)
+    for task in pending:
+        task.cancel()  # its `finally` closes the client now
+    if pending:
+        await asyncio.gather(*pending, return_exceptions=True)
+    for client in clients:
+        try:
+            await client.close()
+        except Exception:  # noqa: BLE001
+            logger.warning("llm_gateway: closing an SDK client failed", exc_info=True)
 
 
 def sdk_client_cache_key(api_key: str, config: GatewayConfig) -> tuple:

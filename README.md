@@ -1,7 +1,7 @@
 # llm-gateway
 
 A small, self-hosted multi-provider LLM gateway: a fallback chain across
-Anthropic / Claude on Google Vertex AI / Gemini on Vertex AI / Azure AI Foundry (incl. Llama) / Groq / OpenAI / Hugging Face (and Mistral, OpenRouter, any OpenAI-compatible host), a per-provider circuit breaker, PII-masked OTel
+Anthropic / Claude on Google Vertex AI / Gemini on Vertex AI / Azure AI Foundry (incl. Llama) / Groq / OpenAI / Hugging Face (and Mistral, OpenRouter, any OpenAI-compatible host), a circuit breaker (per provider, per model for model-specific failures), PII-masked OTel
 tracing, and an OpenAI-compatible HTTP API — so any app can point at one
 provider and quietly keep working when that provider is down, rate-limited,
 or missing a key.

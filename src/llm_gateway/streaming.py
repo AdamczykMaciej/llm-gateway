@@ -120,18 +120,18 @@ async def stream_chat(
                 continue
             if not CONFIGURED[provider](config):
                 continue
-            if not force_provider and breaker.is_open(provider):
+            resolved_model = model_override or DEFAULT_MODEL[provider](config)
+            if not force_provider and breaker.is_open(provider, resolved_model):
                 continue
             if deadline.expired:
                 break
             if not await plan.allows(provider, span):
                 continue
-            if not force_provider and not breaker.allow(provider):
+            if not force_provider and not breaker.allow(provider, resolved_model):
                 continue
 
             attempted_any = True
             is_fallback = index > 0
-            resolved_model = model_override or DEFAULT_MODEL[provider](config)
 
             async def open_stream(stream_fn=stream_fn):
                 generator = stream_fn(
@@ -155,10 +155,13 @@ async def stream_chat(
                     open_stream,
                     attempts=config.retry_attempts,
                     base_delay_seconds=config.retry_base_delay_seconds,
+                    attempt_timeout_seconds=config.stream_idle_timeout_seconds,
                     deadline=deadline,
                 )
             except Exception as e:  # noqa: BLE001 — pre-flight failure tries the next provider
-                record_provider_failure(provider, e, config=config, deadline=deadline)
+                record_provider_failure(
+                    provider, e, config=config, deadline=deadline, model=resolved_model
+                )
                 last_error = e
                 latency = time.monotonic() * 1000 - start
                 set_chat_attributes(
@@ -175,7 +178,7 @@ async def stream_chat(
                 continue
 
             # Committed to this provider — no more silent fallback past this point.
-            breaker.record_success(provider)
+            breaker.record_success(provider, resolved_model)
             if first_delta is None:
                 return
             input_tokens = output_tokens = 0
@@ -214,7 +217,9 @@ async def stream_chat(
             except LLMError:
                 raise
             except Exception as e:  # noqa: BLE001 — a mid-stream failure: counted, then propagated
-                record_provider_failure(provider, e, config=config, deadline=deadline)
+                record_provider_failure(
+                    provider, e, config=config, deadline=deadline, model=resolved_model
+                )
                 raise
             finally:
                 # Consumer stopped reading (close, cancel, disconnect) or the

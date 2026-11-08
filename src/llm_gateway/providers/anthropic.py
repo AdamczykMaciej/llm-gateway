@@ -43,8 +43,10 @@ from .base import (
     ProviderResult,
     StreamDelta,
     as_int,
+    close_clients,
     ensure_not_empty,
     guard_empty_stream,
+    remember_client,
     sdk_client_cache_key,
     sdk_client_options,
     stream_request_options,
@@ -104,8 +106,13 @@ def _client(config: GatewayConfig) -> AsyncAnthropic:
             http_client=http_client,
             **sdk_client_options(config),
         )
-        _clients[key] = client
+        remember_client(_clients, key, client)
     return client
+
+
+async def aclose() -> None:
+    """Close every cached SDK client (e.g. on shutdown)."""
+    await close_clients(_clients)
 
 
 def _client_factory(config: GatewayConfig) -> ClientFactory:
