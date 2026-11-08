@@ -206,9 +206,18 @@ async def stream_chat(
 
             # Committed to this provider — no more silent fallback past this point.
             breaker.record_success(provider, resolved_model)
-            if first_delta is None:
-                return
             input_tokens = output_tokens = 0
+            stream_error: BaseException | None = None
+            if first_delta is None:
+                emit_attempt_span(
+                    tracer,
+                    request_id=rid,
+                    attempt=attempt_no,
+                    provider=provider,
+                    model=resolved_model,
+                    started_ns=attempt_started_ns,
+                )
+                return
             cache_read_input_tokens = cache_creation_input_tokens = reasoning_tokens = 0
             finish_reason = "stop"
             tool_call_count = 0
@@ -241,29 +250,34 @@ async def stream_chat(
                         await generator.aclose()
                         span.set_status(StatusCode.ERROR, "call deadline exceeded")
                         raise deadline_exceeded(config.call_deadline_seconds, e) from e
-            except LLMError:
+            except LLMError as e:
+                stream_error = e
                 raise
             except Exception as e:  # noqa: BLE001 — a mid-stream failure: counted, then propagated
+                stream_error = e
                 record_provider_failure(
                     provider, e, config=config, deadline=deadline, model=resolved_model
                 )
                 raise
             finally:
+                # The attempt span is written however the stream ends: done,
+                # failed, or abandoned by the consumer.
+                emit_attempt_span(
+                    tracer,
+                    request_id=rid,
+                    attempt=attempt_no,
+                    provider=provider,
+                    model=resolved_model,
+                    started_ns=attempt_started_ns,
+                    error=stream_error if isinstance(stream_error, Exception) else None,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                )
                 # Consumer stopped reading (close, cancel, disconnect) or the
                 # stream failed: close the provider's generator so its HTTP
                 # response is released and the upstream request stops.
                 await generator.aclose()
 
-            emit_attempt_span(
-                tracer,
-                request_id=rid,
-                attempt=attempt_no,
-                provider=provider,
-                model=resolved_model,
-                started_ns=attempt_started_ns,
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-            )
             latency = time.monotonic() * 1000 - start
             set_chat_attributes(
                 span,
