@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.15.2
+
+Second security pass (privacy layer, service, URLs, tracing).
+
+- Fix (medium): `mask_pii` email pattern was quadratic on long runs of address characters with no
+  `@` (a 60k-char string took seconds); local part and domain are now length-bounded.
+- Fix (medium): the HTTP service had no request-body ceiling before parsing. New
+  `GatewayConfig.max_request_bytes` (default 16 MiB, 0 disables) rejects an oversized body with
+  413 by Content-Length and by counting chunked bytes, before it is buffered.
+- Fix (medium): 422 validation errors echoed the rejected request values (prompt text); they now
+  carry only the field path and message, in the OpenAI error shape.
+- Fix (low): privacy layer raised a raw `RecursionError` on tool-call arguments nested 100k deep;
+  they are redacted as plain text, and the walker has a depth limit.
+- Fix (low): `openai_compat_base_url`, `huggingface_base_url` and `azure_endpoint` reject embedded
+  `user:password@` credentials and non-http(s) schemes; `GatewayConfig` validation errors no longer
+  repeat the rejected input; `redact_secrets` scrubs `scheme://user:pass@` in error text.
+- Fix (low): `/docs`, `/redoc` and `/openapi.json` are disabled when `GATEWAY_API_KEYS` is set.
+- Deps: `starlette>=0.49.1` floor for the service extra (known DoS CVEs in older releases).
+- Tests: tracing spans carry no message content or keys; no CORS headers by default; placeholder
+  injection through a tool result is not restored; thousands of entities stay fast.
+
 ## 0.15.1
 
 Test-coverage pass (94% -> 97% statement+branch) and two request-validation fixes.

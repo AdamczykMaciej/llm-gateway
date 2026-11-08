@@ -12,7 +12,9 @@ import re
 _IBAN_RE = re.compile(r"\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b")
 _CARD_RE = re.compile(r"\b(?:\d[ -]?){13,19}\b")
 _PESEL_RE = re.compile(r"(?<!\d)\d{11}(?!\d)")
-_EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
+# Length-bounded (RFC 5321: local part 64, domain 255) so a long run of
+# address characters with no '@' cannot make the scan quadratic.
+_EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,255}\.[A-Za-z]{2,}\b")
 _PHONE_RE = re.compile(
     r"(?<![\w@.])(?:\+\d{1,3}[ .-]?)?(?:\(\d{2,4}\)[ .-]?)?\d{2,4}(?:[ .-]\d{2,4}){2,4}(?![\w@])"
 )
