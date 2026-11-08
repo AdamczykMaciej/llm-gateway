@@ -1,0 +1,140 @@
+{
+  "source": "https://docs.mistral.ai/api/ (chat completion response) and https://docs.mistral.ai/capabilities/function_calling/ (function-calling example; tool name from the documented payment-status example)",
+  "responses": [
+    {
+      "name": "tool_call",
+      "payload": {
+        "id": "cmpl-e5cc70bb28c444948073e77776eb30ef",
+        "object": "chat.completion",
+        "model": "mistral-small-latest",
+        "usage": {
+          "prompt_tokens": 94,
+          "completion_tokens": 22,
+          "total_tokens": 116
+        },
+        "created": 1702256327,
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "content": "",
+              "tool_calls": [
+                {
+                  "id": "D681PevKs",
+                  "type": "function",
+                  "function": {
+                    "name": "retrieve_payment_status",
+                    "arguments": "{\"transaction_id\": \"T1001\"}"
+                  }
+                }
+              ],
+              "prefix": false,
+              "role": "assistant"
+            },
+            "finish_reason": "tool_calls"
+          }
+        ]
+      },
+      "expect": {
+        "content": null,
+        "finish_reason": "tool_calls",
+        "input_tokens": 94,
+        "output_tokens": 22,
+        "tool_calls": [
+          {
+            "id": "D681PevKs",
+            "name": "retrieve_payment_status",
+            "arguments": {
+              "transaction_id": "T1001"
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "streams": [
+    {
+      "name": "tool_call_stream_usage_on_last_choice_chunk",
+      "chunks": [
+        {
+          "id": "cmpl-e5cc70bb28c444948073e77776eb30ef",
+          "object": "chat.completion.chunk",
+          "created": 1702256327,
+          "model": "mistral-small-latest",
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": ""
+              },
+              "finish_reason": null
+            }
+          ]
+        },
+        {
+          "id": "cmpl-e5cc70bb28c444948073e77776eb30ef",
+          "object": "chat.completion.chunk",
+          "created": 1702256327,
+          "model": "mistral-small-latest",
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "tool_calls": [
+                  {
+                    "id": "D681PevKs",
+                    "type": "function",
+                    "function": {
+                      "name": "retrieve_payment_status",
+                      "arguments": "{\"transaction_id\": \"T1001\"}"
+                    },
+                    "index": 0
+                  }
+                ]
+              },
+              "finish_reason": null
+            }
+          ]
+        },
+        {
+          "id": "cmpl-e5cc70bb28c444948073e77776eb30ef",
+          "object": "chat.completion.chunk",
+          "created": 1702256327,
+          "model": "mistral-small-latest",
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "content": ""
+              },
+              "finish_reason": "tool_calls"
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 94,
+            "total_tokens": 116,
+            "completion_tokens": 22
+          }
+        }
+      ],
+      "expect": {
+        "content": "",
+        "finish_reason": "tool_calls",
+        "usage": [
+          94,
+          22
+        ],
+        "tool_calls": [
+          {
+            "id": "D681PevKs",
+            "name": "retrieve_payment_status",
+            "arguments": {
+              "transaction_id": "T1001"
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -531,7 +531,8 @@ def parse_openai_style_response(resp: Any, model: str, provider: str = "openai")
         reasoning_tokens=usage.reasoning_tokens,
     )
     return ChatResult(
-        content=content,
+        # Mistral sends "" next to tool calls where OpenAI sends null; one shape.
+        content=content or None,
         model=model,
         input_tokens=usage.input_tokens,
         output_tokens=usage.output_tokens,

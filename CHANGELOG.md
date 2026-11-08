@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.16.9
+
+Stream size caps, budget-hook contract, provider-shape fixtures.
+
+- Fix (medium): streamed tool-call arguments and text were buffered without a bound, so a hostile
+  or buggy provider could stream unlimited data into memory. `stream_chat()` now ends the stream
+  with the new `StreamTooLargeError` (an `InvalidOutputError` subclass: failover and breaker
+  handling as before, never a silent truncation) past `stream_max_tool_arguments_chars` (default
+  1,000,000 per tool call) or `stream_max_total_chars` (default 16,000,000 for the whole stream).
+  0 disables a cap.
+- Docs: `BudgetCheck` is a gate, not a reservation. The gateway holds and charges nothing before a
+  provider answers, so there is nothing to release on cancel or failure; a host that reserves in
+  its hook settles or releases it itself. No code change.
+- Fix (low): an OpenAI-style reply with `content: ""` next to tool calls (Mistral) returned
+  `""`; it is now `None`, like OpenAI and Anthropic.
+- Tests: `tests/fixtures/providers/*.json` hold documentation example payloads (OpenAI, Anthropic,
+  Mistral, Gemini via its OpenAI-compatible endpoint, Groq error bodies), run through the real
+  parsers by `tests/test_provider_fixtures.py`. No network.
+
 ## 0.16.8
 
 Third security pass (redirects, metadata URLs, error and span text).

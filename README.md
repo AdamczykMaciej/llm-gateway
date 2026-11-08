@@ -1557,6 +1557,7 @@ you finally see.
 | `PrivacyPolicyMissingError` | A `PrivacyLayer(strict=True)` call had no `privacy=` policy; a `RuntimeError`, raised before anything is sent | no | no, pass a policy |
 | `InvalidOutputError` | A provider answered with unusable output (refusal, invalid JSON, schema failure). Fails over; surfaces only inside `LLMError` | no | rarely; a different prompt or schema |
 | `ToolCallTruncatedError` | The reply hit `max_tokens` inside a tool call (subclass of `InvalidOutputError`; fails over the same way) | no | yes, with a larger `max_tokens` |
+| `StreamTooLargeError` | A streamed reply passed `stream_max_tool_arguments_chars` or `stream_max_total_chars` (subclass of `InvalidOutputError`; fails over the same way) | no | no |
 | `EmptyCompletionError` | A provider returned no text and no tool calls (often a reasoning model out of budget). Fails over | no | raise `max_tokens` |
 | `ProviderAuthError` | A provider could not authenticate before sending (e.g. no Entra token). Fails over | no | no, fix credentials |
 

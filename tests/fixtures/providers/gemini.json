@@ -1,0 +1,161 @@
+{
+  "source": "https://docs.cloud.google.com/vertex-ai/generative-ai/docs/multimodal/call-vertex-using-openai-library and https://ai.google.dev/gemini-api/docs/openai (function calling) - the OpenAI-compatible shapes this gateway talks to; native generateContent is not used by llm-gateway. Parallel calls at one index are the shape the gateway's ToolIndexNormalizer exists for.",
+  "responses": [
+    {
+      "name": "tool_call",
+      "payload": {
+        "id": "chatcmpl-gem",
+        "object": "chat.completion",
+        "created": 1746000000,
+        "model": "google/gemini-2.5-flash",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": null,
+              "tool_calls": [
+                {
+                  "id": "function-call-1",
+                  "type": "function",
+                  "function": {
+                    "name": "get_weather",
+                    "arguments": "{\"location\":\"Chicago\"}"
+                  }
+                }
+              ]
+            },
+            "finish_reason": "tool_calls"
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 38,
+          "completion_tokens": 8,
+          "total_tokens": 46
+        }
+      },
+      "expect": {
+        "content": null,
+        "finish_reason": "tool_calls",
+        "input_tokens": 38,
+        "output_tokens": 8,
+        "tool_calls": [
+          {
+            "id": "function-call-1",
+            "name": "get_weather",
+            "arguments": {
+              "location": "Chicago"
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "streams": [
+    {
+      "name": "parallel_tool_calls_all_at_index_0",
+      "chunks": [
+        {
+          "id": "chatcmpl-gem",
+          "object": "chat.completion.chunk",
+          "created": 1746000000,
+          "model": "google/gemini-2.5-flash",
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "tool_calls": [
+                  {
+                    "index": 0,
+                    "id": "call-a",
+                    "type": "function",
+                    "function": {
+                      "name": "get_weather",
+                      "arguments": "{\"location\":\"Chicago\"}"
+                    }
+                  }
+                ]
+              },
+              "finish_reason": null
+            }
+          ]
+        },
+        {
+          "id": "chatcmpl-gem",
+          "object": "chat.completion.chunk",
+          "created": 1746000000,
+          "model": "google/gemini-2.5-flash",
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "tool_calls": [
+                  {
+                    "index": 0,
+                    "id": "call-b",
+                    "type": "function",
+                    "function": {
+                      "name": "get_weather",
+                      "arguments": "{\"location\":\"Paris\"}"
+                    }
+                  }
+                ]
+              },
+              "finish_reason": null
+            }
+          ]
+        },
+        {
+          "id": "chatcmpl-gem",
+          "object": "chat.completion.chunk",
+          "created": 1746000000,
+          "model": "google/gemini-2.5-flash",
+          "choices": [
+            {
+              "index": 0,
+              "delta": {},
+              "finish_reason": "tool_calls"
+            }
+          ]
+        },
+        {
+          "id": "chatcmpl-gem",
+          "object": "chat.completion.chunk",
+          "created": 1746000000,
+          "model": "google/gemini-2.5-flash",
+          "choices": [],
+          "usage": {
+            "prompt_tokens": 40,
+            "completion_tokens": 16,
+            "total_tokens": 56
+          }
+        }
+      ],
+      "expect": {
+        "content": "",
+        "finish_reason": "tool_calls",
+        "usage": [
+          40,
+          16
+        ],
+        "tool_calls": [
+          {
+            "id": "call-a",
+            "name": "get_weather",
+            "arguments": {
+              "location": "Chicago"
+            }
+          },
+          {
+            "id": "call-b",
+            "name": "get_weather",
+            "arguments": {
+              "location": "Paris"
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

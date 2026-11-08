@@ -183,6 +183,19 @@ class ToolCallTruncatedError(InvalidOutputError):
         self.tool_names = tool_names
 
 
+class StreamTooLargeError(InvalidOutputError):
+    """A streamed reply grew past a configured size cap
+    (`stream_max_tool_arguments_chars` for one tool call's arguments,
+    `stream_max_total_chars` for the whole stream's text and arguments). The
+    stream ends with this error instead of being truncated silently. A subclass
+    of `InvalidOutputError`, so failover and breaker handling are unchanged.
+    The message carries sizes and limits, never the output."""
+
+    def __init__(self, message: str = "", limit: int = 0) -> None:
+        super().__init__(message)
+        self.limit = limit
+
+
 class ProviderAuthError(Exception):
     """A provider could not authenticate before sending its request, e.g.
     Azure with `azure_auth="entra"` when no Microsoft Entra token can be

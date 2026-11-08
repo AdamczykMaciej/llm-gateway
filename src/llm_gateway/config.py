@@ -346,6 +346,15 @@ class GatewayConfig(BaseSettings):
     # default) disables the guard. A per-call `max_tool_result_chars` wins.
     tool_result_max_chars: int = 0
 
+    # Streaming size caps (characters). A hostile or buggy provider could
+    # stream unbounded text or tool-call arguments into the caller's memory;
+    # past either cap stream_chat() ends with StreamTooLargeError (an
+    # InvalidOutputError), never a silent truncation. 0 disables a cap.
+    # Per tool call's arguments:
+    stream_max_tool_arguments_chars: int = 1_000_000
+    # Whole stream (text plus all tool-call arguments):
+    stream_max_total_chars: int = 16_000_000
+
     # ── Tracing ───────────────────────────────────────────────────────────
     # Prompts are never traced unless this is explicitly enabled, and even
     # then they're PII-masked first (see pii.mask_pii). Off by default.

@@ -42,6 +42,7 @@ from .errors import (
     AllProvidersExhaustedError,
     GatewayNotConfiguredError,
     LLMError,
+    StreamTooLargeError,
     deadline_exceeded,
     error_detail,
 )
@@ -62,6 +63,33 @@ from .tracing import (
 )
 
 logger = logging.getLogger("llm_gateway")
+
+
+def _check_stream_size(
+    delta: StreamDelta, config: GatewayConfig, total: int, arguments: dict[int, int]
+) -> int:
+    """Add `delta`'s size to the running totals; raise `StreamTooLargeError`
+    past a cap. Returns the new stream total."""
+    per_call = config.stream_max_tool_arguments_chars
+    overall = config.stream_max_total_chars
+    total += len(delta.content or "")
+    for fragment in delta.tool_call_deltas or ():
+        text = (fragment.get("function") or {}).get("arguments") or ""
+        total += len(text)
+        index = fragment.get("index", 0)
+        arguments[index] = arguments.get(index, 0) + len(text)
+        if per_call and arguments[index] > per_call:
+            raise StreamTooLargeError(
+                f"A streamed tool call's arguments exceeded {per_call} characters "
+                "(stream_max_tool_arguments_chars).",
+                limit=per_call,
+            )
+    if overall and total > overall:
+        raise StreamTooLargeError(
+            f"The streamed reply exceeded {overall} characters (stream_max_total_chars).",
+            limit=overall,
+        )
+    return total
 
 
 async def stream_chat(
@@ -251,9 +279,12 @@ async def stream_chat(
             cache_read_input_tokens = cache_creation_input_tokens = reasoning_tokens = 0
             finish_reason = "stop"
             tool_call_count = 0
+            total_chars = 0
+            argument_chars: dict[int, int] = {}
             try:
                 delta: StreamDelta | None = first_delta
                 while delta is not None:
+                    total_chars = _check_stream_size(delta, config, total_chars, argument_chars)
                     if delta.tool_call_deltas:
                         tool_call_count += sum(1 for d in delta.tool_call_deltas if "id" in d)
                     if delta.usage:
