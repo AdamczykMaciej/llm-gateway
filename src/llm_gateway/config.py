@@ -4,7 +4,8 @@ import ipaddress
 import json
 import re
 import socket
-from typing import Literal
+from collections.abc import Callable
+from typing import Any, Literal
 from urllib.parse import urlsplit
 
 from pydantic import AliasChoices, Field, ValidationInfo, field_validator, model_validator
@@ -327,6 +328,14 @@ class GatewayConfig(BaseSettings):
     # Streaming: the longest the SDK waits for the response to start or for
     # the next bytes of an open stream (an idle bound, not a total one).
     stream_idle_timeout_seconds: float = 30.0
+    # stream_chat() only: fail an attempt that sends no first chunk within this
+    # many seconds as a provider TimeoutError, so the chain moves to the next
+    # provider (safe: nothing was yielded yet). None (default) adds no bound.
+    # It only tightens the pre-first-chunk wait: that wait is already capped by
+    # stream_idle_timeout_seconds and call_deadline_seconds (whichever is
+    # smallest wins), and once a chunk arrived only the idle bound and the
+    # deadline apply. A per-call `first_token_timeout_seconds=` wins.
+    first_token_timeout_seconds: float | None = None
     # The SDKs' own retry loop. 0 because the gateway owns retries: SDK
     # retries would multiply every gateway attempt (the previous default of
     # 2 meant up to 6 HTTP requests per provider), retry 429s and 4xx-ish
@@ -429,6 +438,12 @@ class GatewayConfig(BaseSettings):
     #   MODEL_PRICES='{"groq/openai/gpt-oss-120b": {"input_per_mtok": 0.15,
     #                  "output_per_mtok": 0.6}}'
     model_prices: dict[str, ModelPrice] = {}
+
+    # Per-attempt usage/cost hook (attempts.py): called with an `AttemptReport`
+    # once per provider attempt, sync or async; exceptions are logged and
+    # ignored. A per-call `on_attempt=` replaces it. Code-only: not read from
+    # the environment.
+    on_attempt: Callable[[Any], Any] | None = Field(default=None, exclude=True, repr=False)
 
     # Set to false only behind a corporate SSL-inspection proxy.
     ssl_verify: bool = True
