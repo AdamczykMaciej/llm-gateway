@@ -586,7 +586,12 @@ def test_capability_table():
 # ─── Cost accounting and caps ───────────────────────────────────────────────
 
 _HAIKU = ModelPrice(
-    input_per_mtok=1.0, output_per_mtok=5.0, cached_input_per_mtok=0.1, cache_write_per_mtok=1.25
+    input_per_mtok=1.0,
+    output_per_mtok=5.0,
+    cached_input_per_mtok=0.1,
+    cache_write_per_mtok=1.25,
+    cache_write_1h_per_mtok=2.0,
+    batch_multiplier=0.5,
 )
 
 
@@ -617,10 +622,13 @@ def test_default_prices_cover_the_default_models():
     defaults = GatewayConfig(_env_file=None)
     assert lookup_price("anthropic", defaults.claude_model) == _HAIKU
     assert lookup_price("openai", defaults.openai_model) == ModelPrice(
-        input_per_mtok=0.15, output_per_mtok=0.6, cached_input_per_mtok=0.075
+        input_per_mtok=0.15,
+        output_per_mtok=0.6,
+        cached_input_per_mtok=0.075,
+        batch_multiplier=0.5,
     )
     assert lookup_price("groq", defaults.groq_model) == ModelPrice(
-        input_per_mtok=0.15, output_per_mtok=0.6
+        input_per_mtok=0.15, output_per_mtok=0.6, cached_input_per_mtok=0.075
     )
 
 

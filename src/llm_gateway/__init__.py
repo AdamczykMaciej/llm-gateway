@@ -47,7 +47,7 @@ from .errors import (
 )
 from .pii import mask_pii
 from .policy import BudgetCheck, ProviderMetadata, ProviderPolicy
-from .pricing import ModelPrice
+from .pricing import LongContextTier, ModelPrice
 from .privacy import (
     AuditEvent,
     OutputPolicy,
@@ -70,6 +70,7 @@ __all__ = [
     "InvalidRequestError",
     "ProviderPolicy",
     "ProviderMetadata",
+    "LongContextTier",
     "ModelPrice",
     "BudgetCheck",
     "PolicyViolationError",
