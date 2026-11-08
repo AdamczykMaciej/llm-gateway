@@ -11,17 +11,27 @@ The schema check is structural, not a full JSON Schema validator (the gateway
 has no such dependency): it catches what providers reject in practice.
 """
 
+import dataclasses
 import json
 import re
+from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Any
 
 from .errors import InvalidRequestError
 from .providers._anthropic_translate import STRUCTURED_OUTPUT_TOOL_NAME
+from .providers.base import ToolCall
+from .structured import _schema_errors
 
 _TOOL_NAME = re.compile(r"[a-zA-Z0-9_-]{1,64}")
 _JSON_TYPES = frozenset({"object", "array", "string", "number", "integer", "boolean", "null"})
 _CHOICES = frozenset({"auto", "none", "required"})
 _MAX_DEPTH = 64
+# OpenAI's documented ceiling on tools per request; the other OpenAI-style
+# hosts are at or below it, so a larger set fails fast instead of as a 400
+# that every provider in the chain would repeat.
+MAX_TOOLS = 128
+MAX_TOOLS_JSON_CHARS = 1_000_000
 
 
 def _check_schema(schema: Any, where: str, depth: int = 0) -> None:
@@ -70,6 +80,10 @@ def _check_schema(schema: Any, where: str, depth: int = 0) -> None:
 
 def _tool_names(tools: list[dict] | None) -> set[str]:
     names: set[str] = set()
+    if tools and len(tools) > MAX_TOOLS:
+        raise InvalidRequestError(
+            f"{len(tools)} tools were given; at most {MAX_TOOLS} are supported per request."
+        )
     for index, tool in enumerate(tools or []):
         label = f"tools[{index}]"
         function = tool.get("function") if isinstance(tool, dict) else None
@@ -98,6 +112,16 @@ def _tool_names(tools: list[dict] | None) -> set[str]:
                 json.dumps(parameters)
             except (TypeError, ValueError):
                 raise InvalidRequestError(f"tool '{name}': 'parameters' is not JSON.") from None
+    if tools:
+        try:
+            size = len(json.dumps(tools))
+        except (TypeError, ValueError):
+            raise InvalidRequestError("tools are not JSON.") from None
+        if size > MAX_TOOLS_JSON_CHARS:
+            raise InvalidRequestError(
+                f"The tool definitions are {size} characters as JSON; "
+                f"the limit is {MAX_TOOLS_JSON_CHARS}."
+            )
     return names
 
 
@@ -172,3 +196,95 @@ def validate_chat_request(
     names = _tool_names(tools)
     _check_tool_choice(tool_choice, names)
     _check_pairing(messages)
+
+
+@dataclass(frozen=True)
+class ToolCallIssue:
+    """One problem with a model's tool call, safe to log and to feed back.
+    `kind` is "unknown_tool" or "invalid_arguments"; `paths` are the argument
+    names/paths that failed (never values)."""
+
+    call_id: str
+    name: str
+    kind: str
+    paths: tuple[str, ...] = ()
+    message: str = ""
+
+
+def check_tool_calls(
+    tools: list[dict] | None, tool_calls: Sequence[ToolCall]
+) -> list[ToolCallIssue]:
+    """Check each of a model's `tool_calls` against the `tools` it was given:
+    the tool must exist and its arguments must satisfy the tool's `parameters`
+    schema (the subset `complete_with_usage(validate=...)` documents: type,
+    enum, const, required, properties, additionalProperties=false, items,
+    anyOf/oneOf, local $ref). Returns the issues, empty when all is well; never
+    raises, so an agent loop can answer each bad call with
+    `tool_error_message(issue)` and let the model correct itself."""
+    schemas: dict[str, Any] = {}
+    for tool in tools or []:
+        function = tool.get("function") if isinstance(tool, dict) else None
+        if isinstance(function, dict) and isinstance(function.get("name"), str):
+            schemas[function["name"]] = function.get("parameters") or {}
+    issues: list[ToolCallIssue] = []
+    for call in tool_calls:
+        if call.name not in schemas:
+            issues.append(
+                ToolCallIssue(
+                    call.id,
+                    call.name,
+                    "unknown_tool",
+                    (),
+                    f"There is no tool named '{call.name}'. "
+                    f"Available: {', '.join(sorted(schemas))}.",
+                )
+            )
+            continue
+        schema = schemas[call.name]
+        found: list[str] = []
+        _schema_errors(call.arguments, schema, schema, "", found)
+        if found:
+            paths = tuple(dict.fromkeys(found))
+            issues.append(
+                ToolCallIssue(
+                    call.id,
+                    call.name,
+                    "invalid_arguments",
+                    paths,
+                    f"The arguments for '{call.name}' do not match its schema at: "
+                    f"{', '.join(paths)}.",
+                )
+            )
+    return issues
+
+
+def tool_error_message(issue: ToolCallIssue) -> dict:
+    """A `role: "tool"` message answering the failed call with its problem, to
+    append to the history so the model can retry with corrected arguments."""
+    return {"role": "tool", "tool_call_id": issue.call_id, "content": f"Error: {issue.message}"}
+
+
+def unique_tool_call_ids(tool_calls: list[ToolCall]) -> list[ToolCall]:
+    """`tool_calls` with every id non-empty and unique within the turn: a host
+    that repeats an id or leaves it empty (Gemini's OpenAI endpoint does) would
+    otherwise make the tool results impossible to pair and be rejected on the
+    next request. Unchanged ids and the original list are kept when all is
+    well; a repaired id is `<id>__2`, `call_<n>`, ...  The caller answers with
+    the ids it sees, so the round trip stays consistent."""
+    seen: set[str] = set()
+    fixed: list[ToolCall] = []
+    changed = False
+    for position, call in enumerate(tool_calls):
+        new_id = call.id
+        if not new_id or new_id in seen:
+            base = new_id or "call"
+            n = 1 if not new_id else 2
+            new_id = f"{base}_{position}" if not new_id else f"{base}__{n}"
+            while new_id in seen:
+                n += 1
+                new_id = f"{base}__{n}"
+            changed = True
+            call = dataclasses.replace(call, id=new_id)
+        seen.add(new_id)
+        fixed.append(call)
+    return fixed if changed else tool_calls

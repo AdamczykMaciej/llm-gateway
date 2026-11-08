@@ -18,7 +18,7 @@ naturally, or every `tool_choice` variant.
 import json
 from typing import Any
 
-from ..errors import InvalidOutputError, InvalidRequestError
+from ..errors import InvalidRequestError, ToolCallTruncatedError
 from .base import ChatResult, ToolCall, Usage, as_int, normalize_finish_reason
 
 
@@ -69,9 +69,23 @@ def _parse_tool_arguments(arguments: str | None) -> Any:
     Hostile input (invalid JSON, or nesting deep enough to blow the parser's
     recursion limit) becomes a plain ValueError, never a RecursionError."""
     try:
-        return json.loads(arguments or "{}")
+        parsed = json.loads(arguments or "{}")
     except (ValueError, RecursionError):
         raise InvalidRequestError("tool call arguments are not valid JSON") from None
+    if not isinstance(parsed, dict):
+        raise InvalidRequestError("tool call arguments are not a JSON object")
+    return parsed
+
+
+def _tool_result_content(content: Any) -> Any:
+    """A tool message's content for a `tool_result` block: text stays text, a
+    list of OpenAI parts becomes Anthropic text/image blocks (a result may
+    carry an image, e.g. a screenshot)."""
+    if not content:
+        return ""
+    if isinstance(content, str):
+        return content
+    return _translate_content(content)
 
 
 def _system_text(content: str | list[dict]) -> str:
@@ -102,7 +116,7 @@ def to_anthropic_messages(messages: list[dict]) -> tuple[str, list[dict]]:
             block = {
                 "type": "tool_result",
                 "tool_use_id": m["tool_call_id"],
-                "content": m.get("content") or "",
+                "content": _tool_result_content(m.get("content")),
             }
             # Consecutive tool results belong in one user turn, mirroring how
             # an assistant message can request several tool calls at once.
@@ -284,7 +298,11 @@ def from_anthropic_response(resp: Any, model: str) -> ChatResult:
     stop_reason = getattr(resp, "stop_reason", None)
     if tool_calls and normalize_finish_reason(stop_reason) == "length":
         # The budget ran out inside a tool_use block: its input is incomplete.
-        raise InvalidOutputError("The reply was cut off by max_tokens inside a tool call.")
+        raise ToolCallTruncatedError(
+            "The reply was cut off by max_tokens inside a tool call; "
+            "retry with a larger max_tokens.",
+            tuple(call.name for call in tool_calls),
+        )
     finish_reason = normalize_finish_reason(stop_reason)
     if tool_calls:
         finish_reason = "tool_calls"

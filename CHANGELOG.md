@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.16.7
+
+Agentic pass 3: tool calling in agent loops.
+
+- A reply cut off by the token budget inside a tool call raises the new
+  `ToolCallTruncatedError` (an `InvalidOutputError` subclass: failover is unchanged) with
+  `finish_reason == "length"` and the `tool_names`, on OpenAI-style and Anthropic alike; before,
+  OpenAI-style hosts reported a generic "not valid JSON". Arguments are never passed on half-parsed.
+- New `check_tool_calls(tools, tool_calls)` returns typed `ToolCallIssue`s (unknown tool, arguments
+  failing the tool's JSON schema, with paths, never values) and `tool_error_message(issue)` builds
+  the `role: "tool"` reply to feed back to the model. Never raises.
+- `chat()` makes tool-call ids in a reply unique and non-empty (hosts repeat or omit them), so
+  the results can be paired on the next request.
+- Anthropic: a tool result carrying image parts (screenshots) is translated to image blocks
+  instead of being sent as raw OpenAI parts; tool-call arguments in history must be a JSON object.
+- Pre-flight: more than 128 tools, or tool definitions over 1,000,000 characters of JSON, are an
+  `InvalidRequestError` before any provider is called.
+- `Usage` supports `+` and `Usage.total(usages)` for exact token totals across a tool loop.
+
 ## 0.16.6
 
 Reliability pass 4: cancellation and resource cleanup.

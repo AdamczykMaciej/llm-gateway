@@ -16,7 +16,7 @@ import asyncio
 import dataclasses
 import json
 import logging
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Iterable
 from contextlib import aclosing
 from dataclasses import dataclass, field
 from typing import Any, cast
@@ -26,7 +26,7 @@ from openai import Timeout
 from openai.types.chat import ChatCompletionMessageParam
 
 from ..config import GatewayConfig
-from ..errors import EmptyCompletionError, InvalidOutputError
+from ..errors import EmptyCompletionError, InvalidOutputError, ToolCallTruncatedError
 
 logger = logging.getLogger("llm_gateway")
 
@@ -184,6 +184,27 @@ class Usage:
     def uncached_input_tokens(self) -> int:
         cached = self.cache_read_input_tokens + self.cache_creation_input_tokens
         return max(self.input_tokens - cached, 0)
+
+    def __add__(self, other: "Usage") -> "Usage":
+        if not isinstance(other, Usage):
+            return NotImplemented
+        return Usage(
+            self.input_tokens + other.input_tokens,
+            self.output_tokens + other.output_tokens,
+            self.cache_read_input_tokens + other.cache_read_input_tokens,
+            self.cache_creation_input_tokens + other.cache_creation_input_tokens,
+            self.reasoning_tokens + other.reasoning_tokens,
+        )
+
+    @classmethod
+    def total(cls, usages: "Iterable[Usage]") -> "Usage":
+        """The sum of every step's usage, e.g. across a tool loop (each step
+        resends the history, so input tokens add up; that is what is billed).
+        Price it once with `cost_usd` when all steps used one model."""
+        out = cls()
+        for usage in usages:
+            out = out + usage
+        return out
 
 
 def as_int(value: object) -> int:
@@ -466,15 +487,24 @@ def parse_openai_style_response(resp: Any, model: str, provider: str = "openai")
     msg = choice.message
     if getattr(msg, "refusal", None) and not msg.tool_calls:
         raise InvalidOutputError("The model refused the request (message.refusal is set).")
-    tool_calls = [
-        ToolCall(
-            id=tc.id,
-            name=tc.function.name,
-            arguments=_tool_arguments(tc.function.arguments),
-        )
-        for tc in (msg.tool_calls or [])
-    ]
     finish_reason = normalize_finish_reason(choice.finish_reason)
+    try:
+        tool_calls = [
+            ToolCall(
+                id=tc.id,
+                name=tc.function.name,
+                arguments=_tool_arguments(tc.function.arguments),
+            )
+            for tc in (msg.tool_calls or [])
+        ]
+    except InvalidOutputError:
+        if finish_reason == "length":
+            raise ToolCallTruncatedError(
+                "The reply was cut off by the token limit inside a tool call; "
+                "retry with a larger max_tokens.",
+                tuple(tc.function.name for tc in msg.tool_calls),
+            ) from None
+        raise
     if tool_calls:
         finish_reason = "tool_calls"
     elif finish_reason == "tool_calls":
