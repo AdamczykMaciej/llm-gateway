@@ -265,6 +265,18 @@ def _resolve_ref(root: dict, ref: str) -> Any:
     return node if isinstance(node, dict) else {}
 
 
+def _json_equal(a: Any, b: Any) -> bool:
+    """JSON equality: unlike Python's `==`, `true` is not `1` and `false` is
+    not `0`, at any depth."""
+    if isinstance(a, bool) or isinstance(b, bool):
+        return isinstance(a, bool) and isinstance(b, bool) and a == b
+    if isinstance(a, dict) and isinstance(b, dict):
+        return a.keys() == b.keys() and all(_json_equal(a[k], b[k]) for k in a)
+    if isinstance(a, list) and isinstance(b, list):
+        return len(a) == len(b) and all(_json_equal(x, y) for x, y in zip(a, b, strict=True))
+    return a == b
+
+
 def _schema_errors(
     data: Any, schema: Any, root: dict, path: str, out: list[str], depth: int = 0
 ) -> None:
@@ -283,9 +295,9 @@ def _schema_errors(
         if not any(_JSON_TYPE_CHECKS.get(n, lambda v: True)(data) for n in names):
             out.append(here)
             return
-    if "enum" in schema and data not in schema["enum"]:
+    if "enum" in schema and not any(_json_equal(data, v) for v in schema["enum"] or []):
         out.append(here)
-    if "const" in schema and data != schema["const"]:
+    if "const" in schema and not _json_equal(data, schema["const"]):
         out.append(here)
     for key in ("anyOf", "oneOf"):
         branches = schema.get(key)

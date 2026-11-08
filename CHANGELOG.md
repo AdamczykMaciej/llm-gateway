@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.16.1
+
+Test-coverage pass 2 (96.30% -> 96.81%, floor 95.8%) and two fixes it exposed.
+
+- Fix: `stream_chat()` wrote no `llm_gateway.attempt` span for a stream that ended empty, failed
+  after its first chunk, hit the call deadline, or was abandoned by the consumer; the span is now
+  written in every case (error outcome on failure).
+- Fix: the `validate=` JSON Schema subset treated `true`/`false` as equal to `1`/`0` in `enum` and
+  `const` (Python `==`), so `true` passed `{"enum": [1]}`; comparison is now JSON-exact.
+- Tests only otherwise: streaming fallback/cancellation, per-model breaker bounds (property test),
+  privacy streaming of text and tool-call arguments (chunking-invariance property tests), request
+  ids across retries/fallbacks/repairs, tool-result cap properties, `service/main.py`.
+
 ## 0.16.0
 
 Agentic pass 2 (additive; every new argument defaults to the old behaviour).
