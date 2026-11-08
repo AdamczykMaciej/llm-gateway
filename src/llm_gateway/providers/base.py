@@ -575,6 +575,53 @@ def parse_openai_style_chunk(chunk: Any, model: str) -> StreamDelta:
     )
 
 
+class ToolIndexNormalizer:
+    """Gives every streamed tool call its own `index`.
+
+    OpenAI-shaped streams key a tool call's fragments by `index`, but some
+    hosts do not keep to that: Gemini's OpenAI endpoint reports every call of
+    a parallel batch at index 0 (told apart only by `id`), and a host may omit
+    the index altogether. Aggregating such a stream by index glues unrelated
+    calls into one, so a fragment that opens a new call (it carries an `id` not
+    seen before) at an index another call already holds is moved to the next
+    free index, and later fragments for that raw index follow it. Streams that
+    already number their calls correctly pass through unchanged."""
+
+    def __init__(self) -> None:
+        self._by_id: dict[str, int] = {}
+        self._by_raw: dict[int | None, int] = {}
+        self._used: set[int] = set()
+        self._last: int = 0
+
+    def _free(self) -> int:
+        index = 0
+        while index in self._used:
+            index += 1
+        return index
+
+    def _remap(self, fragment: dict) -> dict:
+        raw = fragment.get("index")
+        call_id = fragment.get("id")
+        if call_id:
+            index = self._by_id.get(call_id)
+            if index is None:
+                index = raw if isinstance(raw, int) and raw not in self._used else self._free()
+                self._by_id[call_id] = index
+                self._used.add(index)
+            self._by_raw[raw] = index
+        else:
+            index = self._by_raw.get(raw, raw if isinstance(raw, int) else self._last)
+        self._last = index
+        return fragment if index == raw else {**fragment, "index": index}
+
+    def apply(self, delta: StreamDelta) -> StreamDelta:
+        if not delta.tool_call_deltas:
+            return delta
+        return dataclasses.replace(
+            delta, tool_call_deltas=[self._remap(f) for f in delta.tool_call_deltas]
+        )
+
+
 async def _strip_think_stream(deltas: AsyncGenerator[StreamDelta]) -> AsyncGenerator[StreamDelta]:
     stripper = _ThinkStripper()
     async with aclosing(deltas):
