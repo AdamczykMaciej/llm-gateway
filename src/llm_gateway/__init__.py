@@ -39,6 +39,7 @@ from .errors import (
     PolicyViolationError,
     ProviderAuthError,
     ResidencyViolationError,
+    StreamTooLargeError,
     ToolCallTruncatedError,
     UnsupportedCapabilityError,
 )
@@ -85,6 +86,7 @@ __all__ = [
     "ToolCallIssue",
     "check_tool_calls",
     "tool_error_message",
+    "StreamTooLargeError",
     "ToolCallTruncatedError",
     "LLMError",
     "LLMDeadlineExceeded",

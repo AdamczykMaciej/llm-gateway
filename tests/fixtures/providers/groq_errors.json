@@ -1,0 +1,66 @@
+{
+  "source": "https://console.groq.com/docs/errors (error object format and status codes) and https://console.groq.com/docs/structured-outputs (json_validate_failed); Mistral error object from https://docs.mistral.ai/api/",
+  "errors": [
+    {
+      "name": "groq_rate_limit",
+      "status": 429,
+      "body": {
+        "error": {
+          "message": "Rate limit reached for model `llama-3.3-70b-versatile` in organization `org_x` service tier `on_demand` on tokens per minute (TPM): Limit 12000, Used 11000, Requested 2000. Please try again in 5s.",
+          "type": "tokens",
+          "code": "rate_limit_exceeded"
+        }
+      },
+      "kind": "rate_limited"
+    },
+    {
+      "name": "groq_invalid_api_key",
+      "status": 401,
+      "body": {
+        "error": {
+          "message": "Invalid API Key",
+          "type": "invalid_request_error",
+          "code": "invalid_api_key"
+        }
+      },
+      "kind": "auth"
+    },
+    {
+      "name": "groq_json_validate_failed",
+      "status": 400,
+      "body": {
+        "error": {
+          "message": "Failed to generate JSON. Please adjust your prompt. See 'failed_generation' for more details.",
+          "type": "invalid_request_error",
+          "code": "json_validate_failed",
+          "failed_generation": "{}"
+        }
+      },
+      "kind": "invalid_output"
+    },
+    {
+      "name": "groq_over_capacity",
+      "status": 503,
+      "body": {
+        "error": {
+          "message": "Service Unavailable",
+          "type": "internal_server_error",
+          "code": "service_unavailable"
+        }
+      },
+      "kind": "transient"
+    },
+    {
+      "name": "mistral_invalid_model",
+      "status": 400,
+      "body": {
+        "object": "error",
+        "message": "Invalid model: foo",
+        "type": "invalid_model",
+        "param": null,
+        "code": "1500"
+      },
+      "kind": "invalid_request"
+    }
+  ]
+}

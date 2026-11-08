@@ -1,0 +1,328 @@
+{
+  "source": "https://platform.openai.com/docs/api-reference/chat/object , https://platform.openai.com/docs/api-reference/chat/streaming and https://platform.openai.com/docs/guides/function-calling (example responses, abridged)",
+  "responses": [
+    {
+      "name": "text",
+      "payload": {
+        "id": "chatcmpl-B9MBs8CjcvOU2jLn4n570S5qMJKcT",
+        "object": "chat.completion",
+        "created": 1741569952,
+        "model": "gpt-4.1-2025-04-14",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": "Hello! How can I assist you today?",
+              "refusal": null,
+              "annotations": []
+            },
+            "logprobs": null,
+            "finish_reason": "stop"
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 19,
+          "completion_tokens": 10,
+          "total_tokens": 29,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "audio_tokens": 0
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "audio_tokens": 0,
+            "accepted_prediction_tokens": 0,
+            "rejected_prediction_tokens": 0
+          }
+        },
+        "service_tier": "default"
+      },
+      "expect": {
+        "content": "Hello! How can I assist you today?",
+        "finish_reason": "stop",
+        "input_tokens": 19,
+        "output_tokens": 10,
+        "tool_calls": []
+      }
+    },
+    {
+      "name": "tool_call",
+      "payload": {
+        "id": "chatcmpl-abc123",
+        "object": "chat.completion",
+        "created": 1699896916,
+        "model": "gpt-4o-mini",
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": null,
+              "tool_calls": [
+                {
+                  "id": "call_abc123",
+                  "type": "function",
+                  "function": {
+                    "name": "get_current_weather",
+                    "arguments": "{\n\"location\": \"Boston, MA\"\n}"
+                  }
+                }
+              ]
+            },
+            "logprobs": null,
+            "finish_reason": "tool_calls"
+          }
+        ],
+        "usage": {
+          "prompt_tokens": 82,
+          "completion_tokens": 17,
+          "total_tokens": 99,
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "accepted_prediction_tokens": 0,
+            "rejected_prediction_tokens": 0
+          }
+        }
+      },
+      "expect": {
+        "content": null,
+        "finish_reason": "tool_calls",
+        "input_tokens": 82,
+        "output_tokens": 17,
+        "tool_calls": [
+          {
+            "id": "call_abc123",
+            "name": "get_current_weather",
+            "arguments": {
+              "location": "Boston, MA"
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "streams": [
+    {
+      "name": "tool_call_stream",
+      "chunks": [
+        {
+          "id": "chatcmpl-123",
+          "object": "chat.completion.chunk",
+          "created": 1694268190,
+          "model": "gpt-4o-mini",
+          "system_fingerprint": "fp_44709d6fcb",
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [
+                  {
+                    "index": 0,
+                    "id": "call_abc123",
+                    "type": "function",
+                    "function": {
+                      "name": "get_current_weather",
+                      "arguments": ""
+                    }
+                  }
+                ]
+              },
+              "logprobs": null,
+              "finish_reason": null
+            }
+          ]
+        },
+        {
+          "id": "chatcmpl-123",
+          "object": "chat.completion.chunk",
+          "created": 1694268190,
+          "model": "gpt-4o-mini",
+          "system_fingerprint": "fp_44709d6fcb",
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "tool_calls": [
+                  {
+                    "index": 0,
+                    "function": {
+                      "arguments": "{\"location\":"
+                    }
+                  }
+                ]
+              },
+              "logprobs": null,
+              "finish_reason": null
+            }
+          ]
+        },
+        {
+          "id": "chatcmpl-123",
+          "object": "chat.completion.chunk",
+          "created": 1694268190,
+          "model": "gpt-4o-mini",
+          "system_fingerprint": "fp_44709d6fcb",
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "tool_calls": [
+                  {
+                    "index": 0,
+                    "function": {
+                      "arguments": " \"Boston, MA\"}"
+                    }
+                  }
+                ]
+              },
+              "logprobs": null,
+              "finish_reason": null
+            }
+          ]
+        },
+        {
+          "id": "chatcmpl-123",
+          "object": "chat.completion.chunk",
+          "created": 1694268190,
+          "model": "gpt-4o-mini",
+          "system_fingerprint": "fp_44709d6fcb",
+          "choices": [
+            {
+              "index": 0,
+              "delta": {},
+              "logprobs": null,
+              "finish_reason": "tool_calls"
+            }
+          ]
+        },
+        {
+          "id": "chatcmpl-123",
+          "object": "chat.completion.chunk",
+          "created": 1694268190,
+          "model": "gpt-4o-mini",
+          "system_fingerprint": "fp_44709d6fcb",
+          "choices": [],
+          "usage": {
+            "prompt_tokens": 82,
+            "completion_tokens": 17,
+            "total_tokens": 99
+          }
+        }
+      ],
+      "expect": {
+        "content": "",
+        "finish_reason": "tool_calls",
+        "usage": [
+          82,
+          17
+        ],
+        "tool_calls": [
+          {
+            "id": "call_abc123",
+            "name": "get_current_weather",
+            "arguments": {
+              "location": "Boston, MA"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "text_stream",
+      "chunks": [
+        {
+          "id": "chatcmpl-123",
+          "object": "chat.completion.chunk",
+          "created": 1694268190,
+          "model": "gpt-4o-mini",
+          "system_fingerprint": "fp_44709d6fcb",
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "role": "assistant",
+                "content": ""
+              },
+              "logprobs": null,
+              "finish_reason": null
+            }
+          ]
+        },
+        {
+          "id": "chatcmpl-123",
+          "object": "chat.completion.chunk",
+          "created": 1694268190,
+          "model": "gpt-4o-mini",
+          "system_fingerprint": "fp_44709d6fcb",
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "content": "Hello"
+              },
+              "logprobs": null,
+              "finish_reason": null
+            }
+          ]
+        },
+        {
+          "id": "chatcmpl-123",
+          "object": "chat.completion.chunk",
+          "created": 1694268190,
+          "model": "gpt-4o-mini",
+          "system_fingerprint": "fp_44709d6fcb",
+          "choices": [
+            {
+              "index": 0,
+              "delta": {
+                "content": "!"
+              },
+              "logprobs": null,
+              "finish_reason": null
+            }
+          ]
+        },
+        {
+          "id": "chatcmpl-123",
+          "object": "chat.completion.chunk",
+          "created": 1694268190,
+          "model": "gpt-4o-mini",
+          "system_fingerprint": "fp_44709d6fcb",
+          "choices": [
+            {
+              "index": 0,
+              "delta": {},
+              "logprobs": null,
+              "finish_reason": "stop"
+            }
+          ]
+        },
+        {
+          "id": "chatcmpl-123",
+          "object": "chat.completion.chunk",
+          "created": 1694268190,
+          "model": "gpt-4o-mini",
+          "system_fingerprint": "fp_44709d6fcb",
+          "choices": [],
+          "usage": {
+            "prompt_tokens": 9,
+            "completion_tokens": 2,
+            "total_tokens": 11
+          }
+        }
+      ],
+      "expect": {
+        "content": "Hello!",
+        "finish_reason": "stop",
+        "usage": [
+          9,
+          2
+        ],
+        "tool_calls": []
+      }
+    }
+  ]
+}

@@ -112,7 +112,13 @@ class BudgetCheck(Protocol):
     id, the model and the call's estimated worst-case cost in USD (`None`
     when the model has no price). Return a truthy value to allow the attempt;
     may be sync or async. A denial excludes that provider for this call and
-    never counts toward its circuit breaker. An exception propagates."""
+    never counts toward its circuit breaker. An exception propagates.
+
+    This is a gate, not a reservation: the gateway never holds or charges
+    anything on the host's behalf, so there is nothing to release when a call
+    is cancelled or fails before a provider answers. A host that reserves
+    budget inside the hook must settle it itself, e.g. from the usage on the
+    result, or release it in a `finally` around `chat()` / `stream_chat()`."""
 
     def __call__(
         self, provider: str, model: str, estimated_cost_usd: float | None, /
