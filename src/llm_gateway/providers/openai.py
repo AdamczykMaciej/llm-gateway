@@ -1,3 +1,4 @@
+import re
 from collections.abc import AsyncIterator
 from contextlib import aclosing
 
@@ -6,10 +7,12 @@ from openai import AsyncOpenAI, DefaultAsyncHttpx2Client
 from ..config import GatewayConfig
 from ..structured import OutputSchema
 from .base import (
+    REASONING_REJECTED_SAMPLING,
     ChatResult,
     ProviderResult,
     StreamDelta,
     close_clients,
+    drop_keys,
     guard_empty_stream,
     openai_sampling_kwargs,
     parse_openai_style_chunk,
@@ -22,6 +25,21 @@ from .base import (
 )
 
 _clients: dict[tuple, AsyncOpenAI] = {}
+
+# Reasoning models (o-series, gpt-5 family; `gpt-5-chat*` is not one): the API
+# rejects `max_tokens` (it wants `max_completion_tokens`, which also covers
+# the reasoning tokens) and any non-default sampling, each a 400 on every call.
+_REASONING_MODEL = re.compile(r"^(?:o\d|gpt-5(?!-chat))")
+
+
+def _request_params(model: str, max_tokens: int, kwargs: dict) -> dict:
+    """`max_tokens` and sampling kwargs in the form `model` accepts."""
+    if _REASONING_MODEL.match(model):
+        return {
+            "max_completion_tokens": max_tokens,
+            **drop_keys(kwargs, REASONING_REJECTED_SAMPLING),
+        }
+    return {"max_tokens": max_tokens, **kwargs}
 
 
 def _client(config: GatewayConfig) -> AsyncOpenAI:
@@ -71,12 +89,11 @@ async def call(
         kwargs["response_format"] = output_schema.openai_response_format()
     resp = await _client(config).chat.completions.create(
         model=model,
-        max_tokens=max_tokens,
         messages=[
             {"role": "system", "content": system},
             {"role": "user", "content": prompt},
         ],
-        **kwargs,
+        **_request_params(model, max_tokens, kwargs),
     )
     return provider_result_from_openai_style(resp, model, provider="openai")
 
@@ -101,7 +118,7 @@ async def chat(
     if response_format is not None:
         kwargs["response_format"] = response_format
     resp = await _client(config).chat.completions.create(
-        model=model, max_tokens=max_tokens, messages=messages, **kwargs
+        model=model, messages=messages, **_request_params(model, max_tokens, kwargs)
     )
     return parse_openai_style_response(resp, model, provider="openai")
 
@@ -127,11 +144,10 @@ async def _stream_chat(
         kwargs["response_format"] = response_format
     stream = await _client(config).chat.completions.create(
         model=model,
-        max_tokens=max_tokens,
         messages=messages,
         stream=True,
         stream_options={"include_usage": True},
-        **kwargs,
+        **_request_params(model, max_tokens, kwargs),
         **stream_request_options(config),
     )
     async for chunk in stream:
@@ -162,7 +178,9 @@ async def stream_chat(
         sampling=sampling,
         response_format=response_format,
     )
-    guarded = guard_empty_stream(deltas, provider="openai", model=model or default_model(config))
+    guarded = guard_empty_stream(
+        deltas, provider="openai", model=model or default_model(config), strip_think=True
+    )
     async with aclosing(guarded):
         async for delta in guarded:
             yield delta

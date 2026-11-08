@@ -130,6 +130,7 @@ async def test_anthropic_call_and_chat_with_sampling_through_real_sdk():
             tools=None,
             max_tokens=50,
             sampling={"temperature": 0.2, "top_p": 0.9, "stop": "END", "seed": 7},
+            model="claude-test-model",  # the default model takes only one of the two
         )
 
     assert plain == ProviderResult("Hello there.", config.claude_model, 12, 4)

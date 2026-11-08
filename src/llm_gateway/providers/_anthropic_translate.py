@@ -18,7 +18,8 @@ naturally, or every `tool_choice` variant.
 import json
 from typing import Any
 
-from .base import ChatResult, ToolCall, Usage, as_int
+from ..errors import InvalidOutputError, InvalidRequestError
+from .base import ChatResult, ToolCall, Usage, as_int, normalize_finish_reason
 
 
 def _translate_image_url(url: str) -> dict:
@@ -43,10 +44,23 @@ def _translate_content(content: str | list[dict] | None) -> str | list[dict]:
         return content or ""
     blocks = []
     for part in content:
-        if part.get("type") == "image_url":
-            blocks.append(_translate_image_url(part["image_url"]["url"]))
+        kind = part.get("type") if isinstance(part, dict) else None
+        if kind == "image_url":
+            image = part.get("image_url")
+            url = image.get("url") if isinstance(image, dict) else image
+            if not isinstance(url, str) or not url:
+                raise InvalidRequestError("An image_url content part has no url.")
+            blocks.append(_translate_image_url(url))
+        elif kind == "text":
+            if str(part.get("text") or "").strip():  # Anthropic rejects empty text blocks
+                blocks.append(part)
         else:
-            blocks.append(part)
+            raise InvalidRequestError(
+                f"Content part type {kind!r} is not supported by Anthropic; "
+                "only 'text' and 'image_url' parts are."
+            )
+    if not blocks:
+        raise InvalidRequestError("A message has no non-empty text or image content.")
     return blocks
 
 
@@ -57,7 +71,7 @@ def _parse_tool_arguments(arguments: str | None) -> Any:
     try:
         return json.loads(arguments or "{}")
     except (ValueError, RecursionError):
-        raise ValueError("tool call arguments are not valid JSON") from None
+        raise InvalidRequestError("tool call arguments are not valid JSON") from None
 
 
 def _system_text(content: str | list[dict]) -> str:
@@ -252,13 +266,22 @@ def from_anthropic_response(resp: Any, model: str) -> ChatResult:
         if block.type == "tool_use"
     ]
     usage = usage_from_anthropic_response(resp.usage)
+    stop_reason = getattr(resp, "stop_reason", None)
+    if tool_calls and normalize_finish_reason(stop_reason) == "length":
+        # The budget ran out inside a tool_use block: its input is incomplete.
+        raise InvalidOutputError("The reply was cut off by max_tokens inside a tool call.")
+    finish_reason = normalize_finish_reason(stop_reason)
+    if tool_calls:
+        finish_reason = "tool_calls"
+    elif finish_reason == "tool_calls":
+        finish_reason = "stop"
     return ChatResult(
         content="\n".join(text_blocks(resp.content)).strip() or None,
         model=model,
         input_tokens=usage.input_tokens,
         output_tokens=usage.output_tokens,
         tool_calls=tool_calls,
-        finish_reason="tool_calls" if tool_calls else "stop",
+        finish_reason=finish_reason,
         cache_read_input_tokens=usage.cache_read_input_tokens,
         cache_creation_input_tokens=usage.cache_creation_input_tokens,
         reasoning_tokens=usage.reasoning_tokens,

@@ -13,6 +13,7 @@ Providers own their own client caching internally.
 """
 
 import asyncio
+import dataclasses
 import json
 import logging
 from collections.abc import AsyncIterator
@@ -190,8 +191,117 @@ def usage_from_openai_style(usage: Any) -> Usage:
         input_tokens=as_int(getattr(usage, "prompt_tokens", None)),
         output_tokens=as_int(getattr(usage, "completion_tokens", None)),
         cache_read_input_tokens=as_int(getattr(details, "cached_tokens", None)),
+        # Only OpenRouter reports cache writes (`cache_write_tokens`, billed at
+        # a premium for Anthropic models); OpenAI and Groq never set it.
+        cache_creation_input_tokens=as_int(getattr(details, "cache_write_tokens", None)),
         reasoning_tokens=as_int(getattr(completion_details, "reasoning_tokens", None)),
     )
+
+
+_LENGTH_REASONS = frozenset(
+    {"length", "max_tokens", "model_length", "max_output_tokens", "model_context_window_exceeded"}
+)
+_FILTER_REASONS = frozenset(
+    {
+        "content_filter",
+        "safety",
+        "recitation",
+        "blocklist",
+        "prohibited_content",
+        "spii",
+        "refusal",
+    }
+)
+_TOOL_REASONS = frozenset({"tool_calls", "function_call", "tool_use"})
+
+
+def normalize_finish_reason(raw: str | None) -> str:
+    """One finish-reason vocabulary for every provider, in chat and streams:
+    "tool_calls", "length" (the token budget ran out), "content_filter" (a
+    safety filter or refusal ended the reply) or "stop" (anything else:
+    `stop`, `end_turn`, `stop_sequence`, ...)."""
+    reason = (raw or "").lower()
+    if reason in _TOOL_REASONS:
+        return "tool_calls"
+    if reason in _LENGTH_REASONS:
+        return "length"
+    if reason in _FILTER_REASONS:
+        return "content_filter"
+    return "stop"
+
+
+# Reasoning models (OpenAI o-series / gpt-5, Azure reasoning deployments)
+# reject these with a 400: only the default sampling is allowed.
+REASONING_REJECTED_SAMPLING = (
+    "temperature",
+    "top_p",
+    "presence_penalty",
+    "frequency_penalty",
+    "stop",
+)
+
+
+def drop_keys(kwargs: dict, keys: tuple[str, ...]) -> dict:
+    return {k: v for k, v in kwargs.items() if k not in keys}
+
+
+_THINK_OPEN = "<think>"
+_THINK_CLOSE = "</think>"
+
+
+def strip_think(text: str | None) -> str | None:
+    """Remove a leading `<think>...</think>` block that some hosts (DeepSeek-R1
+    and Qwen3 on vLLM/TGI/Groq, ...) put inline in `content`. An unclosed block
+    (the budget ran out while thinking) leaves nothing."""
+    if not text or not text.lstrip().startswith(_THINK_OPEN):
+        return text
+    end = text.find(_THINK_CLOSE)
+    if end < 0:
+        return ""
+    return text[end + len(_THINK_CLOSE) :].lstrip()
+
+
+class _ThinkStripper:
+    """Streaming `strip_think()`: feed content pieces, get the visible part."""
+
+    def __init__(self) -> None:
+        self._state = "start"  # start | inside | trim | pass
+        self._buf = ""
+
+    def feed(self, text: str) -> str:
+        if self._state == "pass":
+            return text
+        self._buf += text
+        if self._state == "start":
+            head = self._buf.lstrip()
+            if not head:
+                return ""
+            if head.startswith(_THINK_OPEN):
+                self._state, self._buf = "inside", head[len(_THINK_OPEN) :]
+            elif _THINK_OPEN.startswith(head):
+                return ""
+            else:
+                self._state, out, self._buf = "pass", self._buf, ""
+                return out
+        if self._state == "inside":
+            end = self._buf.find(_THINK_CLOSE)
+            if end < 0:
+                self._buf = self._buf[-len(_THINK_CLOSE) :]
+                return ""
+            self._state, self._buf = "trim", self._buf[end + len(_THINK_CLOSE) :]
+        if self._state == "trim":
+            out, self._buf = self._buf.lstrip(), ""
+            if out:
+                self._state = "pass"
+            return out
+        return ""
+
+    def flush(self) -> str:
+        """Held-back text that turned out not to be a think block."""
+        out = self._buf if self._state == "start" else ""
+        self._buf = ""
+        self._state = "pass"
+        return out
 
 
 def ensure_not_empty(
@@ -314,13 +424,29 @@ def _tool_arguments(raw: str | None) -> dict:
     return arguments
 
 
+def _first_choice(resp: Any, model: str, provider: str) -> Any:
+    """`resp.choices[0]`; a reply with no choices at all (Gemini blocking the
+    prompt for safety, a filtered Azure reply) is `EmptyCompletionError` with
+    finish reason "no_choices", not an IndexError that counts as UNKNOWN."""
+    if not getattr(resp, "choices", None):
+        usage = usage_from_openai_style(getattr(resp, "usage", None))
+        ensure_not_empty(
+            None,
+            provider=provider,
+            model=model,
+            finish_reason="no_choices",
+            reasoning_tokens=usage.reasoning_tokens,
+        )
+    return resp.choices[0]
+
+
 def parse_openai_style_response(resp: Any, model: str, provider: str = "openai") -> ChatResult:
     """Shared response parser for any provider speaking the OpenAI chat-
     completions wire format natively (OpenAI itself, Groq).
 
     Null content is fine alongside tool calls. Without tool calls, a refusal
     is `InvalidOutputError` and empty content is `EmptyCompletionError`."""
-    choice = resp.choices[0]
+    choice = _first_choice(resp, model, provider)
     msg = choice.message
     if getattr(msg, "refusal", None) and not msg.tool_calls:
         raise InvalidOutputError("The model refused the request (message.refusal is set).")
@@ -332,10 +458,15 @@ def parse_openai_style_response(resp: Any, model: str, provider: str = "openai")
         )
         for tc in (msg.tool_calls or [])
     ]
-    finish_reason = "tool_calls" if tool_calls else "stop"
+    finish_reason = normalize_finish_reason(choice.finish_reason)
+    if tool_calls:
+        finish_reason = "tool_calls"
+    elif finish_reason == "tool_calls":
+        finish_reason = "stop"
+    content = strip_think(msg.content)
     usage = usage_from_openai_style(resp.usage)
     ensure_not_empty(
-        msg.content,
+        content,
         has_tool_calls=bool(tool_calls),
         provider=provider,
         model=model,
@@ -343,13 +474,14 @@ def parse_openai_style_response(resp: Any, model: str, provider: str = "openai")
         reasoning_tokens=usage.reasoning_tokens,
     )
     return ChatResult(
-        content=msg.content,
+        content=content,
         model=model,
         input_tokens=usage.input_tokens,
         output_tokens=usage.output_tokens,
         tool_calls=tool_calls,
         finish_reason=finish_reason,
         cache_read_input_tokens=usage.cache_read_input_tokens,
+        cache_creation_input_tokens=usage.cache_creation_input_tokens,
         reasoning_tokens=usage.reasoning_tokens,
     )
 
@@ -365,24 +497,26 @@ def provider_result_from_openai_style(
     an unusable answer (`InvalidOutputError`); empty or whitespace content is
     `EmptyCompletionError`. Both fail over instead of returning "".
     """
-    choice = resp.choices[0]
+    choice = _first_choice(resp, model, provider)
     message = choice.message
     if getattr(message, "refusal", None):
         raise InvalidOutputError("The model refused the request (message.refusal is set).")
     usage = usage_from_openai_style(resp.usage)
+    content = strip_think(message.content)
     ensure_not_empty(
-        message.content,
+        content,
         provider=provider,
         model=model,
         finish_reason=choice.finish_reason,
         reasoning_tokens=usage.reasoning_tokens,
     )
     return ProviderResult(
-        text=message.content.strip(),
+        text=content.strip(),
         model=model,
         input_tokens=usage.input_tokens,
         output_tokens=usage.output_tokens,
         cache_read_input_tokens=usage.cache_read_input_tokens,
+        cache_creation_input_tokens=usage.cache_creation_input_tokens,
         reasoning_tokens=usage.reasoning_tokens,
         stop_reason=choice.finish_reason,
     )
@@ -416,15 +550,38 @@ def parse_openai_style_chunk(chunk: Any, model: str) -> StreamDelta:
     return StreamDelta(
         content=delta.content,
         tool_call_deltas=tool_call_deltas,
-        finish_reason=choice.finish_reason,
+        finish_reason=(
+            normalize_finish_reason(choice.finish_reason) if choice.finish_reason else None
+        ),
         model=model,
         usage=usage,
         usage_details=details,
     )
 
 
+async def _strip_think_stream(deltas: AsyncIterator[StreamDelta]) -> AsyncIterator[StreamDelta]:
+    stripper = _ThinkStripper()
+    async with aclosing(deltas):
+        async for delta in deltas:
+            if delta.content:
+                visible = stripper.feed(delta.content)
+                if not visible and not (
+                    delta.tool_call_deltas or delta.finish_reason or delta.usage
+                ):
+                    continue
+                delta = dataclasses.replace(delta, content=visible or None)
+            if delta.finish_reason or delta.usage:
+                held = stripper.flush()
+                if held:
+                    yield StreamDelta(content=held, model=delta.model)
+            yield delta
+        held = stripper.flush()
+        if held:
+            yield StreamDelta(content=held)
+
+
 async def guard_empty_stream(
-    deltas: AsyncIterator[StreamDelta], *, provider: str, model: str
+    deltas: AsyncIterator[StreamDelta], *, provider: str, model: str, strip_think: bool = False
 ) -> AsyncIterator[StreamDelta]:
     """Hold a stream's chunks back until one carries non-whitespace text or a
     tool call, then pass everything through in order.
@@ -432,7 +589,13 @@ async def guard_empty_stream(
     A stream that ends before that (a reasoning model streaming only
     reasoning, or nothing at all) raises `EmptyCompletionError` before its
     first chunk reaches the engine, so `stream_chat()` can still fail over.
-    Once real content has been seen, chunks flow through unbuffered."""
+    Once real content has been seen, chunks flow through unbuffered.
+
+    `strip_think` removes a leading inline `<think>...</think>` block from the
+    content first (see `strip_think()`), so reasoning-only streams count as
+    empty."""
+    if strip_think:
+        deltas = _strip_think_stream(deltas)
     pending: list[StreamDelta] = []
     started = False
     async with aclosing(deltas):

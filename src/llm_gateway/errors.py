@@ -46,6 +46,12 @@ a healthy provider out of rotation for everyone. It is not retried on the
 same provider either. The next provider is a better bet than re-rolling the
 same model, and a retry would double the cost of a call that already failed.
 
+An empty reply that ended in a safety filter or refusal (`content_filter`,
+Gemini `SAFETY`, Anthropic `refusal`, or a 200 with no choices) is
+`INVALID_OUTPUT` instead: whether the filter fires depends on the caller's
+content, so, like Azure's 400 `content_filter` on the prompt, it must not let
+one user's trigger text open the breaker for everyone.
+
 `EMPTY_RESPONSE` is also not retried, but it *does* count toward the breaker.
 An empty reply is not about one caller's schema: it is what a provider/model
 configuration produces for everyone, typically a reasoning model that spends
@@ -362,12 +368,32 @@ def is_billing_error(exc: BaseException) -> bool:
     return any(marker in text for marker in _BILLING_MARKERS)
 
 
+# An empty reply that ended in a safety filter or refusal depends on the
+# caller's content, not on the provider/model configuration.
+_FILTERED_FINISH_REASONS = frozenset(
+    {
+        "content_filter",
+        "safety",
+        "refusal",
+        "recitation",
+        "blocklist",
+        "prohibited_content",
+        "spii",
+        "no_choices",
+    }
+)
+
+
 def classify(exc: BaseException) -> ErrorKind:
     if isinstance(exc, PolicyViolationError):
         return ErrorKind.POLICY_VIOLATION
     if isinstance(exc, InvalidOutputError):
         return ErrorKind.INVALID_OUTPUT
+    if isinstance(exc, InvalidRequestError):
+        return ErrorKind.INVALID_REQUEST
     if isinstance(exc, EmptyCompletionError):
+        if str(exc.finish_reason or "").lower() in _FILTERED_FINISH_REASONS:
+            return ErrorKind.INVALID_OUTPUT
         return ErrorKind.EMPTY_RESPONSE
     if isinstance(exc, ProviderAuthError):
         return ErrorKind.AUTH

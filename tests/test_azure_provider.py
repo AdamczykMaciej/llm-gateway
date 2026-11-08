@@ -495,13 +495,13 @@ async def test_chat_tool_calls_with_null_content_are_served():
             messages=[{"role": "user", "content": "hi"}],
             tools=tools,
             tool_choice="auto",
-            sampling={"temperature": 0.2},
+            sampling={"seed": 5},
             config=_config(),
         )
     assert result.content is None
     assert [(c.name, c.arguments) for c in result.tool_calls] == [("lookup", {"q": "x"})]
     body = wire.bodies[0]
-    assert (body["tools"], body["tool_choice"], body["temperature"]) == (tools, "auto", 0.2)
+    assert (body["tools"], body["tool_choice"], body["seed"]) == (tools, "auto", 5)
 
 
 async def test_usage_reports_reasoning_and_cached_tokens_under_provider_azure(caplog):
@@ -539,8 +539,6 @@ async def test_usage_reports_reasoning_and_cached_tokens_under_provider_azure(ca
         ("", "stop"),
         (None, "length"),
         ("  \n", "stop"),
-        ("", "content_filter"),
-        (None, "content_filter"),
     ],
 )
 async def test_empty_reply_fails_over_counts_for_breaker_and_is_not_retried(content, finish_reason):
@@ -562,11 +560,29 @@ async def test_empty_reply_fails_over_counts_for_breaker_and_is_not_retried(cont
 
 
 async def test_chat_empty_reply_fails_over():
-    wire = _Wire(_ok(_completion("", finish_reason="content_filter")))
+    wire = _Wire(_ok(_completion("", finish_reason="length")))
     with _with_fallback(wire, _openai_fallback()):
         result = await chat(messages=[{"role": "user", "content": "hi"}], config=_chain())
     assert result.content == "from openai"
     assert breaker.is_open("azure")
+
+
+# An empty reply that ended in the output content filter depends on what the
+# caller asked, not on the deployment: it fails over but must not open the
+# breaker (else one user's trigger text takes Azure out of rotation for all).
+@pytest.mark.parametrize("content", ["", None])
+async def test_content_filtered_empty_reply_fails_over_without_breaker_count(content):
+    wire = _Wire(_ok(_completion(content, finish_reason="content_filter")))
+    with _with_fallback(wire, _openai_fallback()):
+        result = await chat(messages=[{"role": "user", "content": "hi"}], config=_chain())
+    assert result.content == "from openai"
+    assert len(wire.requests) == 1
+    assert not breaker.is_open("azure")
+
+    with _azure(_Wire(_ok(_completion(content, finish_reason="content_filter")))):
+        with pytest.raises(EmptyCompletionError) as excinfo:
+            await azure.call(_config(), "s", "p", 50)
+    assert classify(excinfo.value) is ErrorKind.INVALID_OUTPUT
 
 
 @pytest.mark.parametrize(
@@ -683,7 +699,7 @@ async def test_empty_stream_is_guarded_and_fails_over():
 
     assert "".join(d.content or "" for d in deltas) == "from openai"
     assert len(wire.requests) == 1
-    assert breaker.is_open("azure")
+    assert not breaker.is_open("azure")  # a content filter is the caller's content, not Azure
 
 
 # ─── Routing ──────────────────────────────────────────────────────────────

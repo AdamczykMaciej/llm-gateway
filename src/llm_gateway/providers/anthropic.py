@@ -46,6 +46,7 @@ from .base import (
     close_clients,
     ensure_not_empty,
     guard_empty_stream,
+    normalize_finish_reason,
     remember_client,
     sdk_client_cache_key,
     sdk_client_options,
@@ -64,6 +65,9 @@ logger = logging.getLogger(__name__)
 _REJECTS_SAMPLING = re.compile(
     r"^claude-(?:(?:haiku|sonnet|opus|fable|mythos)-5(?:-\d+)?|opus-4-[78])(?:$|[-@])"
 )
+# Models that 400 when `temperature` and `top_p` are both set: only one is kept
+# (temperature).
+_REJECTS_BOTH_SAMPLING = re.compile(r"^claude-(?:opus-4-[1-6]|sonnet-4-[5-9]|haiku-4-5)(?:$|[-@])")
 # Models that take `output_config.effort` and, for Haiku, `thinking: disabled`.
 _TAKES_EFFORT = re.compile(r"^claude-(?:haiku|sonnet|opus|fable|mythos)-5(?:-\d+)?(?:$|[-@])")
 _CAN_DISABLE_THINKING = re.compile(r"^claude-haiku-5(?:-\d+)?(?:$|[-@])")
@@ -145,6 +149,11 @@ def _sampling_kwargs(sampling: dict | None, model: str | None = None) -> dict:
     if model and _REJECTS_SAMPLING.match(model):
         params.pop("temperature", None)
         params.pop("top_p", None)
+    if "temperature" in params:
+        # OpenAI's range is 0-2, Anthropic's 0-1 (a 400 above it).
+        params["temperature"] = min(params["temperature"], 1.0)
+        if model and _REJECTS_BOTH_SAMPLING.match(model):
+            params.pop("top_p", None)
     body = {k: params.pop(k) for k in _BODY_ONLY_SAMPLING_KEYS if k in params}
     if body:
         params["extra_body"] = body
@@ -572,9 +581,9 @@ async def messages_stream(
     if structured_output_parts:
         yield StreamDelta(content="".join(structured_output_parts), model=model)
 
-    finish_reason = (
-        "tool_calls" if (stop_reason == "tool_use" and not emulating_structured_output) else "stop"
-    )
+    finish_reason = normalize_finish_reason(stop_reason)
+    if finish_reason == "tool_calls" and emulating_structured_output:
+        finish_reason = "stop"
     usage = usage_from_anthropic(**raw_usage, reasoning_tokens=reasoning_tokens)
     yield StreamDelta(
         finish_reason=finish_reason,
