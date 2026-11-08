@@ -4,7 +4,7 @@
 
 API ergonomics, types and docs pass 2. No behaviour change.
 
-- Types: `pyright src` 29 errors -> 0 (26 reported by the first pass plus 3 new). Streaming provider
+- Types: `pyright src` 29 errors -> 0. Streaming provider
   functions are `AsyncGenerator[StreamDelta]` (subtype of the old `AsyncIterator`, so `aclosing`
   type-checks); OpenAI-format messages go through a typed `sdk_messages()` helper instead of
   `list[dict]` overload noise; two narrowing fixes; one targeted `pyright: ignore` for the SDK's
