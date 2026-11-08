@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.16.0
+
+Agentic pass 2 (additive; every new argument defaults to the old behaviour).
+
+- Tracing: `request_id=` on `chat()`, `stream_chat()`, `complete()` and `complete_with_usage()`
+  (generated when omitted), returned as `ChatResult.request_id`, `Completion.request_id` and
+  `StreamDelta.request_id` (usage chunk). The call span gains `llm_gateway.request_id`; every
+  provider attempt emits a child `llm_gateway.attempt` span (request id, attempt number, provider,
+  model, outcome class, latency, token counts; never content, error text or keys). Behaviour note:
+  traces now hold one extra span per attempt under the call span.
+- Parallel tool calls: `parallel_tool_calls=` on `chat()`/`stream_chat()`. `False` sends OpenAI-style
+  `parallel_tool_calls: false` (OpenAI, Azure, Groq, Mistral, OpenRouter) or Anthropic
+  `disable_parallel_tool_use` (Anthropic, Vertex Claude); Gemini, Hugging Face and `openai_compat`
+  have no documented switch and ignore it. `providers.PARALLEL_TOOL_CALLS_SUPPORTED` lists support.
+- Structured output: opt-in `validate=` (pydantic model or JSON Schema subset) on
+  `complete_with_usage()` returns a typed `parsed` or raises `InvalidOutputError` with `.paths`
+  (field paths, never values). No automatic retry; `repair_attempts=` (default 0) is the explicit,
+  paid knob. `InvalidOutputError` gains a `paths` attribute (empty where unknown).
+- Tool result size guard: `TOOL_RESULT_MAX_CHARS` / `max_tool_result_chars=` truncate oversized
+  `role: "tool"` text with a marker before it is resent. Off by default.
+
 ## 0.15.4
 
 Second correctness pass (finish reasons, filtered replies, reasoning models, usage).

@@ -328,7 +328,8 @@ async def test_gpt_oss_json_reply_sends_low_reasoning_effort_and_reports_reasoni
     assert body["response_format"]["json_schema"]["strict"] is True
     # Reasoning tokens are part of output_tokens, and reported separately.
     assert (result.usage.output_tokens, result.usage.reasoning_tokens) == (260, 200)
-    (span,) = exporter.get_finished_spans()
+    # The call span; its per-attempt child spans are checked in test_agentic_pass_2.
+    (span,) = (s for s in exporter.get_finished_spans() if s.name != "llm_gateway.attempt")
     assert span.attributes["gen_ai.usage.output_tokens"] == 260
     assert span.attributes["llm_gateway.usage.reasoning_tokens"] == 200
 

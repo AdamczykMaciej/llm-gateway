@@ -146,6 +146,13 @@ def _loads_lenient(text: str) -> Any:
     raise strict_error
 
 
+def _pydantic_paths(error: ValidationError) -> tuple[str, ...]:
+    seen: dict[str, None] = {}
+    for err in error.errors():
+        seen[".".join(map(str, err["loc"])) or "<root>"] = None
+    return tuple(seen)
+
+
 def _safe_name(name: str) -> str:
     # OpenAI requires ^[a-zA-Z0-9_-]{1,64}$ for json_schema.name.
     return re.sub(r"[^a-zA-Z0-9_-]", "_", name)[:64] or "response"
@@ -210,12 +217,11 @@ class OutputSchema:
             try:
                 return self.model.model_validate(data)
             except ValidationError as e:
-                locations = ", ".join(
-                    ".".join(map(str, err["loc"])) or "<root>" for err in e.errors()
-                )
+                paths = _pydantic_paths(e)
                 raise InvalidOutputError(
                     f"Structured output failed validation against {self.model.__name__} "
-                    f"({e.error_count()} error(s) at: {locations})."
+                    f"({e.error_count()} error(s) at: {', '.join(paths)}).",
+                    paths,
                 ) from None
         self._check_shallow(data)
         return data
@@ -232,3 +238,118 @@ class OutputSchema:
                 )
         elif type_ == "array" and not isinstance(data, list):
             raise InvalidOutputError("Structured output is not a JSON array.")
+
+
+# ── Opt-in output validation: complete_with_usage(validate=...) ─────────────
+
+_MAX_VALIDATION_ERRORS = 20
+_JSON_TYPE_CHECKS = {
+    "object": lambda v: isinstance(v, dict),
+    "array": lambda v: isinstance(v, list),
+    "string": lambda v: isinstance(v, str),
+    "boolean": lambda v: isinstance(v, bool),
+    "integer": lambda v: isinstance(v, int) and not isinstance(v, bool),
+    "number": lambda v: isinstance(v, (int, float)) and not isinstance(v, bool),
+    "null": lambda v: v is None,
+}
+
+
+def _resolve_ref(root: dict, ref: str) -> Any:
+    node: Any = root
+    if not ref.startswith("#/"):
+        return {}
+    for part in ref[2:].split("/"):
+        node = (
+            node.get(part.replace("~1", "/").replace("~0", "~")) if isinstance(node, dict) else {}
+        )
+    return node if isinstance(node, dict) else {}
+
+
+def _schema_errors(
+    data: Any, schema: Any, root: dict, path: str, out: list[str], depth: int = 0
+) -> None:
+    """Append the paths where `data` violates `schema`. A subset of JSON
+    Schema: type, enum, const, required, properties, additionalProperties
+    (false), items, anyOf/oneOf and local $ref. Other keywords are ignored."""
+    if len(out) >= _MAX_VALIDATION_ERRORS or not isinstance(schema, dict) or depth > 64:
+        return
+    here = path or "<root>"
+    if "$ref" in schema:
+        _schema_errors(data, _resolve_ref(root, schema["$ref"]), root, path, out, depth + 1)
+        return
+    types = schema.get("type")
+    if types is not None:
+        names = types if isinstance(types, list) else [types]
+        if not any(_JSON_TYPE_CHECKS.get(n, lambda v: True)(data) for n in names):
+            out.append(here)
+            return
+    if "enum" in schema and data not in schema["enum"]:
+        out.append(here)
+    if "const" in schema and data != schema["const"]:
+        out.append(here)
+    for key in ("anyOf", "oneOf"):
+        branches = schema.get(key)
+        if isinstance(branches, list) and branches:
+            attempts = []
+            for branch in branches:
+                found: list[str] = []
+                _schema_errors(data, branch, root, path, found, depth + 1)
+                attempts.append(found)
+            if not any(not found for found in attempts):
+                out.append(here)
+    if isinstance(data, dict):
+        properties = schema.get("properties") or {}
+        for name in schema.get("required") or []:
+            if name not in data:
+                out.append(f"{path}.{name}" if path else name)
+        for name, value in data.items():
+            child = f"{path}.{name}" if path else name
+            if name in properties:
+                _schema_errors(value, properties[name], root, child, out, depth + 1)
+            elif schema.get("additionalProperties") is False:
+                out.append(child)
+    elif isinstance(data, list) and isinstance(schema.get("items"), dict):
+        for index, value in enumerate(data):
+            child = f"{path}.{index}" if path else str(index)
+            _schema_errors(value, schema["items"], root, child, out, depth + 1)
+
+
+@dataclass(frozen=True)
+class OutputValidator:
+    """A caller's `validate=` spec: a pydantic model class (full validation)
+    or a JSON Schema dict (the subset `_schema_errors` documents)."""
+
+    spec: dict | type[BaseModel]
+
+    @classmethod
+    def from_spec(cls, spec: dict | type[BaseModel]) -> "OutputValidator":
+        if (isinstance(spec, type) and issubclass(spec, BaseModel)) or isinstance(spec, dict):
+            return cls(spec)
+        raise TypeError("validate must be a pydantic BaseModel subclass or a JSON Schema dict")
+
+    def check(self, text: str) -> Any:
+        """The typed result (model instance, or parsed JSON for a dict
+        schema), else `InvalidOutputError` carrying the failing paths."""
+        schema = OutputSchema.from_spec(self.spec)
+        if schema.model is not None:
+            return schema.parse(text)
+        try:
+            data = _loads_lenient(text)
+        except json.JSONDecodeError as e:
+            raise InvalidOutputError(
+                f"Structured output is not valid JSON ({e.msg} at position {e.pos}).", ("<root>",)
+            ) from None
+        except RecursionError:
+            raise InvalidOutputError(
+                "Structured output is nested too deeply.", ("<root>",)
+            ) from None
+        paths: list[str] = []
+        _schema_errors(data, self.spec, self.spec, "", paths)
+        if paths:
+            unique = tuple(dict.fromkeys(paths))
+            raise InvalidOutputError(
+                f"Structured output failed validation ({len(unique)} error(s) at: "
+                f"{', '.join(unique)}).",
+                unique,
+            )
+        return data

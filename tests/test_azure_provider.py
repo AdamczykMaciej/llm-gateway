@@ -520,7 +520,8 @@ async def test_usage_reports_reasoning_and_cached_tokens_under_provider_azure(ca
     assert result.usage == Usage(
         input_tokens=1200, output_tokens=90, cache_read_input_tokens=1024, reasoning_tokens=60
     )
-    (span,) = exporter.get_finished_spans()
+    # The call span; its per-attempt child spans are checked in test_agentic_pass_2.
+    (span,) = (s for s in exporter.get_finished_spans() if s.name != "llm_gateway.attempt")
     assert span.attributes["gen_ai.system"] == "azure"
     assert span.attributes["gen_ai.request.model"] == DEPLOYMENT
     assert span.attributes["llm_gateway.usage.reasoning_tokens"] == 60

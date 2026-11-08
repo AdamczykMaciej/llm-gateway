@@ -20,6 +20,7 @@ BASE_URL = "https://api.mistral.ai/v1"
 _provider = OpenAICompatProvider(
     OpenAICompatSpec(
         provider="mistral",
+        parallel_tool_calls=True,
         api_key=lambda config: config.mistral_api_key,
         base_url=lambda config: BASE_URL,
         default_model=lambda config: config.mistral_model,

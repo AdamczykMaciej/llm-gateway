@@ -177,7 +177,8 @@ async def test_span_records_token_counts_but_not_prompt_text():
             system="secret system", prompt="secret prompt", config=_single("anthropic")
         )
 
-    (span,) = exporter.get_finished_spans()
+    # The call span; its per-attempt child spans are checked in test_agentic_pass_2.
+    (span,) = (s for s in exporter.get_finished_spans() if s.name != "llm_gateway.attempt")
     attrs = dict(span.attributes)
     assert attrs["gen_ai.system"] == "anthropic"
     assert attrs["gen_ai.usage.input_tokens"] == 2005

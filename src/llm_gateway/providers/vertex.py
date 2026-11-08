@@ -382,6 +382,7 @@ async def chat(
     tool_choice: object = None,
     sampling: dict | None = None,
     response_format: dict | None = None,
+    parallel_tool_calls: bool | None = None,
 ) -> ChatResult:
     auth_errors = _auth_error_types()
     try:
@@ -397,6 +398,7 @@ async def chat(
             response_format=response_format,
             thinking=config.anthropic_thinking,
             effort=config.anthropic_effort,
+            parallel_tool_calls=parallel_tool_calls,
         )
     except auth_errors as e:
         raise _auth_failure(e) from e
@@ -412,6 +414,7 @@ async def _stream_chat(
     tool_choice: object = None,
     sampling: dict | None = None,
     response_format: dict | None = None,
+    parallel_tool_calls: bool | None = None,
     cache_system: bool = False,
 ) -> AsyncIterator[StreamDelta]:
     deltas = anthropic_messages.messages_stream(
@@ -427,6 +430,7 @@ async def _stream_chat(
         thinking=config.anthropic_thinking,
         effort=config.anthropic_effort,
         cache_system=cache_system,
+        parallel_tool_calls=parallel_tool_calls,
     )
     auth_errors = _auth_error_types()
     async with aclosing(deltas):
@@ -447,6 +451,7 @@ async def stream_chat(
     tool_choice: object = None,
     sampling: dict | None = None,
     response_format: dict | None = None,
+    parallel_tool_calls: bool | None = None,
     cache_system: bool = False,
 ) -> AsyncIterator[StreamDelta]:
     """`_stream_chat()` behind `guard_empty_stream()`: a stream with no text
@@ -461,6 +466,7 @@ async def stream_chat(
         sampling=sampling,
         response_format=response_format,
         cache_system=cache_system,
+        parallel_tool_calls=parallel_tool_calls,
     )
     guarded = guard_empty_stream(deltas, provider=PROVIDER, model=model or default_model(config))
     async with aclosing(guarded):

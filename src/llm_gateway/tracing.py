@@ -8,9 +8,14 @@ SDK's default no-op behavior — so tracing never has to be "enabled" for the
 gateway to work.
 """
 
+import re
+import time
+import uuid
+
 from opentelemetry import trace
 
 from .config import GatewayConfig
+from .errors import ErrorKind, InvalidRequestError, classify
 from .pii import mask_pii
 
 _tracer: trace.Tracer | None = None
@@ -100,5 +105,59 @@ def set_chat_attributes(
             span.set_attribute("llm_gateway.finish_reason", finish_reason)
         if error_code:
             span.set_attribute("llm_gateway.error_code", error_code)
+    except Exception:  # noqa: BLE001 — tracing must never break the real request
+        pass
+
+
+_REQUEST_ID = re.compile(r"[A-Za-z0-9._:\-]{1,128}")
+
+
+def resolve_request_id(request_id: object = None) -> str:
+    """The caller's `request_id` if it is a short token (letters, digits and
+    `. _ : -`, at most 128 characters), else a fresh random one. A bad value
+    raises `InvalidRequestError` rather than being silently replaced, so a
+    caller's correlation id never quietly goes missing."""
+    if request_id is None:
+        return uuid.uuid4().hex
+    if not isinstance(request_id, str) or _REQUEST_ID.fullmatch(request_id) is None:
+        raise InvalidRequestError(
+            "request_id must be a string of 1-128 letters, digits or . _ : - characters."
+        )
+    return request_id
+
+
+def outcome_of(error: BaseException | None) -> str:
+    """ "ok", or the `ErrorKind` value of the failure (e.g. "timeout")."""
+    return "ok" if error is None else str(classify(error) or ErrorKind.UNKNOWN)
+
+
+def emit_attempt_span(
+    tracer: trace.Tracer,
+    *,
+    request_id: str,
+    attempt: int,
+    provider: str,
+    model: str,
+    started_ns: int,
+    error: BaseException | None = None,
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+) -> None:
+    """Record one provider attempt as a child span of the current call span.
+
+    Carries identifiers, the outcome class and counts only: never message
+    content, error text or keys. Never raises."""
+    try:
+        span = tracer.start_span("llm_gateway.attempt", start_time=started_ns)
+        span.set_attribute("llm_gateway.request_id", request_id)
+        span.set_attribute("llm_gateway.attempt", attempt)
+        span.set_attribute("gen_ai.system", provider)
+        span.set_attribute("gen_ai.request.model", model)
+        span.set_attribute("llm_gateway.outcome", outcome_of(error))
+        span.set_attribute("gen_ai.usage.input_tokens", input_tokens)
+        span.set_attribute("gen_ai.usage.output_tokens", output_tokens)
+        now = time.time_ns()
+        span.set_attribute("llm_gateway.latency_ms", round((now - started_ns) / 1e6, 1))
+        span.end(end_time=now)
     except Exception:  # noqa: BLE001 — tracing must never break the real request
         pass
