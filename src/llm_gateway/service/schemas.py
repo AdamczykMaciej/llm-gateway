@@ -38,11 +38,22 @@ class ChatMessage(BaseModel):
     def text_length(self) -> int:
         """Length used for the max_prompt_chars guardrail — text only,
         images are charged separately (see image_bytes)."""
+        total = 0
         if isinstance(self.content, str):
-            return len(self.content)
-        if isinstance(self.content, list):
-            return sum(len(p.get("text", "")) for p in self.content if p.get("type") == "text")
-        return 0
+            total = len(self.content)
+        elif isinstance(self.content, list):
+            total = sum(
+                len(str(p.get("text", ""))) for p in self.content if p.get("type") == "text"
+            )
+        # Tool-call arguments are caller text sent upstream too; without this
+        # they bypass the max_prompt_chars ceiling entirely.
+        for call in self.tool_calls or []:
+            function = call.get("function") if isinstance(call, dict) else None
+            if isinstance(function, dict):
+                total += len(str(function.get("arguments", ""))) + len(
+                    str(function.get("name", ""))
+                )
+        return total
 
     def image_bytes(self) -> int:
         """Estimated decoded size of any `data:` URI images, for the
@@ -99,7 +110,7 @@ class PolicyRequest(BaseModel):
 class ChatCompletionRequest(BaseModel):
     model: str = "auto"
     messages: list[ChatMessage] = Field(min_length=1)
-    max_tokens: int = 2000
+    max_tokens: int = Field(default=2000, ge=1)
     tools: list[dict] | None = None
     tool_choice: str | dict | None = None
     response_format: dict | None = None
@@ -120,6 +131,11 @@ class ChatCompletionRequest(BaseModel):
     seed: int | None = None
     presence_penalty: float | None = None
     frequency_penalty: float | None = None
+
+    def tools_length(self) -> int:
+        """Serialized size of the tool definitions, counted toward the
+        max_prompt_chars ceiling (they are sent upstream with every call)."""
+        return len(json.dumps(self.tools)) if self.tools else 0
 
     def as_message_dicts(self) -> list[dict]:
         return [m.to_dict() for m in self.messages]

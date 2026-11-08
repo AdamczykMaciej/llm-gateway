@@ -32,7 +32,12 @@ from opentelemetry.trace import StatusCode
 
 from . import breaker
 from .config import GatewayConfig
-from .errors import AllProvidersExhaustedError, GatewayNotConfiguredError, deadline_exceeded
+from .errors import (
+    AllProvidersExhaustedError,
+    GatewayNotConfiguredError,
+    deadline_exceeded,
+    redact_secrets,
+)
 from .policy import ProviderPolicy
 from .providers import CONFIGURED, DEFAULT_MODEL, STREAM_CALLS
 from .providers.base import StreamDelta
@@ -224,10 +229,12 @@ async def stream_chat(
 
         if deadline.expired:
             span.set_status(StatusCode.ERROR, "call deadline exceeded")
-            raise deadline_exceeded(config.call_deadline_seconds, last_error) from last_error
+            raise deadline_exceeded(
+                config.call_deadline_seconds, last_error, config
+            ) from last_error
         span.set_status(
             StatusCode.ERROR,
-            str(last_error) if last_error else "No provider available",
+            redact_secrets(str(last_error), config) if last_error else "No provider available",
         )
         if not attempted_any:
             if plan.denied:
@@ -244,5 +251,6 @@ async def stream_chat(
                 "matching provider_order."
             )
         raise AllProvidersExhaustedError(
-            f"All configured providers failed. Last error: {last_error}{plan.failure_note()}"
+            "All configured providers failed. Last error: "
+            f"{redact_secrets(str(last_error), config)}{plan.failure_note()}"
         ) from last_error

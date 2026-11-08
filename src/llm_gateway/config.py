@@ -94,24 +94,24 @@ class GatewayConfig(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     # ── Provider credentials ─────────────────────────────────────────────
-    anthropic_api_key: str = ""
-    groq_api_key: str = ""
-    openai_api_key: str = ""
+    anthropic_api_key: str = Field(default="", repr=False)
+    groq_api_key: str = Field(default="", repr=False)
+    openai_api_key: str = Field(default="", repr=False)
     # Only used when azure_auth == "api_key".
-    azure_api_key: str = ""
+    azure_api_key: str = Field(default="", repr=False)
     # OpenAI-compatible hosts (providers/openai_compatible.py).
-    mistral_api_key: str = ""
-    openrouter_api_key: str = ""
+    mistral_api_key: str = Field(default="", repr=False)
+    openrouter_api_key: str = Field(default="", repr=False)
     # The generic escape hatch: any host speaking the Chat Completions API.
     # Registered as provider id "openai_compat" once base_url and key are set;
     # a local server that needs no key takes any non-empty value.
-    openai_compat_api_key: str = ""
+    openai_compat_api_key: str = Field(default="", repr=False)
     openai_compat_base_url: str = ""
     # Hugging Face (providers/huggingface.py): a token for the Inference
     # Providers router or for a dedicated Inference Endpoint. Read from
     # HUGGINGFACE_API_KEY or HF_TOKEN.
     huggingface_api_key: str = Field(
-        default="", validation_alias=AliasChoices("huggingface_api_key", "hf_token")
+        default="", repr=False, validation_alias=AliasChoices("huggingface_api_key", "hf_token")
     )
 
     # ── Provider models ──────────────────────────────────────────────────
@@ -285,7 +285,7 @@ class GatewayConfig(BaseSettings):
     # ── HTTP service (llm_gateway.service) ──────────────────────────────
     # Comma-separated bearer keys accepted by the HTTP service. Irrelevant
     # when only the library is used in-process.
-    gateway_api_keys: str = ""
+    gateway_api_keys: str = Field(default="", repr=False)
 
     # Basic abuse guardrails for the HTTP service. Per-key, in-process (not
     # shared across Cloud Run replicas — see service/rate_limit.py). 0/negative
@@ -499,6 +499,23 @@ class GatewayConfig(BaseSettings):
     @property
     def openrouter_provider_allow_list(self) -> tuple[str, ...]:
         return tuple(p.strip() for p in self.openrouter_provider_allow.split(",") if p.strip())
+
+    @property
+    def secret_values(self) -> tuple[str, ...]:
+        """Every configured credential, for scrubbing error text (see
+        errors.redact_secrets)."""
+        values = [
+            self.anthropic_api_key,
+            self.groq_api_key,
+            self.openai_api_key,
+            self.azure_api_key,
+            self.mistral_api_key,
+            self.openrouter_api_key,
+            self.openai_compat_api_key,
+            self.huggingface_api_key,
+            *self.gateway_api_keys_list,
+        ]
+        return tuple(v for v in values if len(v) >= 4)
 
     @property
     def gateway_api_keys_list(self) -> list[str]:

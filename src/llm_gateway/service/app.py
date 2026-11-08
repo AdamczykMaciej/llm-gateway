@@ -136,7 +136,7 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
                 detail=f"max_tokens {body.max_tokens} exceeds the configured ceiling "
                 f"of {config.max_tokens_ceiling}",
             )
-        total_chars = sum(m.text_length() for m in body.messages)
+        total_chars = sum(m.text_length() for m in body.messages) + body.tools_length()
         if config.max_prompt_chars > 0 and total_chars > config.max_prompt_chars:
             raise HTTPException(
                 status_code=400,
