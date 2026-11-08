@@ -70,6 +70,7 @@ from .base import (
     remember_client,
     sdk_client_cache_key,
     sdk_client_options,
+    sdk_http_client,
     stream_request_options,
 )
 
@@ -346,7 +347,7 @@ async def _client(config: GatewayConfig) -> Any:
         credentials=credentials,
         # Explicit, so ANTHROPIC_VERTEX_BASE_URL in the environment can't redirect it.
         base_url=base_url(config.vertex_location),
-        http_client=http_client_class(verify=False) if not config.ssl_verify else None,
+        http_client=sdk_http_client(http_client_class, config),
         **sdk_client_options(config),
     )
     existing = _clients.get(key)

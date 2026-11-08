@@ -421,7 +421,7 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
                     logger.warning(
                         "llm_gateway service: stream failed mid-response: %s: %s",
                         type(exc).__name__,
-                        redact_secrets(str(exc), config),
+                        redact_secrets(str(exc), config, max_chars=1000),
                     )
                     yield sse_error_event("The upstream provider failed mid-response.")
                 finally:

@@ -19,6 +19,7 @@ from .base import (
     remember_client,
     sdk_client_cache_key,
     sdk_client_options,
+    sdk_http_client,
     sdk_messages,
     stream_request_options,
 )
@@ -32,7 +33,7 @@ def _client(config: GatewayConfig) -> AsyncOpenAI:
     if client is None:
         # openai>=3.0 is httpx2-based; plain httpx clients are only a
         # temporary legacy escape hatch there, so build an httpx2 one.
-        http_client = DefaultAsyncHttpx2Client(verify=False) if not config.ssl_verify else None
+        http_client = sdk_http_client(DefaultAsyncHttpx2Client, config)
         client = AsyncOpenAI(
             api_key=config.groq_api_key,
             base_url="https://api.groq.com/openai/v1",

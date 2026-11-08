@@ -50,6 +50,7 @@ from .base import (
     remember_client,
     sdk_client_cache_key,
     sdk_client_options,
+    sdk_http_client,
     sdk_messages,
     stream_request_options,
 )
@@ -95,10 +96,10 @@ def reasoning_kwargs(config: GatewayConfig) -> dict:
     return {"reasoning_effort": effort} if effort else {}
 
 
-def _http_client(config: GatewayConfig) -> httpx2.AsyncClient | None:
+def _http_client(config: GatewayConfig) -> httpx2.AsyncClient:
     # openai>=3.0 is httpx2-based; plain httpx clients are only a temporary
     # legacy escape hatch there, so build an httpx2 one.
-    return DefaultAsyncHttpx2Client(verify=False) if not config.ssl_verify else None
+    return sdk_http_client(DefaultAsyncHttpx2Client, config)
 
 
 def _missing_identity(error: ImportError) -> ProviderAuthError:

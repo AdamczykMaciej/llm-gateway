@@ -73,6 +73,17 @@ def _sdk_timeout(seconds: float) -> Timeout | None:
     return Timeout(seconds, connect=min(CONNECT_TIMEOUT_SECONDS, seconds))
 
 
+def sdk_http_client(factory: Any, config: GatewayConfig) -> Any:
+    """The SDK's own httpx2 client factory, with redirects off. The SDKs
+    follow redirects by default, and httpx only strips `Authorization` across
+    origins, so a hostile or compromised endpoint could bounce the request
+    (with `x-api-key` / `api-key` headers) to another host. Honors ssl_verify."""
+    kwargs: dict = {"follow_redirects": False}
+    if not config.ssl_verify:
+        kwargs["verify"] = False
+    return factory(**kwargs)
+
+
 def sdk_client_options(config: GatewayConfig) -> dict:
     """Constructor kwargs shared by every provider's SDK client: the
     per-attempt request timeout and the SDK's own retry count (see

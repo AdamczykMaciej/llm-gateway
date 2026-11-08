@@ -12,6 +12,8 @@ import asyncio
 import re
 import time
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 
 from opentelemetry import trace
 
@@ -27,6 +29,23 @@ def get_tracer() -> trace.Tracer:
     if _tracer is None:
         _tracer = trace.get_tracer("llm_gateway")
     return _tracer
+
+
+@contextmanager
+def call_span(tracer: trace.Tracer, name: str) -> Iterator[trace.Span]:
+    """The current span for one gateway call. OpenTelemetry's default would
+    record an escaping exception on the span (message, stack trace and the
+    chained provider error, which can echo request content) and use its text
+    as the status description. Here the status carries the exception type
+    only and no exception event is recorded."""
+    with tracer.start_as_current_span(
+        name, record_exception=False, set_status_on_exception=False
+    ) as span:
+        try:
+            yield span
+        except Exception as exc:
+            span.set_status(trace.StatusCode.ERROR, type(exc).__name__)
+            raise
 
 
 def set_call_attributes(
