@@ -33,7 +33,7 @@ def require_api_key(config: GatewayConfig):
             raise HTTPException(status_code=401, detail="Missing bearer API key")
         supplied = authorization.removeprefix("Bearer ")
         for key in allowed:
-            if hmac.compare_digest(key, supplied):
+            if hmac.compare_digest(key.encode(), supplied.encode("utf-8", "replace")):
                 return supplied
         raise HTTPException(status_code=401, detail="Invalid API key")
 

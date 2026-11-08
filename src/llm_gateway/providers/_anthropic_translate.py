@@ -50,6 +50,16 @@ def _translate_content(content: str | list[dict] | None) -> str | list[dict]:
     return blocks
 
 
+def _parse_tool_arguments(arguments: str | None) -> Any:
+    """Parse a tool call's JSON arguments from the caller's message history.
+    Hostile input (invalid JSON, or nesting deep enough to blow the parser's
+    recursion limit) becomes a plain ValueError, never a RecursionError."""
+    try:
+        return json.loads(arguments or "{}")
+    except (ValueError, RecursionError):
+        raise ValueError("tool call arguments are not valid JSON") from None
+
+
 def to_anthropic_messages(messages: list[dict]) -> tuple[str, list[dict]]:
     """Return (system_prompt, anthropic_messages)."""
     system_parts = [m["content"] for m in messages if m["role"] == "system" and m.get("content")]
@@ -96,7 +106,7 @@ def to_anthropic_messages(messages: list[dict]) -> tuple[str, list[dict]]:
                         "type": "tool_use",
                         "id": tc["id"],
                         "name": tc["function"]["name"],
-                        "input": json.loads(tc["function"]["arguments"] or "{}"),
+                        "input": _parse_tool_arguments(tc["function"]["arguments"]),
                     }
                 )
             anthropic_messages.append({"role": "assistant", "content": content})

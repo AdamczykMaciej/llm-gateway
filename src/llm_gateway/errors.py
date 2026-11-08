@@ -67,11 +67,16 @@ When *no* provider serves the call at all, `complete()`/`chat()`/
   providers are expected to recover within `BREAKER_COOLDOWN_SECONDS`.
 """
 
+import re
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import TYPE_CHECKING
 
 import anthropic
 import openai
+
+if TYPE_CHECKING:
+    from .config import GatewayConfig
 
 
 class LLMError(Exception):
@@ -379,6 +384,34 @@ def is_retryable(exc: BaseException) -> bool:
     return policy_for(exc).retry
 
 
-def deadline_exceeded(seconds: float, last_error: Exception | None) -> LLMDeadlineExceeded:
-    detail = f" Last error: {last_error}" if last_error else ""
+_SECRET_PATTERNS = (
+    re.compile(r"(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{4,}"),
+    re.compile(
+        r"(?i)\b(authorization|x-api-key|api[-_ ]?key|apikey|token|secret|password)"
+        r"(\"?\s*[:=]\s*\"?)(?:bearer\s+)?[^\s\",;&'}]{4,}"
+    ),
+    re.compile(r"\b(?:sk|gsk|hf|xai|pk|rk)[-_][A-Za-z0-9_-]{8,}"),
+    re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]*"),
+)
+
+
+def redact_secrets(text: str, config: "GatewayConfig | None" = None) -> str:
+    """Scrub credentials from provider error text before it goes into an
+    exception message, a span status or an HTTP response: configured key
+    values verbatim, plus bearer tokens, `api-key: ...` pairs, and the common
+    provider key shapes (providers sometimes echo the rejected key)."""
+    if config is not None:
+        for value in sorted(config.secret_values, key=len, reverse=True):
+            text = text.replace(value, "[REDACTED]")
+    text = _SECRET_PATTERNS[0].sub(r"\1 [REDACTED]", text)
+    text = _SECRET_PATTERNS[1].sub(r"\1\2[REDACTED]", text)
+    for pattern in _SECRET_PATTERNS[2:]:
+        text = pattern.sub("[REDACTED]", text)
+    return text
+
+
+def deadline_exceeded(
+    seconds: float, last_error: Exception | None, config: "GatewayConfig | None" = None
+) -> LLMDeadlineExceeded:
+    detail = f" Last error: {redact_secrets(str(last_error), config)}" if last_error else ""
     return LLMDeadlineExceeded(f"Call deadline of {seconds:g}s exceeded.{detail}")

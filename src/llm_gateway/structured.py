@@ -173,6 +173,9 @@ class OutputSchema:
             raise InvalidOutputError(
                 f"Structured output is not valid JSON ({e.msg} at position {e.pos})."
             ) from None
+        except RecursionError:
+            # Hostile model output nested past the parser's recursion limit.
+            raise InvalidOutputError("Structured output is nested too deeply.") from None
         if self.model is not None:
             try:
                 return self.model.model_validate(data)
