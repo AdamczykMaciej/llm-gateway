@@ -446,7 +446,7 @@ async def test_every_stream_attempt_gets_a_span_even_when_empty_failed_or_abando
     assert len(spans) == 3
     assert {s.attributes["llm_gateway.request_id"] for s in spans} == {"r-9"}
     outcomes = [s.attributes["llm_gateway.outcome"] for s in spans]
-    assert outcomes[0] == "ok" and outcomes[1] != "ok" and outcomes[2] == "ok"
+    assert outcomes[0] == "ok" and outcomes[1] != "ok" and outcomes[2] == "cancelled"
 
 
 # ── per-model breaker ────────────────────────────────────────────────────────

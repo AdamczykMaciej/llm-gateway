@@ -4,6 +4,7 @@ per-provider circuit breaker and OTel tracing.
 This is the engine — `llm_gateway.service` is a thin HTTP wrapper around it.
 """
 
+import asyncio
 import dataclasses
 import logging
 import time
@@ -380,6 +381,21 @@ async def _complete_once(
                     attempt_timeout_seconds=config.request_timeout_seconds,
                     deadline=deadline,
                 )
+            except asyncio.CancelledError as e:
+                # The caller gave up: not a provider failure (no breaker count,
+                # no failover). Hand back a half-open probe lease and leave a
+                # terminal attempt span.
+                breaker.release_probe(provider, resolved_model)
+                emit_attempt_span(
+                    tracer,
+                    request_id=request_id,
+                    attempt=attempt_no,
+                    provider=provider,
+                    model=resolved_model,
+                    started_ns=attempt_started_ns,
+                    error=e,
+                )
+                raise
             except Exception as e:  # noqa: BLE001 — any provider failure (after its retries) tries the next
                 record_provider_failure(
                     provider, e, config=config, deadline=deadline, model=resolved_model
