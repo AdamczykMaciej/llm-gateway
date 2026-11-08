@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.16.5
+
+Correctness pass 3: provider adapters' less-travelled paths.
+
+- Streaming tool calls: hosts that number every parallel call 0 (Gemini's OpenAI endpoint) or omit
+  the index no longer have their calls glued together; a new call gets its own `index`.
+  Well-numbered streams are unchanged.
+- Error bodies that carry the upstream HTTP status as a numeric `code` (OpenRouter, in-stream) are
+  classified by it (502 transient, 429 rate limited, ...) instead of `UNKNOWN`.
+- Model-not-found spelled as a 400 (Mistral `invalid_model`, OpenRouter "is not a valid model ID")
+  now feeds the per-model breaker like a 404 does.
+- Claude on Vertex AI raises `InvalidRequestError` for image URLs (base64 only) before any call.
+- `response_format={"type": "json_object"}` on anthropic and vertex was silently dropped; it now
+  adds a JSON-only system instruction.
+
 ## 0.16.4
 
 Reliability pass 3: the HTTP service's SSE path. Defaults are generous; each knob below disables

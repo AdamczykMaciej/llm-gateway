@@ -200,6 +200,21 @@ def to_anthropic_sampling(sampling: dict | None) -> dict:
 STRUCTURED_OUTPUT_TOOL_NAME = "__llm_gateway_structured_output"
 
 
+_JSON_OBJECT_INSTRUCTION = (
+    "Respond with a single valid JSON object and nothing else: no prose, no code fences."
+)
+
+
+def json_object_messages(messages: list[dict], response_format: dict | None) -> list[dict]:
+    """Anthropic has no JSON mode, so `response_format={"type": "json_object"}`
+    would otherwise be dropped silently and prose could come back. Append a
+    system instruction instead (last, so a cached system prefix is unchanged).
+    Any other format returns `messages` itself."""
+    if not response_format or response_format.get("type") != "json_object":
+        return messages
+    return [*messages, {"role": "system", "content": _JSON_OBJECT_INSTRUCTION}]
+
+
 def to_anthropic_structured_output_tool(response_format: dict | None) -> dict | None:
     if not response_format or response_format.get("type") != "json_schema":
         return None

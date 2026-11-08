@@ -28,6 +28,7 @@ from ._anthropic_caching import system_param, system_param_from_messages
 from ._anthropic_translate import (
     STRUCTURED_OUTPUT_TOOL_NAME,
     from_anthropic_response,
+    json_object_messages,
     text_blocks,
     thinking_tokens,
     to_anthropic_messages,
@@ -397,6 +398,7 @@ async def messages_chat(
     effort: str = "",
     parallel_tool_calls: bool | None = None,
 ) -> ChatResult:
+    messages = json_object_messages(messages, response_format)
     system, anthropic_messages = to_anthropic_messages(messages)
     tool_kwargs, emulating_structured_output = _resolve_tool_kwargs(
         tools, tool_choice, response_format, messages, parallel_tool_calls
@@ -510,6 +512,7 @@ async def messages_stream(
     `cache_control` on the first system message (the static prefix); see
     `system_param_from_messages()`.
     """
+    messages = json_object_messages(messages, response_format)
     system, anthropic_messages = to_anthropic_messages(messages)
     if cache_system:
         system = system_param_from_messages(messages, model, cache_system=True)

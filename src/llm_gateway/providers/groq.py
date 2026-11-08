@@ -9,6 +9,7 @@ from .base import (
     ChatResult,
     ProviderResult,
     StreamDelta,
+    ToolIndexNormalizer,
     close_clients,
     guard_empty_stream,
     openai_sampling_kwargs,
@@ -181,8 +182,9 @@ async def _stream_chat(
         **kwargs,
         **stream_request_options(config),
     )
+    tool_indexes = ToolIndexNormalizer()
     async for chunk in stream:
-        yield parse_openai_style_chunk(chunk, model)
+        yield tool_indexes.apply(parse_openai_style_chunk(chunk, model))
 
 
 async def stream_chat(

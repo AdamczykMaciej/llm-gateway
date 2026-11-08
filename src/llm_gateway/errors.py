@@ -312,10 +312,17 @@ def _classify_body(body: object) -> ErrorKind:
     error_type = nested.get("type") if isinstance(nested, dict) else body.get("type")
     if error_type:
         return _BODY_ERROR_TYPES.get(error_type, ErrorKind.UNKNOWN)
-    status = nested.get("status") if isinstance(nested, dict) else None
-    if not isinstance(status, str):
-        return ErrorKind.UNKNOWN
-    return _GOOGLE_RPC_STATUSES.get(status, ErrorKind.UNKNOWN)
+    source = nested if isinstance(nested, dict) else body
+    status = source.get("status")
+    if isinstance(status, str):
+        return _GOOGLE_RPC_STATUSES.get(status, ErrorKind.UNKNOWN)
+    # OpenRouter (and some other brokers) put the upstream HTTP status in the
+    # body's numeric `code`: `{"error": {"code": 502, "message": "Provider
+    # returned error", "metadata": {"provider_name": ...}}}`.
+    code = source.get("code")
+    if isinstance(code, int) and not isinstance(code, bool) and 400 <= code <= 599:
+        return _classify_status(code)
+    return ErrorKind.UNKNOWN
 
 
 # Error codes sent with an HTTP 400 that mean "the model's output failed the
@@ -420,7 +427,12 @@ def classify(exc: BaseException) -> ErrorKind:
     return ErrorKind.UNKNOWN
 
 
-_MODEL_MISSING_CODES = frozenset({"model_not_found", "deployment_not_found", "deploymentnotfound"})
+_MODEL_MISSING_CODES = frozenset(
+    {"model_not_found", "deployment_not_found", "deploymentnotfound", "invalid_model"}
+)
+# Wording of a bad model id on hosts that answer 400 instead of 404 (Mistral's
+# `invalid_model`, OpenRouter's "<id> is not a valid model ID").
+_MODEL_MISSING_PHRASES = ("not a valid model", "invalid model:")
 
 
 def is_model_scoped(exc: BaseException) -> str | None:
@@ -444,7 +456,9 @@ def is_model_scoped(exc: BaseException) -> str | None:
     source = nested if isinstance(nested, dict) else body if isinstance(body, dict) else {}
     if str(source.get("type") or "") == "overloaded_error":
         return "overloaded"
-    if code in _MODEL_MISSING_CODES:
+    if code in _MODEL_MISSING_CODES or str(source.get("type") or "") == "invalid_model":
+        return "missing"
+    if status == 400 and any(p in _error_text(exc) for p in _MODEL_MISSING_PHRASES):
         return "missing"
     if status == 404 and "model" in _error_text(exc):
         return "missing"

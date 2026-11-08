@@ -57,7 +57,7 @@ from ..config import (
     read_vertex_credentials_file,
     service_account_impersonation_url,
 )
-from ..errors import ProviderAuthError
+from ..errors import InvalidRequestError, ProviderAuthError
 from ..residency import vertex_location_residency
 from ..structured import OutputSchema
 from . import anthropic as anthropic_messages
@@ -93,6 +93,26 @@ def base_url(location: str) -> str:
     if location in ("us", "eu"):
         return f"https://aiplatform.{location}.rep.googleapis.com/v1"
     return f"https://{location}-aiplatform.googleapis.com/v1"
+
+
+def check_images_are_base64(messages: list[dict]) -> None:
+    """Vertex AI accepts only base64 image sources for Claude, not URLs. Raise
+    `InvalidRequestError` here, before any network call, instead of letting
+    Vertex answer a 400 (names the message index only)."""
+    for index, message in enumerate(messages):
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if not isinstance(part, dict) or part.get("type") != "image_url":
+                continue
+            image = part.get("image_url")
+            url = image.get("url") if isinstance(image, dict) else image
+            if isinstance(url, str) and not url.startswith("data:"):
+                raise InvalidRequestError(
+                    f"messages[{index}]: Claude on Vertex AI takes base64 images only; "
+                    "pass a data: URI instead of an image URL."
+                )
 
 
 def configured(config: GatewayConfig) -> bool:
@@ -387,6 +407,7 @@ async def chat(
     response_format: dict | None = None,
     parallel_tool_calls: bool | None = None,
 ) -> ChatResult:
+    check_images_are_base64(messages)
     auth_errors = _auth_error_types()
     try:
         return await anthropic_messages.messages_chat(
@@ -420,6 +441,7 @@ async def _stream_chat(
     parallel_tool_calls: bool | None = None,
     cache_system: bool = False,
 ) -> AsyncGenerator[StreamDelta]:
+    check_images_are_base64(messages)
     deltas = anthropic_messages.messages_stream(
         lambda: _client(config),
         model=model or default_model(config),
