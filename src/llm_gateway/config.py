@@ -3,8 +3,9 @@
 import json
 import re
 from typing import Literal
+from urllib.parse import urlsplit
 
-from pydantic import AliasChoices, Field, field_validator, model_validator
+from pydantic import AliasChoices, Field, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .policy import (
@@ -84,6 +85,27 @@ def azure_app_id_uri_scope(app_id_uri: str) -> str:
     return f"{app_id_uri.rstrip('/')}/.default"
 
 
+def _check_http_url(value: str, name: str) -> None:
+    """An http(s) URL without embedded credentials. The message never repeats
+    the value: it may carry a password."""
+    if not value.startswith(("http://", "https://")):
+        raise ValueError(f"{name} must start with http:// or https://")
+    try:
+        parts = urlsplit(value)
+        has_userinfo = (
+            parts.username is not None or parts.password is not None or "@" in (parts.netloc)
+        )
+    except ValueError:
+        raise ValueError(f"{name} is not a valid URL") from None
+    if has_userinfo:
+        raise ValueError(
+            f"{name} must not contain credentials (user:password@); "
+            "put the key in the matching *_api_key setting"
+        )
+    if not parts.hostname:
+        raise ValueError(f"{name} has no host")
+
+
 class GatewayConfig(BaseSettings):
     """All gateway behavior is driven by this settings object.
 
@@ -92,7 +114,11 @@ class GatewayConfig(BaseSettings):
     implicitly outside this class.
     """
 
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    # hide_input_in_errors: a ValidationError must not repeat the rejected
+    # value (a URL with a password, a malformed key) in its message.
+    model_config = SettingsConfigDict(
+        env_file=".env", env_file_encoding="utf-8", extra="ignore", hide_input_in_errors=True
+    )
 
     # ── Provider credentials ─────────────────────────────────────────────
     anthropic_api_key: str = Field(default="", repr=False)
@@ -301,6 +327,11 @@ class GatewayConfig(BaseSettings):
     # covers a real photo/screenshot while blocking abuse; both Anthropic's
     # (5 MB/image) and OpenAI's own per-image limits are well under it.
     max_image_bytes: int = 10_000_000
+    # Ceiling on the raw HTTP request body, enforced before it is parsed (a
+    # caller can no longer make the service buffer an arbitrarily large JSON
+    # document that the later max_prompt_chars check would only reject after
+    # the fact). Default covers max_image_bytes as base64 plus text. 0 disables.
+    max_request_bytes: int = 16_777_216
 
     # ── Provider policy and cost controls (policy.py, routing.py) ────────
     # Operator-asserted compliance facts per provider id, as JSON:
@@ -541,20 +572,19 @@ class GatewayConfig(BaseSettings):
             sort=self.policy_sort,
         )
 
-    @field_validator("openai_compat_base_url")
+    @field_validator("openai_compat_base_url", "azure_endpoint")
     @classmethod
-    def _check_openai_compat_base_url(cls, value: str) -> str:
+    def _check_optional_url(cls, value: str, info: ValidationInfo) -> str:
         value = value.strip()
-        if value and not value.startswith(("http://", "https://")):
-            raise ValueError("openai_compat_base_url must start with http:// or https://")
-        return value.rstrip("/")
+        if value:
+            _check_http_url(value, info.field_name or "url")
+        return value.rstrip("/") if info.field_name == "openai_compat_base_url" else value
 
     @field_validator("huggingface_base_url")
     @classmethod
     def _check_huggingface_base_url(cls, value: str) -> str:
         value = value.strip()
-        if not value.startswith(("http://", "https://")):
-            raise ValueError("huggingface_base_url must start with http:// or https://")
+        _check_http_url(value, "huggingface_base_url")
         return value.rstrip("/")
 
     @field_validator("provider_metadata")

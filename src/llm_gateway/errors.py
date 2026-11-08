@@ -423,6 +423,10 @@ _SECRET_PATTERNS = (
 )
 
 
+# scheme://user:password@host — credentials embedded in a URL.
+_URL_CREDENTIALS = re.compile(r"(?i)\b([a-z][a-z0-9+.-]{1,15}://)[^\s/@:]{1,256}:[^\s/@]{1,256}@")
+
+
 def redact_secrets(text: str, config: "GatewayConfig | None" = None) -> str:
     """Scrub credentials from provider error text before it goes into an
     exception message, a span status or an HTTP response: configured key
@@ -431,6 +435,7 @@ def redact_secrets(text: str, config: "GatewayConfig | None" = None) -> str:
     if config is not None:
         for value in sorted(config.secret_values, key=len, reverse=True):
             text = text.replace(value, "[REDACTED]")
+    text = _URL_CREDENTIALS.sub(r"\1[REDACTED]@", text)
     text = _SECRET_PATTERNS[0].sub(r"\1 [REDACTED]", text)
     text = _SECRET_PATTERNS[1].sub(r"\1\2[REDACTED]", text)
     for pattern in _SECRET_PATTERNS[2:]:

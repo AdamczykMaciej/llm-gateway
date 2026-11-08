@@ -238,13 +238,18 @@ def redact_text(text: str, redactor: Redactor | None, vault: Vault) -> str:
     return "".join(out)
 
 
-def _map_strings(value: Any, fn: Callable[[str], str]) -> Any:
+_MAX_JSON_DEPTH = 200
+
+
+def _map_strings(value: Any, fn: Callable[[str], str], _depth: int = 0) -> Any:
     if isinstance(value, str):
         return fn(value)
+    if isinstance(value, (list, dict)) and _depth > _MAX_JSON_DEPTH:
+        raise ValueError("value is nested too deeply to apply the privacy policy")
     if isinstance(value, list):
-        return [_map_strings(v, fn) for v in value]
+        return [_map_strings(v, fn, _depth + 1) for v in value]
     if isinstance(value, dict):
-        return {k: _map_strings(v, fn) for k, v in value.items()}
+        return {k: _map_strings(v, fn, _depth + 1) for k, v in value.items()}
     return value
 
 
@@ -253,9 +258,10 @@ def _map_json_string(raw: str, fn: Callable[[str], str]) -> str:
     JSON is treated as plain text."""
     try:
         data = json.loads(raw)
-    except (ValueError, TypeError):
+        return json.dumps(_map_strings(data, fn), ensure_ascii=False)
+    except (ValueError, TypeError, RecursionError):
+        # Not JSON, or nested past what is safe to walk: redact the raw text.
         return fn(raw)
-    return json.dumps(_map_strings(data, fn), ensure_ascii=False)
 
 
 def _map_message(msg: dict, fn: Callable[[str], str]) -> dict:

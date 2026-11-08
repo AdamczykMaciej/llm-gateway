@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "llm-gateway"
-version = "0.15.1"
+version = "0.15.2"
 description = "Self-hosted multi-provider LLM gateway (Anthropic, Claude and Gemini on Google Vertex AI, Azure AI Foundry, Hugging Face, Groq, OpenAI, Mistral, OpenRouter, and any OpenAI-compatible host): fallback chain, circuit breaker, PII-masked tracing — as a library or an OpenAI-compatible HTTP service."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -20,7 +20,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-service = ["fastapi>=0.110,<1.0", "uvicorn[standard]>=0.27,<1.0"]
+service = ["fastapi>=0.110,<1.0", "starlette>=0.49.1", "uvicorn[standard]>=0.27,<1.0"]
 # Microsoft Entra ID auth for the azure provider (azure_auth="entra"). The
 # async credentials need aiohttp as their HTTP transport.
 azure = ["azure-identity>=1.25.3", "aiohttp>=3.14"]
@@ -39,6 +39,7 @@ dev = [
   # SDKs themselves use httpx2 since anthropic 1.0 / openai 3.0.
   "httpx>=0.27,<1.0",
   "fastapi>=0.110,<1.0",
+  "starlette>=0.49.1",
   "uvicorn[standard]>=0.27,<1.0",
 ]
 

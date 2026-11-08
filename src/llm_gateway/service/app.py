@@ -10,6 +10,7 @@ from contextlib import aclosing, asynccontextmanager
 from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from .. import breaker
@@ -24,6 +25,7 @@ from ..router import LLMError
 from ..streaming import stream_chat as stream_engine
 from . import usage as usage_store
 from .auth import require_api_key
+from .body_limit import BodyLimitMiddleware
 from .rate_limit import enforce_rate_limit
 from .schemas import (
     SSE_DONE,
@@ -58,7 +60,15 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
         await gemini_provider.aclose()
         await vertex_provider.aclose()
 
-    app = FastAPI(title="llm-gateway", version="0.9.0", lifespan=lifespan)
+    # With keys configured, the interactive docs and the schema are not public.
+    docs_kwargs: dict[str, Any] = (
+        dict(docs_url=None, redoc_url=None, openapi_url=None)
+        if config.gateway_api_keys_list
+        else {}
+    )
+    app = FastAPI(title="llm-gateway", version="0.9.0", lifespan=lifespan, **docs_kwargs)
+    if config.max_request_bytes > 0:
+        app.add_middleware(BodyLimitMiddleware, max_bytes=config.max_request_bytes)
     rate_limit_dep = enforce_rate_limit(config)
     auth_dep = require_api_key(config)
 
@@ -69,6 +79,25 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
             status_code=exc.status_code,
             content={"error": {"message": exc.detail, "type": error_type, "code": exc.status_code}},
             headers=exc.headers,
+        )
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
+        # FastAPI's default body echoes each rejected `input` back, i.e. the
+        # caller's prompt text; report only where and what, never the value.
+        problems = "; ".join(
+            f"{'.'.join(str(p) for p in err.get('loc', ()))}: {err.get('msg', 'invalid')}"
+            for err in exc.errors()[:20]
+        )
+        return JSONResponse(
+            status_code=422,
+            content={
+                "error": {
+                    "message": f"Invalid request: {problems}",
+                    "type": "invalid_request_error",
+                    "code": 422,
+                }
+            },
         )
 
     @app.get("/health")
