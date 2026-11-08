@@ -243,6 +243,22 @@ class StreamDelta:
     provider: str | None = None
 
 
+def _tool_arguments(raw: str | None) -> dict:
+    """A tool call's arguments from the provider's JSON string. Truncated or
+    malformed JSON (or anything but an object) is `InvalidOutputError`, so the
+    call fails over, instead of an unclassified parse error (`UNKNOWN`) that
+    counts against the provider's breaker."""
+    try:
+        arguments = json.loads(raw or "{}")
+    except (ValueError, RecursionError):
+        raise InvalidOutputError("Tool call arguments are not valid JSON.") from None
+    if arguments is None:
+        return {}
+    if not isinstance(arguments, dict):
+        raise InvalidOutputError("Tool call arguments are not a JSON object.")
+    return arguments
+
+
 def parse_openai_style_response(resp: Any, model: str, provider: str = "openai") -> ChatResult:
     """Shared response parser for any provider speaking the OpenAI chat-
     completions wire format natively (OpenAI itself, Groq).
@@ -257,7 +273,7 @@ def parse_openai_style_response(resp: Any, model: str, provider: str = "openai")
         ToolCall(
             id=tc.id,
             name=tc.function.name,
-            arguments=json.loads(tc.function.arguments or "{}"),
+            arguments=_tool_arguments(tc.function.arguments),
         )
         for tc in (msg.tool_calls or [])
     ]
@@ -320,17 +336,12 @@ def provider_result_from_openai_style(
 def parse_openai_style_chunk(chunk: Any, model: str) -> StreamDelta:
     """Shared streaming-chunk parser for OpenAI/Groq — their chunks are
     already shaped almost exactly like our normalized StreamDelta."""
+    # OpenAI sends usage in a trailing chunk with no choices, but other hosts
+    # (e.g. Mistral) put it on the last chunk that also carries the choice.
+    details = usage_from_openai_style(chunk.usage) if chunk.usage else None
+    usage = (details.input_tokens, details.output_tokens) if details else None
     if not chunk.choices:
-        # The final chunk when stream_options={"include_usage": True} is set
-        # carries only usage, no choices.
-        if not chunk.usage:
-            return StreamDelta(model=model)
-        details = usage_from_openai_style(chunk.usage)
-        return StreamDelta(
-            model=model,
-            usage=(details.input_tokens, details.output_tokens),
-            usage_details=details,
-        )
+        return StreamDelta(model=model, usage=usage, usage_details=details)
 
     choice = chunk.choices[0]
     delta = choice.delta
@@ -352,6 +363,8 @@ def parse_openai_style_chunk(chunk: Any, model: str) -> StreamDelta:
         tool_call_deltas=tool_call_deltas,
         finish_reason=choice.finish_reason,
         model=model,
+        usage=usage,
+        usage_details=details,
     )
 
 
