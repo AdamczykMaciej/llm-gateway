@@ -29,6 +29,7 @@ from .providers.base import ChatResult
 from .retry import Deadline, call_with_retry
 from .router import record_provider_failure
 from .routing import RequestProfile, plan_chain
+from .tool_validation import validate_chat_request
 from .tracing import get_tracer, set_chat_attributes
 
 logger = logging.getLogger("llm_gateway")
@@ -56,6 +57,7 @@ async def chat(
     out first. `policy` narrows `config.policy` exactly as in
     `complete_with_usage()`; `PolicyViolationError` when no provider is left.
     """
+    validate_chat_request(messages, tools, tool_choice)
     config = config or GatewayConfig()
     order = [force_provider] if force_provider else config.provider_order_list
     model_override = model if force_provider else None

@@ -34,6 +34,7 @@ from .errors import (
     EmptyCompletionError,
     GatewayNotConfiguredError,
     InvalidOutputError,
+    InvalidRequestError,
     LLMDeadlineExceeded,
     PolicyViolationError,
     ProviderAuthError,
@@ -49,6 +50,7 @@ from .router import Completion, LLMError, complete, complete_with_usage
 from .streaming import stream_chat
 
 __all__ = [
+    "InvalidRequestError",
     "ProviderPolicy",
     "ProviderMetadata",
     "ModelPrice",

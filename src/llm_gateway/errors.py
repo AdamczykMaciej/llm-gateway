@@ -137,6 +137,16 @@ class UnsupportedCapabilityError(PolicyViolationError):
     A subclass of `PolicyViolationError`, so one `except` covers both."""
 
 
+class InvalidRequestError(LLMError, ValueError):
+    """The request itself is malformed, so no provider was tried: a bad tool
+    definition or JSON Schema, a `tool_choice` naming an unknown tool, or a
+    tool result with no matching tool call. Raised before any network call
+    (a provider would answer 400, which the engine would count as a provider
+    failure and fail over on). The message names the offending tool or
+    message index, never message content. A subclass of `LLMError` (and
+    `ValueError`)."""
+
+
 class InvalidOutputError(Exception):
     """A provider answered, but not with something this call can use: no text
     content, a refusal, or structured output that is not valid JSON or fails
