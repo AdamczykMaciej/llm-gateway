@@ -41,10 +41,12 @@ from .attempts import AttemptHook, report_attempt, usage_of
 from .config import GatewayConfig
 from .errors import (
     AllProvidersExhaustedError,
+    ErrorKind,
     FirstTokenTimeoutError,
     GatewayNotConfiguredError,
     LLMError,
     StreamTooLargeError,
+    classify,
     deadline_exceeded,
     error_detail,
 )
@@ -94,6 +96,22 @@ def _check_stream_size(
     return total
 
 
+# Failure kinds that must never restart a stream: the next provider would be
+# given the same request or would produce the same filtered/invalid output.
+_NO_RESTART_KINDS = frozenset(
+    {ErrorKind.INVALID_REQUEST, ErrorKind.INVALID_OUTPUT, ErrorKind.POLICY_VIOLATION}
+)
+
+
+def _restartable(error: BaseException) -> bool:
+    """A mid-stream provider failure another provider could recover from.
+    Gateway errors (`LLMError`: deadline, ...), cancellation and invalid
+    request/output (content filter, oversize) are excluded."""
+    if isinstance(error, LLMError):
+        return False
+    return classify(error) not in _NO_RESTART_KINDS
+
+
 def _positive(seconds: float | None) -> float | None:
     return seconds if seconds is not None and seconds > 0 else None
 
@@ -116,6 +134,7 @@ async def stream_chat(
     max_tool_result_chars: int | None = None,
     on_attempt: AttemptHook | None = None,
     first_token_timeout_seconds: float | None = None,
+    restart_on_failure: bool | None = None,
 ) -> AsyncGenerator[StreamDelta, None]:
     """Stream a chat completion. `policy` narrows `config.policy` as in
     `complete_with_usage()`; the chain is filtered before the first provider
@@ -148,14 +167,28 @@ async def stream_chat(
     changes nothing. After the first chunk only the idle bound (the
     SDK's read timeout) and the deadline apply.
 
+    `restart_on_failure` (default: `config.stream_restart_on_failure`, off):
+    when a provider fails after chunks were yielded (transport error, idle
+    timeout, provider 5xx; never cancellation, a content filter, an oversize
+    stream, an invalid request or the call deadline), continue on the next
+    provider of the chain, at most `config.stream_max_restarts` (default 1)
+    times. The new attempt starts with one `StreamDelta(restart=True)` marker
+    (no content, no tool-call deltas; `provider`/`model` name the new
+    provider, `restart_attempt`, `failed_provider`, `failed_error`), then
+    streams from the beginning. The consumer must discard everything received
+    before the marker, text and tool-call fragments alike. If no provider can
+    take over, the original mid-stream error is raised. Every attempt is
+    reported to `on_attempt` and gets its own span.
+
     Raises:
         InvalidRequestError: malformed request (see `chat()`), before any chunk.
         PolicyViolationError: no provider satisfies the routing policy, before
             any chunk.
         LLMDeadlineExceeded: the call deadline ran out.
         GatewayNotConfiguredError, AllProvidersExhaustedError: no provider could
-            open the stream. Once a chunk was yielded there is no failover, so a
-            later failure propagates to the consumer.
+            open the stream. Once a chunk was yielded there is no failover
+            (unless `restart_on_failure`), so a later failure propagates to the
+            consumer.
     """
     rid = resolve_request_id(request_id)
     validate_chat_request(messages, tools, tool_choice)
@@ -175,6 +208,16 @@ async def stream_chat(
         if first_token_timeout_seconds is not None
         else config.first_token_timeout_seconds
     )
+
+    restart_enabled = (
+        restart_on_failure if restart_on_failure is not None else config.stream_restart_on_failure
+    )
+    max_restarts = max(config.stream_max_restarts, 0) if restart_enabled else 0
+    restarts = 0
+    # Set when an attempt died mid-stream and the next provider is to take over:
+    # (failed provider, error). Cleared by the marker once a replacement opens.
+    pending_restart: tuple[str, BaseException] | None = None
+    midstream_error: BaseException | None = None
 
     tracer = get_tracer()
     start = time.monotonic() * 1000
@@ -334,6 +377,19 @@ async def stream_chat(
             breaker.record_success(provider, resolved_model)
             input_tokens = output_tokens = 0
             stream_error: BaseException | None = None
+            restart_marker: StreamDelta | None = None
+            if pending_restart is not None:
+                restart_marker = StreamDelta(
+                    restart=True,
+                    restart_attempt=restarts,
+                    provider=provider,
+                    model=resolved_model,
+                    request_id=rid,
+                    failed_provider=pending_restart[0],
+                    failed_error=type(pending_restart[1]).__name__,
+                )
+                pending_restart = midstream_error = None
+                span.add_event("llm_gateway.stream_restart", {"llm_gateway.restart": restarts})
             if first_delta is None:
                 emit_attempt_span(
                     tracer,
@@ -356,6 +412,8 @@ async def stream_chat(
                     is_fallback=is_fallback,
                     latency_ms=(time.time_ns() - attempt_started_ns) / 1e6,
                 )
+                if restart_marker is not None:
+                    yield restart_marker
                 return
             cache_read_input_tokens = cache_creation_input_tokens = reasoning_tokens = 0
             usage_seen: Usage | None = None
@@ -364,6 +422,8 @@ async def stream_chat(
             total_chars = 0
             argument_chars: dict[int, int] = {}
             try:
+                if restart_marker is not None:
+                    yield restart_marker
                 delta: StreamDelta | None = first_delta
                 while delta is not None:
                     total_chars = _check_stream_size(delta, config, total_chars, argument_chars)
@@ -407,7 +467,14 @@ async def stream_chat(
                 record_provider_failure(
                     provider, e, config=config, deadline=deadline, model=resolved_model
                 )
-                raise
+                if restarts >= max_restarts or deadline.expired or not _restartable(e):
+                    raise
+                # Opt-in: hand over to the next provider (after the attempt is
+                # reported in `finally`); if none can open, `midstream_error`
+                # is raised after the loop.
+                restarts += 1
+                pending_restart = (provider, e)
+                midstream_error = last_error = e
             finally:
                 # The attempt span is written however the stream ends: done,
                 # failed, or abandoned by the consumer.
@@ -421,6 +488,7 @@ async def stream_chat(
                     error=stream_error,
                     input_tokens=input_tokens,
                     output_tokens=output_tokens,
+                    restart=restarts if restart_marker is not None else 0,
                 )
                 await report_attempt(
                     on_attempt,
@@ -448,6 +516,11 @@ async def stream_chat(
                     await generator.aclose()
                 except Exception:  # noqa: BLE001 — a failing close must not mask the real exit (e.g. a cancellation)
                     logger.debug("llm_gateway: closing a provider stream failed", exc_info=True)
+
+            if pending_restart is not None:
+                # Died mid-stream; the loop tries the next provider.
+                span.set_attribute("llm_gateway.restarts", restarts)
+                continue
 
             latency = time.monotonic() * 1000 - start
             set_chat_attributes(
@@ -485,6 +558,10 @@ async def stream_chat(
             StatusCode.ERROR,
             type(last_error).__name__ if last_error else "No provider available",
         )
+        if midstream_error is not None:
+            # A restart was wanted but no provider could take over: the caller
+            # sees the original mid-stream failure.
+            raise midstream_error
         if not attempted_any:
             if plan.denied:
                 raise plan.violation()

@@ -391,7 +391,8 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
                     # not whenever the garbage collector gets to it.
                     async with aclosing(
                         _pump(
-                            stream_engine(**engine_kwargs),
+                            # The OpenAI wire format has no restart marker.
+                            stream_engine(**engine_kwargs, restart_on_failure=False),
                             state,
                             heartbeat=config.stream_heartbeat_seconds,
                         )

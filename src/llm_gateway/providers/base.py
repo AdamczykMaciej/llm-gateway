@@ -454,6 +454,15 @@ class StreamDelta:
     provider: str | None = None
     # The call's correlation id; set with `provider` on the usage chunk.
     request_id: str | None = None
+    # Restart marker (`stream_chat(restart_on_failure=True)` only). A marker
+    # carries no content and no tool-call deltas: it says the previous attempt
+    # failed mid-stream and everything yielded so far, text and tool-call
+    # fragments alike, is void. `provider`/`model` name the provider now
+    # serving; `restart_attempt` counts restarts from 1.
+    restart: bool = False
+    restart_attempt: int | None = None
+    failed_provider: str | None = None
+    failed_error: str | None = None  # exception class name only
 
 
 def _tool_arguments(raw: str | None) -> dict:

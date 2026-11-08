@@ -279,6 +279,50 @@ raises `LLMDeadlineExceeded`. Some providers legitimately hold back the first
 normalized chunk until generation ends (structured-output emulation), so leave it
 unset for those.
 
+### Mid-stream restart: `restart_on_failure=True` (0.18.0)
+
+By default a provider that dies after it already yielded chunks ends the stream
+with its error, because those chunks are out. With `restart_on_failure=True`
+(or `GatewayConfig.stream_restart_on_failure`, env `STREAM_RESTART_ON_FAILURE`;
+a per-call value wins) `stream_chat()` instead moves to the next provider of the
+chain, up to `stream_max_restarts` times (default 1), and yields **one marker
+first**: a `StreamDelta` with `restart=True`, no `content` and no
+`tool_call_deltas`. Its `provider`/`model` name the provider now serving,
+`restart_attempt` counts restarts from 1, `failed_provider` and `failed_error`
+(a class name, never a message) say what failed. **Discard everything received
+before the marker**, text and partial tool-call fragments alike; the new attempt
+streams from the start.
+
+A marker is a normal `StreamDelta` (same type, `restart` defaults to `False`), so
+a consumer that only reads `.content` keeps working, but it then keeps the void
+text: restart is opt-in for that reason.
+
+Never restarted, the error is raised as before: cancellation or an early close,
+a content filter, `StreamTooLargeError` and other invalid output, an invalid
+request, the call deadline (which bounds all attempts together), and a restart
+count at its limit. The failed provider counts toward its circuit breaker as
+usual; `on_attempt` reports every attempt (the failed one with the usage seen so
+far); the restarted attempt's span carries `llm_gateway.restart`. If no provider
+can take over, the original mid-stream error is raised. The HTTP service never
+restarts (the OpenAI wire format has no marker).
+
+```python
+parts: list[str] = []
+async for delta in stream_chat(messages=messages, restart_on_failure=True):
+    if delta.restart:
+        parts.clear()          # also reset tool-call aggregation and any UI text
+        continue
+    if delta.content:
+        parts.append(delta.content)
+```
+
+Migrating a hand-rolled retry (MyInterviewer's `stream_complete`): delete the
+`while True` loop, `excluded_providers` / `ProviderPolicy(ignore=...)` and the
+`except` branch that re-calls `stream_chat`; call it once with
+`restart_on_failure=True` and turn `delta.restart` into your existing
+`StreamRestarted(delta.failed_provider)` event, resetting `parts`,
+`tool_fragments`, `usage` and the canary filter at that point.
+
 ### Request ids and attempt spans (0.16.0)
 
 `chat()`, `stream_chat()`, `complete()` and `complete_with_usage()` take
@@ -1675,6 +1719,7 @@ Messages never contain prompt content, model output or credentials.
 | `REQUEST_TIMEOUT_SECONDS` | `45` | Per-attempt timeout for non-streaming calls. `0` falls back to the SDK default (600 s). |
 | `STREAM_IDLE_TIMEOUT_SECONDS` | `30` | Streaming: max wait for the stream to start and between chunks. `0` falls back to the SDK default. |
 | `SDK_MAX_RETRIES` | `0` | The provider SDKs' own retry count. The gateway owns retries; leave at `0`. |
+| `STREAM_RESTART_ON_FAILURE` | `false` | `stream_chat()` library only: restart on the next provider when one fails after yielding chunks, with a `restart` marker chunk. See "Mid-stream restart". `STREAM_MAX_RESTARTS` (default 1) bounds it. |
 | `FIRST_TOKEN_TIMEOUT_SECONDS` | unset | `stream_chat()`: fail over if no first chunk within this many seconds (tightens `STREAM_IDLE_TIMEOUT_SECONDS` for the first chunk only). |
 | `CALL_DEADLINE_SECONDS` | `90` | Wall-clock budget for one call across all retries and failovers. `0` disables it. |
 | `TOOL_RESULT_MAX_CHARS` | `0` | Truncate `role: "tool"` message text above this many characters, with a marker, before `chat()`/`stream_chat()` send it. `0` disables it. |

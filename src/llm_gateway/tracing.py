@@ -165,6 +165,7 @@ def emit_attempt_span(
     error: BaseException | None = None,
     input_tokens: int = 0,
     output_tokens: int = 0,
+    restart: int = 0,
 ) -> None:
     """Record one provider attempt as a child span of the current call span.
 
@@ -179,6 +180,8 @@ def emit_attempt_span(
         span.set_attribute("llm_gateway.outcome", outcome_of(error))
         span.set_attribute("gen_ai.usage.input_tokens", input_tokens)
         span.set_attribute("gen_ai.usage.output_tokens", output_tokens)
+        if restart:
+            span.set_attribute("llm_gateway.restart", restart)
         now = time.time_ns()
         span.set_attribute("llm_gateway.latency_ms", round((now - started_ns) / 1e6, 1))
         span.end(end_time=now)
