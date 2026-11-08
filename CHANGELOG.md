@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.18.1
+
+Tiered price catalog and a re-verified default table. Backward compatible: every new `ModelPrice` field is optional.
+
+- Feature: `ModelPrice` gains `long_context` (`LongContextTier`: threshold input tokens, a `multiplier` and/or explicit rates, applied to the whole request by its own input tokens, cache tokens included), `batch_multiplier`, `cache_write_1h_per_mtok`, and `source`/`checked` audit fields.
+- `cost_usd(..., batch=False, cache_write_1h_tokens=0)`; `worst_case_cost_usd` applies the tier to its estimated prompt size.
+- `python -m llm_gateway.pricing --list` prints the table (no network).
+- Defaults: added `anthropic/claude-sonnet-5-5` and `claude-opus-5-5`; `claude-haiku-5-5` now carries its over-100,000-token 5x tier; 1-hour cache-write and batch rates added for Claude rows; `groq/openai/gpt-oss-120b` gains the 0.075 cached rate; `openai/gpt-4o-mini` batch 0.5x. Rows that could not be confirmed on 2026-11-08 (Vertex Claude, Mistral Small, OpenRouter) are marked "unverified" and unchanged.
+
 ## 0.18.0
 
 Opt-in mid-stream restart for `stream_chat()`. Off by default; existing streams are unchanged.
