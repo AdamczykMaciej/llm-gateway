@@ -11,6 +11,7 @@ from .policy import (
     ProviderMetadata,
     ProviderPolicy,
     normalize_region,
+    provider_ids,
     validate_provider_metadata,
 )
 from .pricing import ModelPrice, validate_price_table
@@ -469,7 +470,7 @@ class GatewayConfig(BaseSettings):
                     "vertex_azure_app_id_uri needs vertex_credentials_file to be an "
                     "external_account credential configuration"
                 )
-            if "environment_id" in (info.get("credential_source") or {}):
+            if "environment_id" in ((info or {}).get("credential_source") or {}):
                 raise ValueError(
                     "vertex_azure_app_id_uri can't be used with an AWS credential configuration"
                 )
@@ -529,8 +530,12 @@ class GatewayConfig(BaseSettings):
             require_zero_retention=self.policy_require_zero_retention,
             forbid_training=self.policy_forbid_training,
             require_dpa=self.policy_require_dpa,
-            only=self.policy_only if self.policy_only.strip() else None,
-            ignore=self.policy_ignore,
+            only=(
+                provider_ids(self.policy_only, field_name="only")
+                if self.policy_only.strip()
+                else None
+            ),
+            ignore=provider_ids(self.policy_ignore, field_name="ignore"),
             require_parameters=self.policy_require_parameters,
             max_cost_usd=self.policy_max_cost_usd if self.policy_max_cost_usd > 0 else None,
             sort=self.policy_sort,
