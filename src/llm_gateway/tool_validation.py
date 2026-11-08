@@ -110,9 +110,10 @@ def _check_tool_choice(tool_choice: object, names: set[str]) -> None:
         if tool_choice == "required" and not names:
             raise InvalidRequestError("tool_choice 'required' needs at least one tool.")
         return
-    function = tool_choice.get("function") if isinstance(tool_choice, dict) else None
+    choice = tool_choice if isinstance(tool_choice, dict) else {}
+    function = choice.get("function")
     name = function.get("name") if isinstance(function, dict) else None
-    if not isinstance(name, str) or tool_choice.get("type", "function") != "function":
+    if not isinstance(name, str) or choice.get("type", "function") != "function":
         raise InvalidRequestError(
             "tool_choice must be 'auto', 'none', 'required' or "
             "{'type': 'function', 'function': {'name': ...}}."

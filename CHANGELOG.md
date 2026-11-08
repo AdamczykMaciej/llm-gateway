@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.14.1
+
+Docs and typing pass; no behavior change.
+
+- Ship `py.typed`, so type checkers use the package's inline annotations.
+- Typing fixes: `stream_chat()` is annotated `AsyncGenerator[StreamDelta, None]`; `GatewayConfig.policy`
+  passes validated provider-id tuples; price scaling and the `tool_choice` check no longer rely on
+  `None`/`object` narrowing.
+- README: error reference (class, when raised, retried?), the missing policy/price/`SSL_VERIFY`
+  environment variables, and `SECURITY.md` (secret handling, how to report a vulnerability).
+- Tests run the README's library examples against fake providers and check that every public
+  error is documented.
+
 ## 0.14.0
 
 Agentic pass.

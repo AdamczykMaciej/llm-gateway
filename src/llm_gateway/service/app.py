@@ -7,6 +7,7 @@ import time
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import aclosing, asynccontextmanager
+from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -126,7 +127,7 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
     @app.post("/v1/chat/completions")
     async def chat_completions(
         body: ChatCompletionRequest, api_key: str = Depends(rate_limit_dep)
-    ) -> dict:
+    ) -> Any:  # dict, or a StreamingResponse when body.stream
         if not any(m.role != "system" for m in body.messages):
             raise HTTPException(
                 status_code=400,
@@ -177,7 +178,7 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=f"Invalid policy: {exc}") from exc
 
-        engine_kwargs = dict(
+        engine_kwargs: dict[str, Any] = dict(
             messages=body.as_message_dicts(),
             tools=body.tools,
             tool_choice=body.tool_choice,

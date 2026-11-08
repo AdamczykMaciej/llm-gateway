@@ -1396,6 +1396,40 @@ Worst case for one call with the default three-provider chain:
 | Non-streaming | 2 gateway × 3 SDK attempts × 600 s timeout per provider, plus backoff: ~1 h per provider, ~3 h for the chain — and no bound at all for a provider that trickles bytes | 90 s |
 | Streaming | 3 SDK attempts × 600 s to open, per provider (~90 min for the chain); no bound once the stream started | 90 s, start to last chunk |
 
+## Error reference
+
+Everything is importable from `llm_gateway`. "Retried" means the gateway
+retries the same provider (`RETRY_ATTEMPTS`); every provider failure then
+fails over to the next provider. "Caller should retry" is about the exception
+you finally see.
+
+| Error | Raised when | Retried by the gateway? | Caller should retry? |
+|---|---|---|---|
+| `LLMError` | Base class: no provider could serve the call | n/a | see the subclass |
+| `GatewayNotConfiguredError` | No provider in `provider_order` has credentials/config | no | no, fix configuration |
+| `AllProvidersExhaustedError` | Providers are configured, but every attempt failed or every breaker is open | after the provider failures below | yes, after about `BREAKER_COOLDOWN_SECONDS` |
+| `LLMDeadlineExceeded` | `CALL_DEADLINE_SECONDS` ran out across retries and failovers | no | yes, possibly with a higher deadline |
+| `PolicyViolationError` | The routing policy excludes every provider (residency, retention, DPA, cost cap, ...) | no | no, change the policy or request |
+| `ResidencyViolationError` | `REQUIRE_RESIDENCY` is set and no provider matches (subclass of `PolicyViolationError`) | no | no |
+| `UnsupportedCapabilityError` | Providers were excluded only because their model can't do a feature the request uses (subclass of `PolicyViolationError`) | no | no, drop the feature |
+| `InvalidRequestError` | The request is malformed (bad tool definition, schema, `tool_choice`, tool-result pairing); also a `ValueError`; HTTP 400 | no | no, fix the request |
+| `InvalidOutputError` | A provider answered with unusable output (refusal, invalid JSON, schema failure). Fails over; surfaces only inside `LLMError` | no | rarely; a different prompt or schema |
+| `EmptyCompletionError` | A provider returned no text and no tool calls (often a reasoning model out of budget). Fails over | no | raise `max_tokens` |
+| `ProviderAuthError` | A provider could not authenticate before sending (e.g. no Entra token). Fails over | no | no, fix credentials |
+
+Provider failures are classified once (`errors.classify`):
+
+| Kind | Examples | Retried | Breaker |
+|---|---|---|---|
+| `TRANSIENT` | connection error, 408, 409, 5xx, Anthropic 529 | yes | counts |
+| `TIMEOUT`, `RATE_LIMITED` | per-attempt timeout; 429 | no | counts |
+| `AUTH` | 401, 403 | no | counts |
+| `BILLING` | out of credit or over a spend limit | no | opens at once |
+| `INVALID_REQUEST`, `INVALID_OUTPUT` | other 4xx; unusable output | no | ignored |
+| `EMPTY_RESPONSE`, `UNKNOWN` | no usable text; anything else | no | counts |
+
+Messages never contain prompt content, model output or credentials.
+
 ## Environment variables
 
 | Variable | Default | Purpose |
@@ -1460,6 +1494,17 @@ Worst case for one call with the default three-provider chain:
 | `MAX_TOKENS_CEILING` | `4000` | Reject a request if `max_tokens` exceeds this. `0` disables it. |
 | `MAX_PROMPT_CHARS` | `32000` | Reject a request if total message content exceeds this many characters. `0` disables it. |
 | `MAX_IMAGE_BYTES` | `10000000` | Reject a request if the total decoded size of all `data:` URI images exceeds this. `0` disables it. |
+| `SSL_VERIFY` | `true` | TLS certificate verification for provider calls. Set `false` only behind a corporate SSL-inspection proxy. |
+| `PROVIDER_METADATA` | `{}` | JSON object: per-provider residency / retention / training / DPA assertions; see [Provider policy](#provider-policy-and-cost-controls-050) |
+| `POLICY_RESIDENCY` | — | Only providers whose asserted region equals this (e.g. `eu`) |
+| `POLICY_REQUIRE_ZERO_RETENTION` | `false` | Only providers asserted `retention="zero"` |
+| `POLICY_FORBID_TRAINING` | `false` | Only providers asserted not to train on your data |
+| `POLICY_REQUIRE_DPA` | `false` | Only providers asserted to have a DPA |
+| `POLICY_ONLY` / `POLICY_IGNORE` | — | Comma-separated provider ids to allow exclusively / to skip |
+| `POLICY_REQUIRE_PARAMETERS` | `false` | Exclude providers/models that can't honor every parameter of the request |
+| `POLICY_MAX_COST_USD` | `0` | Per-call cost cap; `0` disables it |
+| `POLICY_SORT` | `order` | Chain ordering: `order` (as `PROVIDER_ORDER`) or by price |
+| `MODEL_PRICES` | `{}` | JSON overrides for the built-in USD-per-million-token price table |
 
 ## PII masking
 

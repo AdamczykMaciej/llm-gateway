@@ -32,6 +32,7 @@ import asyncio
 import dataclasses
 import logging
 import time
+from collections.abc import AsyncGenerator
 
 from opentelemetry.trace import StatusCode
 
@@ -69,7 +70,7 @@ async def stream_chat(
     response_format: dict | None = None,
     policy: ProviderPolicy | None = None,
     cache_system: bool = False,
-):
+) -> AsyncGenerator[StreamDelta, None]:
     """Stream a chat completion. `policy` narrows `config.policy` as in
     `complete_with_usage()`; the chain is filtered before the first provider
     is opened, so pre-flight failover never reaches an excluded provider, and

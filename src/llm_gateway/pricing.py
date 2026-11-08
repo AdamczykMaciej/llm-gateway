@@ -124,8 +124,8 @@ def _scaled(price: ModelPrice, factor: float) -> ModelPrice:
         return None if rate is None else round(rate * factor, 6)
 
     return ModelPrice(
-        input_per_mtok=scale(price.input_per_mtok),
-        output_per_mtok=scale(price.output_per_mtok),
+        input_per_mtok=round(price.input_per_mtok * factor, 6),
+        output_per_mtok=round(price.output_per_mtok * factor, 6),
         cached_input_per_mtok=scale(price.cached_input_per_mtok),
         cache_write_per_mtok=scale(price.cache_write_per_mtok),
     )
