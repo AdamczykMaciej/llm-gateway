@@ -336,6 +336,14 @@ class GatewayConfig(BaseSettings):
     # smallest wins), and once a chunk arrived only the idle bound and the
     # deadline apply. A per-call `first_token_timeout_seconds=` wins.
     first_token_timeout_seconds: float | None = None
+    # stream_chat() only: when a provider fails AFTER chunks were yielded
+    # (transport error, idle timeout, provider 5xx), move to the next provider
+    # and yield a `StreamDelta(restart=True)` marker first; the consumer must
+    # discard everything received so far. Off by default (a mid-stream failure
+    # then ends the stream with the error, as before). Per-call
+    # `restart_on_failure=` wins. `stream_max_restarts` bounds the restarts.
+    stream_restart_on_failure: bool = False
+    stream_max_restarts: int = 1
     # The SDKs' own retry loop. 0 because the gateway owns retries: SDK
     # retries would multiply every gateway attempt (the previous default of
     # 2 meant up to 6 HTTP requests per provider), retry 429s and 4xx-ish

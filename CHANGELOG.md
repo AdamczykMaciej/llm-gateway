@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.18.0
+
+Opt-in mid-stream restart for `stream_chat()`. Off by default; existing streams are unchanged.
+
+- Feature: `stream_chat(restart_on_failure=True)` (`GatewayConfig.stream_restart_on_failure`,
+  `stream_max_restarts`, default 1): a provider failing after chunks were yielded (transport error,
+  idle timeout, provider 5xx) hands over to the next provider. The new attempt starts with a
+  `StreamDelta(restart=True, restart_attempt, failed_provider, failed_error, provider, model)`
+  marker; the consumer discards everything before it, partial tool-call fragments included.
+  Never on cancellation, content filter, `StreamTooLargeError`/invalid output, invalid request or
+  deadline. Every attempt is reported to `on_attempt` and traced. No provider left: the original
+  error is raised. The HTTP service does not restart.
+- `StreamDelta` gains `restart`, `restart_attempt`, `failed_provider`, `failed_error` (defaults
+  keep it backward compatible).
+
 ## 0.17.0
 
 Per-attempt usage/cost hook and a first-token timeout for streams. New optional parameters only.
