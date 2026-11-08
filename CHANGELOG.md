@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.15.1
+
+Test-coverage pass (94% -> 97% statement+branch) and two request-validation fixes.
+
+- Fix: a tool `type` that is a list or object (e.g. `{"type": [["x"]]}`) crashed pre-flight
+  validation with `TypeError` (a 500 from the service) instead of `InvalidRequestError`.
+- Fix: a tool name with a trailing newline (`"search\n"`) passed validation because the name
+  pattern used `$`; it now uses `fullmatch`.
+- Tests: tool-validation rejection branches with hypothesis properties, Groq/OpenAI request
+  options, breaker-open paths, tracing never-raise, privacy message mapping, Vertex credential
+  dispatch. `pytest-cov` and `hypothesis` are dev dependencies; coverage floor 96%.
+
 ## 0.15.0
 
 Privacy layer (`llm_gateway.privacy`, opt-in; existing calls are unchanged).
