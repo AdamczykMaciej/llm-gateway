@@ -23,7 +23,7 @@ failure is an ordinary openai SDK error, classified like OpenAI's own.
 """
 
 import logging
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import aclosing
 from typing import Any
 
@@ -49,6 +49,7 @@ from .base import (
     remember_client,
     sdk_client_cache_key,
     sdk_client_options,
+    sdk_messages,
     stream_request_options,
 )
 
@@ -282,7 +283,7 @@ async def chat(
     )
     resp = await _client(config).chat.completions.create(
         model=model,
-        messages=messages,
+        messages=sdk_messages(messages),
         **token_budget_kwargs(config, max_tokens),
         **kwargs,
     )
@@ -300,14 +301,14 @@ async def _stream_chat(
     sampling: dict | None = None,
     response_format: dict | None = None,
     parallel_tool_calls: bool | None = None,
-) -> AsyncIterator[StreamDelta]:
+) -> AsyncGenerator[StreamDelta]:
     model = model or default_model(config)
     kwargs = _request_kwargs(
         config, tools, tool_choice, sampling, response_format, parallel_tool_calls
     )
     stream = await _client(config).chat.completions.create(
         model=model,
-        messages=messages,
+        messages=sdk_messages(messages),
         stream=True,
         stream_options={"include_usage": True},
         **token_budget_kwargs(config, max_tokens),
@@ -330,7 +331,7 @@ async def stream_chat(
     response_format: dict | None = None,
     parallel_tool_calls: bool | None = None,
     cache_system: bool = False,
-) -> AsyncIterator[StreamDelta]:
+) -> AsyncGenerator[StreamDelta]:
     """`_stream_chat()` behind `guard_empty_stream()`: a stream with no text
     and no tool calls (e.g. only `finish_reason="content_filter"`) raises
     `EmptyCompletionError` before its first chunk."""

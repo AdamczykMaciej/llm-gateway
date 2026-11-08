@@ -79,7 +79,9 @@ def azure_residency(*, data_zone: str, region: str, endpoint: str) -> str:
 def residency_report(config: "GatewayConfig", *, all_providers: bool = False) -> dict[str, str]:
     """`{provider: residency}` for the providers in `config.provider_order`, in
     order (an id the gateway doesn't know is "unknown"), or for every known
-    provider with `all_providers=True`. Reads the configuration only."""
+    provider with `all_providers=True`. Reads the configuration only.
+
+    Raises nothing for a valid config."""
     from .providers import RESIDENCY
 
     names = list(RESIDENCY) if all_providers else config.provider_order_list

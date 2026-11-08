@@ -10,7 +10,7 @@ functions to `AsyncAnthropicVertex`, so both serve identical request bodies.
 import json
 import logging
 import re
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import aclosing
 from typing import Any
 
@@ -449,7 +449,7 @@ async def _stream_chat(
     response_format: dict | None = None,
     parallel_tool_calls: bool | None = None,
     cache_system: bool = False,
-) -> AsyncIterator[StreamDelta]:
+) -> AsyncGenerator[StreamDelta]:
     chosen = model or default_model(config)
     started = False
     while True:
@@ -498,7 +498,7 @@ async def messages_stream(
     effort: str = "",
     cache_system: bool = False,
     parallel_tool_calls: bool | None = None,
-) -> AsyncIterator[StreamDelta]:
+) -> AsyncGenerator[StreamDelta]:
     """Translate Anthropic's raw SSE event stream into normalized
     StreamDelta chunks. Anthropic's tool-call streaming already arrives
     fragment-by-fragment (content_block_start announces id+name,
@@ -625,7 +625,7 @@ async def stream_chat(
     response_format: dict | None = None,
     parallel_tool_calls: bool | None = None,
     cache_system: bool = False,
-) -> AsyncIterator[StreamDelta]:
+) -> AsyncGenerator[StreamDelta]:
     """`_stream_chat()` behind `guard_empty_stream()`: a stream with no text
     and no tool calls raises `EmptyCompletionError` before its first chunk."""
     deltas = _stream_chat(

@@ -1,5 +1,5 @@
 import re
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import aclosing
 
 from openai import AsyncOpenAI, DefaultAsyncHttpx2Client
@@ -21,6 +21,7 @@ from .base import (
     remember_client,
     sdk_client_cache_key,
     sdk_client_options,
+    sdk_messages,
     stream_request_options,
 )
 
@@ -121,7 +122,7 @@ async def chat(
     if response_format is not None:
         kwargs["response_format"] = response_format
     resp = await _client(config).chat.completions.create(
-        model=model, messages=messages, **_request_params(model, max_tokens, kwargs)
+        model=model, messages=sdk_messages(messages), **_request_params(model, max_tokens, kwargs)
     )
     return parse_openai_style_response(resp, model, provider="openai")
 
@@ -137,7 +138,7 @@ async def _stream_chat(
     sampling: dict | None = None,
     response_format: dict | None = None,
     parallel_tool_calls: bool | None = None,
-) -> AsyncIterator[StreamDelta]:
+) -> AsyncGenerator[StreamDelta]:
     model = model or default_model(config)
     kwargs: dict = openai_sampling_kwargs(sampling)
     if tools:
@@ -150,7 +151,7 @@ async def _stream_chat(
         kwargs["response_format"] = response_format
     stream = await _client(config).chat.completions.create(
         model=model,
-        messages=messages,
+        messages=sdk_messages(messages),
         stream=True,
         stream_options={"include_usage": True},
         **_request_params(model, max_tokens, kwargs),
@@ -172,7 +173,7 @@ async def stream_chat(
     response_format: dict | None = None,
     parallel_tool_calls: bool | None = None,
     cache_system: bool = False,
-) -> AsyncIterator[StreamDelta]:
+) -> AsyncGenerator[StreamDelta]:
     """`_stream_chat()` behind `guard_empty_stream()`: a stream with no text
     and no tool calls raises `EmptyCompletionError` before its first chunk."""
     deltas = _stream_chat(
