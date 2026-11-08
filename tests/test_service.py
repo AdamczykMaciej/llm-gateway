@@ -5,7 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from llm_gateway import GatewayConfig, LLMError, reset_circuit_breakers
-from llm_gateway.providers.base import ChatResult, ToolCall
+from llm_gateway.providers.base import ChatResult, StreamDelta, ToolCall
 from llm_gateway.service import create_app
 from llm_gateway.service.rate_limit import reset as reset_rate_limits
 from llm_gateway.service.usage import reset as reset_usage
@@ -710,3 +710,45 @@ def test_failed_completion_does_not_record_usage():
         )
     resp = client.get("/v1/usage", headers={"Authorization": "Bearer secret-key"})
     assert resp.json()["requests"] == 0
+
+
+def test_stream_mid_stream_provider_error_emits_clean_error_event_then_done():
+    # A raw SDK/network error after the first chunk must not tear the
+    # connection down: the client gets an error event (no internals) and [DONE].
+    async def broken_stream(**kwargs):
+        yield StreamDelta(content="partial", model="m")
+        raise ConnectionError("reset by peer at 10.0.0.7:443")
+
+    client = _client(gateway_api_keys="secret-key")
+    with patch("llm_gateway.service.app.stream_engine", broken_stream):
+        resp = client.post(
+            "/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "hi"}], "stream": True},
+            headers={"Authorization": "Bearer secret-key"},
+        )
+
+    lines = [line for line in resp.text.split("\n\n") if line.strip()]
+    assert lines[-1] == "data: [DONE]"
+    error_payload = json.loads(lines[-2].removeprefix("data: "))
+    assert error_payload["error"]["code"] == 503
+    assert "10.0.0.7" not in resp.text
+
+
+def test_stream_closes_engine_generator_when_response_ends_early():
+    closed = []
+
+    async def engine(**kwargs):
+        try:
+            yield StreamDelta(content="a", model="m")
+            raise LLMError("boom")
+        finally:
+            closed.append(True)
+
+    client = _client(gateway_api_keys="secret-key")
+    with patch("llm_gateway.service.app.stream_engine", engine):
+        client.post(
+            "/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "hi"}], "stream": True},
+            headers={"Authorization": "Bearer secret-key"},
+        )
+    assert closed == [True]

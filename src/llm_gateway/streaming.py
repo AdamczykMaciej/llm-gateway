@@ -21,6 +21,11 @@ adds no per-attempt bound, because a provider may legitimately withhold the
 first normalized chunk until generation ends (Anthropic's structured-output
 emulation does). call_deadline_seconds bounds the whole call — including a
 stream that has already started, which then ends with LLMDeadlineExceeded.
+
+After the first chunk the provider's generator is always closed when the
+engine generator ends — normally, on error, on consumer close or cancellation
+— so an abandoned stream never keeps its upstream request open. A mid-stream
+provider failure is recorded against the circuit breaker, then re-raised.
 """
 
 import asyncio
@@ -35,6 +40,7 @@ from .config import GatewayConfig
 from .errors import (
     AllProvidersExhaustedError,
     GatewayNotConfiguredError,
+    LLMError,
     deadline_exceeded,
     redact_secrets,
 )
@@ -117,6 +123,8 @@ async def stream_chat(
                 break
             if not await plan.allows(provider, span):
                 continue
+            if not force_provider and not breaker.allow(provider):
+                continue
 
             attempted_any = True
             is_fallback = index > 0
@@ -171,34 +179,45 @@ async def stream_chat(
             cache_read_input_tokens = cache_creation_input_tokens = reasoning_tokens = 0
             finish_reason = "stop"
             tool_call_count = 0
-            delta: StreamDelta | None = first_delta
-            while delta is not None:
-                if delta.tool_call_deltas:
-                    tool_call_count += sum(1 for d in delta.tool_call_deltas if "id" in d)
-                if delta.usage:
-                    input_tokens, output_tokens = delta.usage
-                    if delta.usage_details:
-                        cache_read_input_tokens = delta.usage_details.cache_read_input_tokens
-                        cache_creation_input_tokens = (
-                            delta.usage_details.cache_creation_input_tokens
-                        )
-                        reasoning_tokens = delta.usage_details.reasoning_tokens
-                    # Attribute the usage to the provider that actually served.
-                    delta = dataclasses.replace(delta, provider=provider)
-                if delta.finish_reason:
-                    finish_reason = delta.finish_reason
-                yield delta
-                try:
-                    async with asyncio.timeout(deadline.remaining()):
-                        delta = await generator.__anext__()
-                except StopAsyncIteration:
-                    delta = None
-                except TimeoutError as e:
-                    if not deadline.expired:
-                        raise
-                    await generator.aclose()
-                    span.set_status(StatusCode.ERROR, "call deadline exceeded")
-                    raise deadline_exceeded(config.call_deadline_seconds, e) from e
+            try:
+                delta: StreamDelta | None = first_delta
+                while delta is not None:
+                    if delta.tool_call_deltas:
+                        tool_call_count += sum(1 for d in delta.tool_call_deltas if "id" in d)
+                    if delta.usage:
+                        input_tokens, output_tokens = delta.usage
+                        if delta.usage_details:
+                            cache_read_input_tokens = delta.usage_details.cache_read_input_tokens
+                            cache_creation_input_tokens = (
+                                delta.usage_details.cache_creation_input_tokens
+                            )
+                            reasoning_tokens = delta.usage_details.reasoning_tokens
+                        # Attribute the usage to the provider that actually served.
+                        delta = dataclasses.replace(delta, provider=provider)
+                    if delta.finish_reason:
+                        finish_reason = delta.finish_reason
+                    yield delta
+                    try:
+                        async with asyncio.timeout(deadline.remaining()):
+                            delta = await generator.__anext__()
+                    except StopAsyncIteration:
+                        delta = None
+                    except TimeoutError as e:
+                        if not deadline.expired:
+                            raise
+                        await generator.aclose()
+                        span.set_status(StatusCode.ERROR, "call deadline exceeded")
+                        raise deadline_exceeded(config.call_deadline_seconds, e) from e
+            except LLMError:
+                raise
+            except Exception as e:  # noqa: BLE001 — a mid-stream failure: counted, then propagated
+                record_provider_failure(provider, e, config=config, deadline=deadline)
+                raise
+            finally:
+                # Consumer stopped reading (close, cancel, disconnect) or the
+                # stream failed: close the provider's generator so its HTTP
+                # response is released and the upstream request stops.
+                await generator.aclose()
 
             latency = time.monotonic() * 1000 - start
             set_chat_attributes(

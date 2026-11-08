@@ -10,6 +10,13 @@ from llm_gateway.retry import Deadline, call_with_retry
 
 pytestmark = pytest.mark.asyncio
 
+
+@pytest.fixture(autouse=True)
+def _no_jitter(monkeypatch):
+    # Exact-delay assertions below; jitter has its own tests.
+    monkeypatch.setattr("llm_gateway.retry.random.uniform", lambda lo, hi: hi)
+
+
 _REQUEST = httpx2.Request("POST", "https://api.example.test/v1/messages")
 
 
@@ -161,3 +168,46 @@ async def test_deadline_cap_picks_the_tighter_bound():
     assert deadline.cap(2.0) == 2.0
     assert 9.0 < deadline.cap(30.0) <= 10.0
     assert 9.0 < deadline.cap(None) <= 10.0
+
+
+def _status_error_with_headers(status: int, headers: dict) -> anthropic.APIStatusError:
+    response = httpx2.Response(status, headers=headers, request=_REQUEST)
+    return anthropic.AsyncAnthropic(api_key="k")._make_status_error(
+        "nope", body=None, response=response
+    )
+
+
+async def test_delay_is_jittered(monkeypatch):
+    seen = []
+    monkeypatch.setattr(
+        "llm_gateway.retry.random.uniform", lambda lo, hi: seen.append((lo, hi)) or lo
+    )
+    call = AsyncMock(side_effect=[_transient(), "ok"])
+    with patch("llm_gateway.retry.asyncio.sleep", AsyncMock()) as sleep:
+        await call_with_retry(call, attempts=2, base_delay_seconds=1.0)
+    assert seen == [(0.5, 1.0)]
+    sleep.assert_awaited_once_with(0.5)
+
+
+async def test_retry_after_header_is_honored_when_longer_than_backoff():
+    call = AsyncMock(side_effect=[_status_error_with_headers(503, {"retry-after": "7"}), "ok"])
+    with patch("llm_gateway.retry.asyncio.sleep", AsyncMock()) as sleep:
+        await call_with_retry(call, attempts=2, base_delay_seconds=0.1)
+    sleep.assert_awaited_once_with(7.0)
+
+
+async def test_retry_after_longer_than_deadline_gives_up_instead_of_sleeping():
+    err = _status_error_with_headers(503, {"retry-after": "30"})
+    call = AsyncMock(side_effect=[err, "ok"])
+    with patch("llm_gateway.retry.asyncio.sleep", AsyncMock()) as sleep:
+        with pytest.raises(anthropic.APIStatusError):
+            await call_with_retry(call, attempts=2, base_delay_seconds=0.1, deadline=Deadline(5.0))
+    sleep.assert_not_awaited()
+
+
+async def test_bad_retry_after_values_are_ignored():
+    for bad in ("soon", "-3", "nan", ""):
+        call = AsyncMock(side_effect=[_status_error_with_headers(503, {"retry-after": bad}), "ok"])
+        with patch("llm_gateway.retry.asyncio.sleep", AsyncMock()) as sleep:
+            await call_with_retry(call, attempts=2, base_delay_seconds=0.1)
+        sleep.assert_awaited_once_with(0.1)

@@ -163,3 +163,72 @@ async def test_all_providers_fail_preflight_raises_llm_error():
                 messages=_MESSAGES, config=_config(provider_order="anthropic,groq")
             ):
                 pass
+
+
+async def test_consumer_close_stops_the_upstream_provider_stream():
+    # A consumer that stops reading (client disconnect, `break`) must close
+    # the provider's generator, which is what releases the HTTP connection.
+    closed = False
+
+    async def _provider(*a, **kw):
+        nonlocal closed
+        try:
+            yield StreamDelta(content="a", model="x")
+            yield StreamDelta(content="b", model="x")
+        finally:
+            closed = True
+
+    with patch("llm_gateway.streaming.STREAM_CALLS", {"anthropic": _provider}):
+        stream = stream_chat(messages=_MESSAGES, config=_config(provider_order="anthropic"))
+        first = await stream.__anext__()
+        assert first.content == "a"
+        await stream.aclose()
+    assert closed is True
+
+
+async def test_consumer_cancellation_stops_the_upstream_provider_stream():
+    import asyncio
+
+    closed = asyncio.Event()
+
+    async def _provider(*a, **kw):
+        try:
+            yield StreamDelta(content="a", model="x")
+            await asyncio.sleep(3600)
+            yield StreamDelta(content="b", model="x")  # pragma: no cover
+        finally:
+            closed.set()
+
+    async def _consume():
+        async for _ in stream_chat(messages=_MESSAGES, config=_config(provider_order="anthropic")):
+            pass
+
+    with patch("llm_gateway.streaming.STREAM_CALLS", {"anthropic": _provider}):
+        task = asyncio.create_task(_consume())
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    assert closed.is_set()
+
+
+async def test_mid_stream_failure_counts_toward_the_breaker_and_closes_upstream():
+    from llm_gateway import breaker
+
+    closed = False
+
+    async def _provider(*a, **kw):
+        nonlocal closed
+        try:
+            yield StreamDelta(content="partial", model="x")
+            raise ConnectionError("reset by peer")
+        finally:
+            closed = True
+
+    cfg = _config(provider_order="anthropic", breaker_failure_threshold=1)
+    with patch("llm_gateway.streaming.STREAM_CALLS", {"anthropic": _provider}):
+        with pytest.raises(ConnectionError):
+            async for _ in stream_chat(messages=_MESSAGES, config=cfg):
+                pass
+    assert closed is True
+    assert breaker.is_open("anthropic")

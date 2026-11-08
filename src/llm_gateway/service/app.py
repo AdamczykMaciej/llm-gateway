@@ -2,10 +2,11 @@
 front of the same chat()/stream_chat() engines the library exposes
 in-process."""
 
+import logging
 import time
 import uuid
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import aclosing, asynccontextmanager
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -13,7 +14,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from .. import breaker
 from ..chat import chat as chat_engine
 from ..config import GatewayConfig
-from ..errors import PolicyViolationError
+from ..errors import PolicyViolationError, redact_secrets
 from ..providers import CONFIGURED
 from ..providers import azure as azure_provider
 from ..providers import gemini as gemini_provider
@@ -41,6 +42,8 @@ _OPENAI_ERROR_TYPES = {
     429: "rate_limit_error",
     503: "service_unavailable_error",
 }
+
+logger = logging.getLogger("llm_gateway")
 
 
 def create_app(config: GatewayConfig | None = None) -> FastAPI:
@@ -195,11 +198,15 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
                 created = int(time.time())
                 input_tokens = output_tokens = 0
                 try:
-                    async for delta in stream_engine(**engine_kwargs):
-                        if delta.usage:
-                            input_tokens, output_tokens = delta.usage
-                        for line in stream_chunk_sse(delta, chunk_id=chunk_id, created=created):
-                            yield line
+                    # aclosing: if the client disconnects, the engine (and with
+                    # it the upstream provider request) is closed right away,
+                    # not whenever the garbage collector gets to it.
+                    async with aclosing(stream_engine(**engine_kwargs)) as deltas:
+                        async for delta in deltas:
+                            if delta.usage:
+                                input_tokens, output_tokens = delta.usage
+                            for line in stream_chunk_sse(delta, chunk_id=chunk_id, created=created):
+                                yield line
                 except PolicyViolationError as exc:
                     yield sse_error_event(str(exc), error_type="invalid_request_error", code=400)
                 except LLMError as exc:
@@ -208,6 +215,16 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
                     # this point, so emit an error event instead of crashing
                     # the connection. See schemas.sse_error_event.
                     yield sse_error_event(str(exc))
+                except Exception as exc:  # noqa: BLE001 — raw provider/network error mid-stream
+                    # Not an LLMError: a failure after the first chunk. End the
+                    # stream cleanly with a generic event; the detail (which
+                    # can carry hosts or request ids) stays in the log.
+                    logger.warning(
+                        "llm_gateway service: stream failed mid-response: %s: %s",
+                        type(exc).__name__,
+                        redact_secrets(str(exc), config),
+                    )
+                    yield sse_error_event("The upstream provider failed mid-response.")
                 finally:
                     if input_tokens or output_tokens:
                         usage_store.record(api_key, input_tokens, output_tokens)
