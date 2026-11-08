@@ -1413,6 +1413,7 @@ you finally see.
 | `ResidencyViolationError` | `REQUIRE_RESIDENCY` is set and no provider matches (subclass of `PolicyViolationError`) | no | no |
 | `UnsupportedCapabilityError` | Providers were excluded only because their model can't do a feature the request uses (subclass of `PolicyViolationError`) | no | no, drop the feature |
 | `InvalidRequestError` | The request is malformed (bad tool definition, schema, `tool_choice`, tool-result pairing); also a `ValueError`; HTTP 400 | no | no, fix the request |
+| `PrivacyPolicyMissingError` | A `PrivacyLayer(strict=True)` call had no `privacy=` policy; a `RuntimeError`, raised before anything is sent | no | no, pass a policy |
 | `InvalidOutputError` | A provider answered with unusable output (refusal, invalid JSON, schema failure). Fails over; surfaces only inside `LLMError` | no | rarely; a different prompt or schema |
 | `EmptyCompletionError` | A provider returned no text and no tool calls (often a reasoning model out of budget). Fails over | no | raise `max_tokens` |
 | `ProviderAuthError` | A provider could not authenticate before sending (e.g. no Entra token). Fails over | no | no, fix credentials |
@@ -1515,9 +1516,10 @@ dependency.
 ```python
 from llm_gateway import PrivacyLayer, Privacy, OutputPolicy, Span
 
-class MyRedactor:                      # the Redactor protocol: text -> spans
-    def detect(self, text):
-        ...                            # yield Span(start, end, "email") ...
+
+class MyRedactor:  # the Redactor protocol: text -> spans
+    def detect(self, text): ...  # yield Span(start, end, "email") ...
+
 
 layer = PrivacyLayer(strict=True, on_audit=lambda ev: log.info("%s", ev))
 privacy = Privacy(redactor=MyRedactor(), output=OutputPolicy.RESTORE)
@@ -1545,6 +1547,18 @@ completion = await layer.complete_with_usage(system=..., prompt=..., privacy=pri
   explicit and states why: `Privacy.passthrough("public job ad")`.
 - **Streaming**: a token split across chunks (also inside tool-call
   arguments) is held back until it is complete, then restored or stripped.
+- **Placeholders vs real text**: placeholder-shaped text already in the input
+  (a literal `[person_1]`) is reserved: the layer never issues that token, so a
+  model echoing it is not "restored" into someone else's value. A redaction
+  `kind` must be 1-31 letters, digits, space, `_` or `-` (else `ValueError`).
+- **Isolation**: the vault, output state and stream filters are created per call
+  and never shared, so concurrent requests cannot see each other's values. In
+  streamed tool-call arguments a restored value is JSON-escaped, and text held
+  back for a split token is flushed before the finishing delta.
+- **Opt-in**: `chat()`, `stream_chat()` and `complete_with_usage()` are unchanged;
+  nothing is redacted unless you call through a `PrivacyLayer`. The layer wraps
+  the normal entry points, so secret redaction and tool validation still apply
+  to the (already redacted) request.
 - **Audit hook**: `on_audit(AuditEvent)` receives counts per kind, the policy,
   the number restored and stripped, and the passthrough reason. Never a value.
 
