@@ -169,6 +169,20 @@ class InvalidOutputError(Exception):
         self.paths = paths
 
 
+class ToolCallTruncatedError(InvalidOutputError):
+    """The reply hit the token budget (`finish_reason` "length") inside a tool
+    call, so its arguments are incomplete. It is never passed on as a
+    half-parsed dict. A subclass of `InvalidOutputError`, so the engine fails
+    over exactly as before; catch this one (it is also what an exhausted chain
+    chains from) to retry with a larger `max_tokens`. `tool_names` lists the
+    calls in the cut-off reply; no arguments are included."""
+
+    def __init__(self, message: str = "", tool_names: tuple[str, ...] = ()) -> None:
+        super().__init__(message)
+        self.finish_reason = "length"
+        self.tool_names = tool_names
+
+
 class ProviderAuthError(Exception):
     """A provider could not authenticate before sending its request, e.g.
     Azure with `azure_auth="entra"` when no Microsoft Entra token can be

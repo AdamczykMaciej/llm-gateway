@@ -32,7 +32,7 @@ from .retry import Deadline, call_with_retry
 from .router import record_provider_failure
 from .routing import RequestProfile, plan_chain
 from .tool_results import cap_tool_results, resolve_cap
-from .tool_validation import validate_chat_request
+from .tool_validation import unique_tool_call_ids, validate_chat_request
 from .tracing import emit_attempt_span, get_tracer, resolve_request_id, set_chat_attributes
 
 logger = logging.getLogger("llm_gateway")
@@ -246,7 +246,9 @@ async def chat(
                 result.output_tokens,
                 result.reasoning_tokens,
             )
-            return dataclasses.replace(result, request_id=rid)
+            return dataclasses.replace(
+                result, request_id=rid, tool_calls=unique_tool_call_ids(result.tool_calls)
+            )
 
         if deadline.expired:
             span.set_status(StatusCode.ERROR, "call deadline exceeded")

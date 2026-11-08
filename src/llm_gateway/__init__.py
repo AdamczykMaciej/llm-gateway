@@ -39,6 +39,7 @@ from .errors import (
     PolicyViolationError,
     ProviderAuthError,
     ResidencyViolationError,
+    ToolCallTruncatedError,
     UnsupportedCapabilityError,
 )
 from .pii import mask_pii
@@ -60,6 +61,7 @@ from .providers.base import ChatResult, StreamDelta, ToolCall, Usage
 from .residency import residency_report
 from .router import Completion, LLMError, complete, complete_with_usage
 from .streaming import stream_chat
+from .tool_validation import ToolCallIssue, check_tool_calls, tool_error_message
 
 __all__ = [
     "InvalidRequestError",
@@ -80,6 +82,10 @@ __all__ = [
     "ChatResult",
     "StreamDelta",
     "ToolCall",
+    "ToolCallIssue",
+    "check_tool_calls",
+    "tool_error_message",
+    "ToolCallTruncatedError",
     "LLMError",
     "LLMDeadlineExceeded",
     "GatewayNotConfiguredError",
