@@ -88,9 +88,10 @@ class TokenFormat:
     def pattern(self) -> re.Pattern[str]:
         o, c = re.escape(self.open), re.escape(self.close)
         suffix = r"_\d+" if self.numbered else ""
-        return re.compile(rf"{o}[A-Za-z][A-Za-z -]{{0,30}}?{suffix}{c}")
+        return re.compile(rf"{o}[A-Za-z][A-Za-z0-9 _-]{{0,30}}?{suffix}{c}")
 
 
+_KIND_RE = re.compile(r"[A-Za-z][A-Za-z0-9 _-]{0,30}")
 DEFAULT_FORMAT = TokenFormat()
 _MAX_TOKEN_LEN = 48  # longest token the streamer holds back waiting for its close
 
@@ -103,18 +104,34 @@ class Vault:
         self._by_token: dict[str, str] = {}
         self._by_value: dict[tuple[str, str], str] = {}
         self._counts: Counter[str] = Counter()
+        self._reserved: set[str] = set()
+
+    def reserve(self, text: str) -> None:
+        """Note placeholder-shaped text already in the input. Such a literal is
+        never issued as a token, so a model echoing it cannot be "restored" into
+        a different value."""
+        if text:
+            self._reserved.update(self._fmt.pattern.findall(text))
 
     def token_for(self, kind: str, original: str) -> str | None:
         """The token for `original`; the same value always gets the same token.
         None when the format is unnumbered and `kind` already stands for
         another value (the caller then masks without a restorable mapping)."""
+        if not _KIND_RE.fullmatch(kind):
+            raise ValueError(
+                "a redaction kind must be 1-31 letters, digits, space, '_' or '-', "
+                "starting with a letter"
+            )
         key = (kind, original)
         known = self._by_value.get(key)
         if known is not None:
             return known
         self._counts[kind] += 1
         token = self._fmt.render(kind, self._counts[kind])
-        if token in self._by_token:
+        while token in self._reserved and self._fmt.numbered:
+            self._counts[kind] += 1
+            token = self._fmt.render(kind, self._counts[kind])
+        if token in self._by_token or token in self._reserved:
             return None
         self._by_token[token] = original
         self._by_value[key] = token
@@ -136,6 +153,7 @@ class Vault:
         self._by_token.clear()
         self._by_value.clear()
         self._counts.clear()
+        self._reserved.clear()
 
     def __repr__(self) -> str:  # counts only
         return f"<Vault entries={len(self._by_token)}>"
@@ -281,6 +299,8 @@ def redact_messages(
     arguments redacted (a copy; the caller's list is untouched). System
     messages use `system_redactor` when given."""
     sys_r = system_redactor or redactor
+    for m in messages:
+        _map_message(m, lambda t: (vault.reserve(t), t)[1])
     out = []
     for m in messages:
         r = sys_r if m.get("role") == "system" else redactor
@@ -301,7 +321,9 @@ class _Output:
         self.stripped = 0
         self._re = privacy.fmt.pattern
 
-    def apply(self, text: str) -> str:
+    def apply(self, text: str, escape: bool = False) -> str:
+        """`escape`: the text is a fragment of a JSON string (streamed tool-call
+        arguments), so a restored value is escaped to keep the JSON valid."""
         pol = self.privacy.output
         if pol is OutputPolicy.PASSTHROUGH or not text:
             return text
@@ -327,7 +349,7 @@ class _Output:
                 return token
             if pol is OutputPolicy.RESTORE:
                 self.restored += 1
-                return original
+                return json.dumps(original, ensure_ascii=False)[1:-1] if escape else original
             self.stripped += 1
             return ""
 
@@ -349,8 +371,9 @@ class StreamFilter:
     """The output policy over a stream of chunks. A token split across chunks
     is held until it is complete (or cannot be a token any more)."""
 
-    def __init__(self, out: _Output) -> None:
+    def __init__(self, out: _Output, escape: bool = False) -> None:
         self._out = out
+        self._escape = escape
         self._held = ""
         self._open = out.privacy.fmt.open
 
@@ -362,12 +385,16 @@ class StreamFilter:
         i = buf.rfind(self._open)
         if i != -1 and self._out.privacy.fmt.close not in buf[i:] and len(buf) - i < _MAX_TOKEN_LEN:
             cut = i
+        for k in range(len(self._open) - 1, 0, -1):  # a delimiter split mid-way
+            if buf.endswith(self._open[:k]):
+                cut = min(cut, len(buf) - k)
+                break
         self._held = buf[cut:]
-        return self._out.apply(buf[:cut])
+        return self._out.apply(buf[:cut], self._escape)
 
     def finish(self) -> str:
         rest, self._held = self._held, ""
-        return self._out.apply(rest)
+        return self._out.apply(rest, self._escape)
 
 
 # ── the layer ────────────────────────────────────────────────────────────────
@@ -430,6 +457,8 @@ class PrivacyLayer:
             fn = self._complete
             if fn is None:
                 from .router import complete_with_usage as fn  # noqa: PLC0415
+            vault.reserve(system)
+            vault.reserve(prompt)
             completion = await fn(
                 system=redact_text(system, p.system_redactor or p.redactor, vault),
                 prompt=redact_text(prompt, p.redactor, vault),
@@ -498,21 +527,29 @@ class PrivacyLayer:
         )
         try:
             async for delta in stream:
-                yield self._filter_delta(delta, text_filter, arg_filters)
-            tail = text_filter.finish()
-            extra = [
-                {"index": i, "function": {"arguments": f.finish()}}
-                for i, f in sorted(arg_filters.items())
-            ]
-            extra = [e for e in extra if e["function"]["arguments"]]
+                filtered = self._filter_delta(delta, text_filter, arg_filters)
+                if delta.finish_reason:
+                    # Flush what is held back BEFORE the finishing delta: a
+                    # consumer that stops at finish_reason must not lose a tail.
+                    tail, extra = _flush(text_filter, arg_filters)
+                    if tail or extra:
+                        filtered = replace(
+                            filtered,
+                            content=(filtered.content or "") + tail or None,
+                            tool_call_deltas=[*(filtered.tool_call_deltas or []), *extra] or None,
+                        )
+                yield filtered
+            tail, extra = _flush(text_filter, arg_filters)
             if tail or extra:
                 yield _delta(content=tail or None, tool_call_deltas=extra or None)
             self._audit("stream_chat", p, vault, out)
         finally:
             aclose = getattr(stream, "aclose", None)
-            if aclose is not None:
-                await aclose()
-            vault.clear()
+            try:
+                if aclose is not None:
+                    await aclose()
+            finally:
+                vault.clear()
 
     def _filter_delta(
         self, delta: Any, text_filter: StreamFilter, arg_filters: dict[int, StreamFilter]
@@ -528,12 +565,22 @@ class PrivacyLayer:
                 args = fn_spec.get("arguments")
                 if args:
                     idx = int(frag.get("index", 0))
-                    f = arg_filters.setdefault(idx, StreamFilter(text_filter._out))
+                    f = arg_filters.setdefault(idx, StreamFilter(text_filter._out, escape=True))
                     fn_spec["arguments"] = f.feed(args)
                     frag["function"] = fn_spec
                 frags.append(frag)
             changes["tool_call_deltas"] = frags
         return replace(delta, **changes) if changes else delta
+
+
+def _flush(
+    text_filter: StreamFilter, arg_filters: dict[int, StreamFilter]
+) -> tuple[str, list[dict]]:
+    tail = text_filter.finish()
+    extra = [
+        {"index": i, "function": {"arguments": f.finish()}} for i, f in sorted(arg_filters.items())
+    ]
+    return tail, [e for e in extra if e["function"]["arguments"]]
 
 
 def _delta(**kw: Any) -> Any:
