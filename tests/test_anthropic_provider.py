@@ -140,6 +140,7 @@ async def test_sampling_params_reach_the_sdk_call():
             tools=None,
             max_tokens=100,
             sampling={"temperature": 0.0, "top_p": 0.5, "stop": "STOP", "seed": 42},
+            model="claude-test-model",  # older models take both
         )
     kwargs = mock_create.call_args.kwargs
     # anthropic>=1.0 removed temperature/top_p as named SDK kwargs (TypeError),

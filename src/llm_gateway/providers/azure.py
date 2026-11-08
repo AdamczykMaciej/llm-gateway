@@ -35,10 +35,12 @@ from ..errors import ProviderAuthError
 from ..residency import azure_residency
 from ..structured import OutputSchema
 from .base import (
+    REASONING_REJECTED_SAMPLING,
     ChatResult,
     ProviderResult,
     StreamDelta,
     close_clients,
+    drop_keys,
     guard_empty_stream,
     openai_sampling_kwargs,
     parse_openai_style_chunk,
@@ -204,7 +206,12 @@ def _request_kwargs(
     sampling: dict | None,
     response_format: dict | None,
 ) -> dict:
-    kwargs: dict = {**openai_sampling_kwargs(sampling), **reasoning_kwargs(config)}
+    sampling_kwargs = openai_sampling_kwargs(sampling)
+    if config.azure_reasoning_effort:
+        # A deployment sent `reasoning_effort` is a reasoning model, which
+        # rejects non-default sampling with a 400.
+        sampling_kwargs = drop_keys(sampling_kwargs, REASONING_REJECTED_SAMPLING)
+    kwargs: dict = {**sampling_kwargs, **reasoning_kwargs(config)}
     if tools:
         kwargs["tools"] = tools
         if tool_choice is not None:
@@ -327,7 +334,9 @@ async def stream_chat(
         sampling=sampling,
         response_format=response_format,
     )
-    guarded = guard_empty_stream(deltas, provider=PROVIDER, model=model or default_model(config))
+    guarded = guard_empty_stream(
+        deltas, provider=PROVIDER, model=model or default_model(config), strip_think=True
+    )
     async with aclosing(guarded):
         async for delta in guarded:
             yield delta

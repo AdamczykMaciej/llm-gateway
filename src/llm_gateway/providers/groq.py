@@ -202,7 +202,9 @@ async def stream_chat(
         sampling=sampling,
         response_format=response_format,
     )
-    guarded = guard_empty_stream(deltas, provider="groq", model=model or default_model(config))
+    guarded = guard_empty_stream(
+        deltas, provider="groq", model=model or default_model(config), strip_think=True
+    )
     async with aclosing(guarded):
         async for delta in guarded:
             yield delta

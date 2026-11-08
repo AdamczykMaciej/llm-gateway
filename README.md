@@ -377,8 +377,12 @@ deployment of a non-reasoning model, which may reject the parameter.
   is opened.
 - A completion blocked by the filter returns 200 with
   `finish_reason: "content_filter"` and no content. That is an empty reply
-  (`EmptyCompletionError`, `EMPTY_RESPONSE`): it fails over and counts toward
-  the breaker, like any other empty reply. A stream that ends that way before
+  (`EmptyCompletionError`) classified `INVALID_OUTPUT`: it fails over and does
+  not count toward the breaker, because whether the filter fires depends on
+  what the caller sent, so one user's trigger text must not take Azure out of
+  rotation for everyone (a budget-exhausted empty reply, `finish_reason:
+  "length"`, still counts). The same holds for Gemini `SAFETY`, Anthropic
+  `refusal` and a 200 with no choices. A stream that ends that way before
   any text fails over too. A stream the filter cuts off after text has
   already reached the caller just ends with `finish_reason: "content_filter"`.
 

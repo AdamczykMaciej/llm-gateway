@@ -257,7 +257,10 @@ class OpenAICompatProvider:
             response_format=response_format,
         )
         guarded = guard_empty_stream(
-            deltas, provider=self.spec.provider, model=model or self.default_model(config)
+            deltas,
+            provider=self.spec.provider,
+            model=model or self.default_model(config),
+            strip_think=True,
         )
         async with aclosing(guarded):
             async for delta in guarded:

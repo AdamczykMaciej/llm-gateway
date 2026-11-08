@@ -1171,7 +1171,7 @@ async def test_empty_stream_is_guarded_and_fails_over():
     assert text == GROQ_TEXT
     assert len(vertex_wire.requests) == 2  # one per stream: not retried
     assert breaker.is_open("vertex")
-    assert (excinfo.value.provider, excinfo.value.finish_reason) == ("vertex", "stop")
+    assert (excinfo.value.provider, excinfo.value.finish_reason) == ("vertex", "length")
 
 
 # ─── Policy and capabilities ───────────────────────────────────────────────

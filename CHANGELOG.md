@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.15.4
+
+Second correctness pass (finish reasons, filtered replies, reasoning models, usage).
+
+- Fix (high): a completion ended by a content filter or refusal with no text counted toward the
+  circuit breaker (`EMPTY_RESPONSE`). Whether the filter fires depends on the caller's content, so
+  one user's trigger text could open the breaker for everyone; it is now `INVALID_OUTPUT` (fails
+  over, never counts). Applies to `content_filter`, Gemini `SAFETY`, Anthropic `refusal` and a 200
+  with no choices. Budget-exhausted empties (`length`) still count. The exception type is unchanged.
+- Fix (high): OpenAI o-series / gpt-5 models got `max_tokens` and non-default sampling, a 400 on
+  every call. They now get `max_completion_tokens` and `temperature`, `top_p`, penalties and `stop`
+  are dropped. Azure does the same for sampling while `azure_reasoning_effort` is set.
+- Fix (medium): `chat()` and streams lost truncation: `finish_reason` was always `stop` or
+  `tool_calls` in chat, and Anthropic `max_tokens` streamed as `stop`. One vocabulary now:
+  `stop`, `length`, `content_filter`, `tool_calls` (new values only where `stop` was wrong).
+- Fix (medium): a reply with no `choices` (Gemini blocking a prompt) raised IndexError (`UNKNOWN`,
+  counted); it is now an `EmptyCompletionError`.
+- Fix (medium): inline `<think>...</think>` text from DeepSeek-R1/Qwen3-style hosts leaked into
+  `content` (chat and streams); a leading block is stripped, a think-only reply is empty.
+- Fix (medium): Anthropic rejected OpenAI-range `temperature` above 1 and `temperature` together
+  with `top_p` on Opus 4.1-4.6, Sonnet 4.5+ and Haiku 4.5; temperature is clamped to 1 and `top_p`
+  is dropped when both are set on those models.
+- Fix (medium): a `max_tokens` cut inside an Anthropic tool call returned a half-built call; it is
+  now `InvalidOutputError`.
+- Fix (medium): OpenRouter `prompt_tokens_details.cache_write_tokens` was ignored, so cache-write
+  premiums were billed at the base rate; it now fills `cache_creation_input_tokens`.
+- Fix (low): Anthropic multi-part content: empty text parts (rejected upstream) are dropped, and
+  unsupported part types (`input_audio`, `file`) or an image without a url raise a clear
+  `InvalidRequestError`, now classified `INVALID_REQUEST` (it was `UNKNOWN`, counted); invalid tool
+  arguments in message history are the same.
+- Docs: the README and `errors.py` table state why an Azure output content filter does not count.
+- Verified, no change needed: Vertex Claude shares the Anthropic path; Groq, Mistral, OpenRouter,
+  Hugging Face and OpenAI-compatible hosts use the shared OpenAI-style parsers.
+
 ## 0.15.3
 
 Second reliability pass (breaker scope, client lifecycle, bounded state).
