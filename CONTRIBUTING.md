@@ -6,7 +6,7 @@ Checks (all must pass):
 
 - Tests + coverage: `pytest -q --cov` (floor `fail_under` in `pyproject.toml`; raise it, never lower it)
 - Lint/format: `ruff check . && ruff format --check .`
-- Types: `pyright src`
+- Types: `pyright --pythonpath "$(which python)" src`
 - Dependencies: `pip-audit`
 
 Tests never call live or paid providers.
