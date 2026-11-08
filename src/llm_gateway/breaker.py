@@ -174,7 +174,10 @@ def record_error(
 
 
 def reset() -> None:
-    """Clear all breaker state. Used by tests to isolate runs."""
+    """Clear all breaker state (every provider and model becomes closed again).
+
+    Exported as `llm_gateway.reset_circuit_breakers`; used by tests to isolate
+    runs. Takes no arguments, returns `None`, never raises."""
     with _lock:
         _failures.clear()
         _opened_until.clear()

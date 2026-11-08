@@ -260,7 +260,13 @@ def check_tool_calls(
 
 def tool_error_message(issue: ToolCallIssue) -> dict:
     """A `role: "tool"` message answering the failed call with its problem, to
-    append to the history so the model can retry with corrected arguments."""
+    append to the history so the model can retry with corrected arguments.
+
+    Args:
+        issue: one item returned by `check_tool_calls`.
+
+    Returns:
+        The message dict (`role`, `tool_call_id`, `content`). Never raises."""
     return {"role": "tool", "tool_call_id": issue.call_id, "content": f"Error: {issue.message}"}
 
 

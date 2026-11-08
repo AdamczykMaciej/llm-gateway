@@ -10,7 +10,330 @@ Extracted from the LLM-router hardening work in the
 [InterviewAI](https://github.com/AdamczykMaciej/interviewer) backend, and
 generalized to have zero product-specific coupling.
 
-Two ways to use it:
+## Quick start (five minutes, no API key)
+
+```bash
+pip install "llm-gateway @ git+https://github.com/AdamczykMaciej/llm-gateway.git"
+```
+
+The snippet below runs as written: a fake provider stands in for the network, so
+you see the whole path (config, routing, usage, cost) before you add a real key.
+For a real call, drop the `with patch(...)` line and pass your key.
+
+<!-- runnable: quickstart -->
+```python
+from unittest.mock import AsyncMock, patch
+
+from llm_gateway import GatewayConfig, complete_with_usage
+from llm_gateway.providers.base import ProviderResult
+
+fake = ProviderResult(text="Hello!", model="fake-model", input_tokens=12, output_tokens=3)
+config = GatewayConfig(anthropic_api_key="sk-ant-fake", provider_order="anthropic")
+
+with patch("llm_gateway.router.CALLS", {"anthropic": AsyncMock(return_value=fake)}):
+    result = await complete_with_usage(system="Be brief.", prompt="Hi!", config=config)
+
+assert result.text == "Hello!" and result.provider == "anthropic"
+print(result.text, result.usage.input_tokens, result.usage.output_tokens)
+```
+
+Every snippet below is executed by `tests/test_readme_snippets.py` against fake
+providers (no network), so they cannot drift from the code. They assume
+`await` at the top level (a notebook, `python -m asyncio`, or inside your own
+`async def`) and a `config` built from your real keys, shown as fake ones here.
+
+## Feature guide (0.18)
+
+### Failover and policy
+
+Providers are tried in `provider_order`; a failure moves to the next one. A
+`ProviderPolicy` narrows the chain per call (residency, `only`/`ignore`, cost cap).
+
+<!-- runnable: failover -->
+```python
+from llm_gateway import GatewayConfig, ProviderPolicy, complete_with_usage
+
+config = GatewayConfig(
+    anthropic_api_key="sk-ant-fake", groq_api_key="gsk-fake", provider_order="anthropic,groq"
+)
+
+# anthropic is down: groq answers. result.provider says who served the call.
+result = await complete_with_usage(system="Be brief.", prompt="Hi!", config=config)
+assert result.provider == "groq"
+
+# Skip a provider for one call without touching the config.
+policy = ProviderPolicy(ignore=("anthropic",))
+result = await complete_with_usage(system="Be brief.", prompt="Hi!", config=config, policy=policy)
+assert result.provider == "groq"
+```
+
+### Streaming and the restart marker
+
+With `restart_on_failure=True`, a provider that dies after it already yielded
+text hands over to the next one. The new attempt begins with a marker delta
+(`delta.restart is True`): discard everything received before it.
+
+<!-- runnable: stream_restart -->
+```python
+from llm_gateway import GatewayConfig, stream_chat
+
+config = GatewayConfig(
+    anthropic_api_key="sk-ant-fake", groq_api_key="gsk-fake", provider_order="anthropic,groq"
+)
+parts: list[str] = []
+async for delta in stream_chat(
+    messages=[{"role": "user", "content": "Say hello."}], config=config, restart_on_failure=True
+):
+    if delta.restart:
+        parts.clear()  # also reset tool-call aggregation and any text already shown
+        continue
+    if delta.content:
+        parts.append(delta.content)
+
+assert "".join(parts) == "Hello there"  # no "Hel" left over from the failed attempt
+```
+
+### Tool calling and the `check_tool_calls` feedback loop
+
+`check_tool_calls` validates a model's tool calls (known tool, arguments match the
+schema) and never raises. Answer each issue with `tool_error_message` and call
+again: the model usually corrects itself.
+
+<!-- runnable: tool_loop -->
+```python
+import json
+
+from llm_gateway import GatewayConfig, chat, check_tool_calls, tool_error_message
+
+config = GatewayConfig(anthropic_api_key="sk-ant-fake", provider_order="anthropic")
+tools = [
+    {
+        "type": "function",
+        "function": {
+            "name": "get_weather",
+            "description": "Weather for a city",
+            "parameters": {
+                "type": "object",
+                "properties": {"city": {"type": "string"}},
+                "required": ["city"],
+                "additionalProperties": False,
+            },
+        },
+    }
+]
+messages = [{"role": "user", "content": "Weather in Warsaw?"}]
+
+for _ in range(3):  # bound the loop
+    reply = await chat(messages=messages, tools=tools, config=config)
+    if not reply.tool_calls:
+        break
+    messages.append(
+        {
+            "role": "assistant",
+            "content": reply.content,
+            "tool_calls": [
+                {
+                    "id": c.id,
+                    "type": "function",
+                    "function": {"name": c.name, "arguments": json.dumps(c.arguments)},
+                }
+                for c in reply.tool_calls
+            ],
+        }
+    )
+    issues = {i.call_id: i for i in check_tool_calls(tools, reply.tool_calls)}
+    for call in reply.tool_calls:
+        if call.id in issues:
+            messages.append(tool_error_message(issues[call.id]))  # model gets to retry
+        else:
+            messages.append({"role": "tool", "tool_call_id": call.id, "content": "18C, clear"})
+
+assert reply.content == "It is 18C and clear in Warsaw."
+```
+
+### Structured output
+
+<!-- runnable: structured -->
+```python
+from pydantic import BaseModel, Field
+
+from llm_gateway import GatewayConfig, complete_with_usage
+
+
+class Verdict(BaseModel):
+    score: int = Field(ge=0, le=100)
+    summary: str
+
+
+config = GatewayConfig(anthropic_api_key="sk-ant-fake", provider_order="anthropic")
+result = await complete_with_usage(
+    system="Score the answer.", prompt="...", config=config, output_schema=Verdict
+)
+assert isinstance(result.parsed, Verdict) and result.parsed.score == 90
+```
+
+A reply that is not valid JSON, or fails the schema, fails over to the next
+provider (see `validate=` and `repair_attempts=` below).
+
+### Metering with `on_attempt`
+
+One `AttemptReport` per provider attempt, failed ones included (they may have been
+billed). No prompt or reply text is in it.
+
+<!-- runnable: on_attempt -->
+```python
+from llm_gateway import AttemptReport, GatewayConfig, complete
+
+ledger: list[tuple[str, str, str, float | None]] = []
+
+
+async def meter(r: AttemptReport) -> None:
+    ledger.append((r.provider, r.model, r.outcome, r.cost_usd))
+
+
+config = GatewayConfig(
+    anthropic_api_key="sk-ant-fake",
+    groq_api_key="gsk-fake",
+    provider_order="anthropic,groq",
+    on_attempt=meter,
+)
+await complete(system="Be brief.", prompt="Hi!", config=config)
+assert [row[2] for row in ledger] == ["failed", "succeeded"]
+```
+
+### Budgets
+
+`ProviderPolicy(max_cost_usd=...)` skips providers whose estimated worst case is over
+the cap; `budget_check` is your own gate (sync or async), called before each attempt
+with `(provider, model, estimated_cost_usd)`. A denial never trips the breaker. If
+every provider is denied, `PolicyViolationError` is raised.
+
+<!-- runnable: budgets -->
+```python
+from llm_gateway import GatewayConfig, PolicyViolationError, ProviderPolicy, complete_with_usage
+
+config = GatewayConfig(
+    anthropic_api_key="sk-ant-fake", groq_api_key="gsk-fake", provider_order="anthropic,groq"
+)
+seen: list[str] = []
+
+
+def allow_only_groq(provider: str, model: str, estimated_cost_usd: float | None) -> bool:
+    seen.append(provider)
+    return provider == "groq"
+
+
+result = await complete_with_usage(
+    system="Be brief.",
+    prompt="Hi!",
+    config=config,
+    policy=ProviderPolicy(budget_check=allow_only_groq),
+)
+assert result.provider == "groq" and seen[0] == "anthropic"
+
+try:
+    await complete_with_usage(
+        system="Be brief.",
+        prompt="Hi!",
+        config=config,
+        policy=ProviderPolicy(budget_check=lambda p, m, c: False),
+    )
+except PolicyViolationError:
+    pass  # nothing was sent anywhere
+else:
+    raise AssertionError("expected PolicyViolationError")
+```
+
+### Timeouts: first token, idle, deadline
+
+| Setting (env) | Default | Bounds | On expiry |
+|---|---|---|---|
+| `first_token_timeout_seconds` (`FIRST_TOKEN_TIMEOUT_SECONDS`) | unset | `stream_chat()` only: time to the first chunk | `FirstTokenTimeoutError`; fails over, nothing was yielded yet |
+| `stream_idle_timeout_seconds` (`STREAM_IDLE_TIMEOUT_SECONDS`) | 30 | streaming: the wait for the response to start and each gap between chunks | provider timeout; fails over (restart marker if opted in and text was already yielded) |
+| `request_timeout_seconds` (`REQUEST_TIMEOUT_SECONDS`) | 45 | one non-streaming attempt | provider timeout; fails over |
+| `call_deadline_seconds` (`CALL_DEADLINE_SECONDS`) | 90 | the whole call: every attempt, retry, backoff and failover | `LLMDeadlineExceeded`; no more failover |
+
+Before the first chunk the smallest of first-token, idle and the remaining deadline
+applies; after it, only idle and the deadline.
+
+<!-- runnable: timeouts -->
+```python
+from llm_gateway import GatewayConfig, stream_chat
+
+config = GatewayConfig(
+    anthropic_api_key="sk-ant-fake",
+    groq_api_key="gsk-fake",
+    provider_order="anthropic,groq",
+    first_token_timeout_seconds=0.05,  # give up on a silent provider quickly
+    stream_idle_timeout_seconds=30,
+    call_deadline_seconds=60,
+)
+text = "".join(
+    [
+        d.content
+        async for d in stream_chat(
+            messages=[{"role": "user", "content": "Say hello."}], config=config
+        )
+        if d.content
+    ]
+)
+assert text == "Hello there"  # the silent first provider was skipped
+```
+
+### Pricing
+
+Prices are USD per million tokens, keyed `provider/model`, including long-context
+tiers and cache rates. Print the built-in table (no network):
+
+```bash
+python -m llm_gateway.pricing --list
+```
+
+<!-- runnable: pricing -->
+```python
+from llm_gateway import ModelPrice, Usage
+from llm_gateway.pricing import cost_usd, lookup_price
+
+price = lookup_price("anthropic", "claude-haiku-5-5")
+assert price is not None
+print(cost_usd(price, Usage(input_tokens=1_000, output_tokens=500)))
+
+# Your own price (or a model with none): override per call or via MODEL_PRICES.
+mine = ModelPrice(input_per_mtok=1.0, output_per_mtok=2.0)
+assert cost_usd(mine, Usage(input_tokens=1_000_000, output_tokens=1_000_000)) == 3.0
+assert cost_usd(None, Usage(input_tokens=1, output_tokens=1)) is None  # unknown, never 0
+```
+
+### Security notes
+
+- **Redirects are off** on every provider client: a redirect cannot carry your key to another host.
+- **Base URLs are guarded**: `openai_compat_base_url`, `huggingface_base_url` and the
+  Azure endpoint must be http(s) with a host and no `user:password@`; cloud-metadata
+  hosts are rejected. The validation message never repeats the URL.
+- **Redaction**: provider error text is scrubbed (`redact_secrets`) and bounded before it
+  reaches an exception, a span or an HTTP response. `AttemptReport` carries an error
+  *class name* only. Spans and logs never hold prompts or replies.
+
+<!-- runnable: security -->
+```python
+from pydantic import ValidationError
+
+from llm_gateway import GatewayConfig
+from llm_gateway.errors import redact_secrets
+
+try:
+    GatewayConfig(openai_compat_base_url="https://user:hunter2@llm.example.com/v1")
+except ValidationError as exc:
+    assert "hunter2" not in str(exc)  # rejected, and the password is not echoed
+else:
+    raise AssertionError("credentials in a base URL must be rejected")
+
+assert "sk-ant-" not in redact_secrets("401 invalid x-api-key sk-ant-api03-abcdefghijklmnopqrstu")
+```
+
+The full reference for each feature follows in the sections below.
+
+## Two ways to use it
 
 ## 1. As a Python library (in-process, no network hop)
 
@@ -1633,23 +1956,23 @@ retries the same provider (`RETRY_ATTEMPTS`); every provider failure then
 fails over to the next provider. "Caller should retry" is about the exception
 you finally see.
 
-| Error | Raised when | Retried by the gateway? | Caller should retry? |
-|---|---|---|---|
-| `LLMError` | Base class: no provider could serve the call | n/a | see the subclass |
-| `GatewayNotConfiguredError` | No provider in `provider_order` has credentials/config | no | no, fix configuration |
-| `AllProvidersExhaustedError` | Providers are configured, but every attempt failed or every breaker is open | after the provider failures below | yes, after about `BREAKER_COOLDOWN_SECONDS` |
-| `LLMDeadlineExceeded` | `CALL_DEADLINE_SECONDS` ran out across retries and failovers | no | yes, possibly with a higher deadline |
-| `PolicyViolationError` | The routing policy excludes every provider (residency, retention, DPA, cost cap, ...) | no | no, change the policy or request |
-| `ResidencyViolationError` | `REQUIRE_RESIDENCY` is set and no provider matches (subclass of `PolicyViolationError`) | no | no |
-| `UnsupportedCapabilityError` | Providers were excluded only because their model can't do a feature the request uses (subclass of `PolicyViolationError`) | no | no, drop the feature |
-| `InvalidRequestError` | The request is malformed (bad tool definition, schema, `tool_choice`, tool-result pairing); also a `ValueError`; HTTP 400 | no | no, fix the request |
-| `PrivacyPolicyMissingError` | A `PrivacyLayer(strict=True)` call had no `privacy=` policy; a `RuntimeError`, raised before anything is sent | no | no, pass a policy |
-| `InvalidOutputError` | A provider answered with unusable output (refusal, invalid JSON, schema failure). Fails over; surfaces only inside `LLMError` | no | rarely; a different prompt or schema |
-| `ToolCallTruncatedError` | The reply hit `max_tokens` inside a tool call (subclass of `InvalidOutputError`; fails over the same way) | no | yes, with a larger `max_tokens` |
-| `StreamTooLargeError` | A streamed reply passed `stream_max_tool_arguments_chars` or `stream_max_total_chars` (subclass of `InvalidOutputError`; fails over the same way) | no | no |
-| `FirstTokenTimeoutError` | A streaming attempt sent no first chunk within `first_token_timeout_seconds` (subclass of the builtin `TimeoutError`: a provider timeout, fails over before anything is yielded) | no | yes |
-| `EmptyCompletionError` | A provider returned no text and no tool calls (often a reasoning model out of budget). Fails over | no | raise `max_tokens` |
-| `ProviderAuthError` | A provider could not authenticate before sending (e.g. no Entra token). Fails over | no | no, fix credentials |
+| Error | Raised when | Retried by the gateway? | Fails over? | Caller should retry? |
+|---|---|---|---|---|
+| `LLMError` | Base class: no provider could serve the call | n/a | n/a | see the subclass |
+| `GatewayNotConfiguredError` | No provider in `provider_order` has credentials/config | no | n/a (nothing to try) | no, fix configuration |
+| `AllProvidersExhaustedError` | Providers are configured, but every attempt failed or every breaker is open | after the provider failures below | n/a (chain spent) | yes, after about `BREAKER_COOLDOWN_SECONDS` |
+| `LLMDeadlineExceeded` | `CALL_DEADLINE_SECONDS` ran out across retries and failovers | no | no (stops the chain) | yes, possibly with a higher deadline |
+| `PolicyViolationError` | The routing policy excludes every provider (residency, retention, DPA, cost cap, ...) | no | n/a (raised before any attempt) | no, change the policy or request |
+| `ResidencyViolationError` | `REQUIRE_RESIDENCY` is set and no provider matches (subclass of `PolicyViolationError`) | no | n/a | no |
+| `UnsupportedCapabilityError` | Providers were excluded only because their model can't do a feature the request uses (subclass of `PolicyViolationError`) | no | n/a | no, drop the feature |
+| `InvalidRequestError` | The request is malformed (bad tool definition, schema, `tool_choice`, tool-result pairing); also a `ValueError`; HTTP 400 | no | n/a (raised before any attempt) | no, fix the request |
+| `PrivacyPolicyMissingError` | A `PrivacyLayer(strict=True)` call had no `privacy=` policy; a `RuntimeError`, raised before anything is sent | no | n/a | no, pass a policy |
+| `InvalidOutputError` | A provider answered with unusable output (refusal, invalid JSON, schema failure). Fails over; surfaces only inside `LLMError` | no | yes | rarely; a different prompt or schema |
+| `ToolCallTruncatedError` | The reply hit `max_tokens` inside a tool call (subclass of `InvalidOutputError`; fails over the same way) | no | yes | yes, with a larger `max_tokens` |
+| `StreamTooLargeError` | A streamed reply passed `stream_max_tool_arguments_chars` or `stream_max_total_chars` (subclass of `InvalidOutputError`; fails over the same way) | no | yes (not by mid-stream restart) | no |
+| `FirstTokenTimeoutError` | A streaming attempt sent no first chunk within `first_token_timeout_seconds` (subclass of the builtin `TimeoutError`: a provider timeout, fails over before anything is yielded) | no | yes | yes |
+| `EmptyCompletionError` | A provider returned no text and no tool calls (often a reasoning model out of budget). Fails over | no | yes | raise `max_tokens` |
+| `ProviderAuthError` | A provider could not authenticate before sending (e.g. no Entra token). Fails over | no | yes | no, fix credentials |
 
 Provider failures are classified once (`errors.classify`):
 
