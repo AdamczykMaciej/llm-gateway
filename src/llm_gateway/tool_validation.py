@@ -18,7 +18,7 @@ from typing import Any
 from .errors import InvalidRequestError
 from .providers._anthropic_translate import STRUCTURED_OUTPUT_TOOL_NAME
 
-_TOOL_NAME = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
+_TOOL_NAME = re.compile(r"[a-zA-Z0-9_-]{1,64}")
 _JSON_TYPES = frozenset({"object", "array", "string", "number", "integer", "boolean", "null"})
 _CHOICES = frozenset({"auto", "none", "required"})
 _MAX_DEPTH = 64
@@ -34,7 +34,7 @@ def _check_schema(schema: Any, where: str, depth: int = 0) -> None:
     type_ = schema.get("type")
     if type_ is not None:
         types = type_ if isinstance(type_, list) else [type_]
-        if not types or any(t not in _JSON_TYPES for t in types):
+        if not types or any(not isinstance(t, str) or t not in _JSON_TYPES for t in types):
             raise InvalidRequestError(f"{where}: 'type' must be one of {sorted(_JSON_TYPES)}.")
     if "enum" in schema and (not isinstance(schema["enum"], list) or not schema["enum"]):
         raise InvalidRequestError(f"{where}: 'enum' must be a non-empty list.")
@@ -80,7 +80,7 @@ def _tool_names(tools: list[dict] | None) -> set[str]:
         if tool.get("type", "function") != "function":
             raise InvalidRequestError(f"{label}: only tools of type 'function' are supported.")
         name = function.get("name")
-        if not isinstance(name, str) or not _TOOL_NAME.match(name):
+        if not isinstance(name, str) or not _TOOL_NAME.fullmatch(name):
             raise InvalidRequestError(f"{label}: 'name' must match [a-zA-Z0-9_-]{{1,64}}.")
         if name == STRUCTURED_OUTPUT_TOOL_NAME:
             raise InvalidRequestError(f"{label}: '{name}' is reserved by the gateway.")
