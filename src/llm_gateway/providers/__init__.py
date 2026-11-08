@@ -79,6 +79,25 @@ DEFAULT_MODEL = {
     "vertex": vertex.default_model,
 }
 
+# Whether the provider's API has a switch to limit a turn to one tool call:
+# OpenAI-style `parallel_tool_calls` (OpenAI, Azure, Groq, Mistral, OpenRouter)
+# or Anthropic's `disable_parallel_tool_use` (Anthropic, Vertex Claude). Where
+# it is False, `chat(parallel_tool_calls=False)` is accepted but cannot be
+# honored: Gemini's OpenAI-compatible endpoint, Hugging Face's router and an
+# unknown `openai_compat` host don't document the field, so it is not sent.
+PARALLEL_TOOL_CALLS_SUPPORTED = {
+    "anthropic": True,
+    "azure": True,
+    "gemini": False,
+    "groq": True,
+    "huggingface": False,
+    "mistral": True,
+    "openai": True,
+    "openai_compat": False,
+    "openrouter": True,
+    "vertex": True,
+}
+
 RESIDENCY = {
     "anthropic": anthropic.residency,
     "azure": azure.residency,
@@ -104,6 +123,7 @@ __all__ = [
     "CONFIGURED",
     "DEFAULT_MODEL",
     "RESIDENCY",
+    "PARALLEL_TOOL_CALLS_SUPPORTED",
 ]
 
 

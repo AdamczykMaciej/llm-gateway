@@ -195,6 +195,47 @@ A dict schema gets only a shallow check (top-level type and `required`
 keys), since the gateway has no JSON Schema validator dependency. Use a
 pydantic model for full validation.
 
+#### Validating a reply yourself: `validate=` and `repair_attempts=` (0.16.0)
+
+`output_schema=` asks the provider for JSON and fails over when the reply is
+unusable. `validate=` is a separate, opt-in check of the text that was served,
+against a pydantic model or a JSON Schema dict (a subset: `type`, `enum`,
+`const`, `required`, `properties`, `additionalProperties: false`, `items`,
+`anyOf`/`oneOf`, local `$ref`). It does not change the request, so pair it with
+`output_schema=` when you want the provider constrained too.
+
+```python
+from llm_gateway import InvalidOutputError, complete_with_usage
+
+try:
+    result = await complete_with_usage(system=..., prompt=..., validate=Person)
+    person = result.parsed            # a Person
+except InvalidOutputError as e:
+    e.paths                           # ("address.zip",): field paths, never values
+```
+
+A failed check raises `InvalidOutputError` after the provider was already
+paid for: **there is no automatic retry and no failover.** `repair_attempts=N`
+(default `0`) is the explicit knob: up to N extra paid calls to the provider
+that answered, each with the failing paths and its previous reply appended to
+the prompt. Usage and cost on the returned `Completion` are summed over all
+calls.
+
+### Request ids and attempt spans (0.16.0)
+
+`chat()`, `stream_chat()`, `complete()` and `complete_with_usage()` take
+`request_id=` (1-128 of letters, digits, `. _ : -`; anything else is an
+`InvalidRequestError`) and generate one when omitted. It is returned as
+`ChatResult.request_id` / `Completion.request_id` (on streams, the usage
+chunk's `StreamDelta.request_id`), and is on the call span as
+`llm_gateway.request_id`. Each provider attempt also gets a child span,
+`llm_gateway.attempt`, with `llm_gateway.request_id`, `llm_gateway.attempt`
+(1, 2, ... across the failover chain), `gen_ai.system`,
+`gen_ai.request.model`, `llm_gateway.outcome` (`ok` or the error class, e.g.
+`timeout`, `rate_limited`), `llm_gateway.latency_ms` and the token counts.
+Spans carry ids, classes and counts only: no prompts, replies, error text or
+keys.
+
 ### Prompt caching: `cache_system=True`
 
 ```python
@@ -1291,6 +1332,23 @@ so tool-calling works identically regardless of which provider actually
 serves the request. `tool_choice: "none"` is enforced by omitting tools
 from that call entirely (Anthropic has no direct equivalent otherwise).
 
+**One tool call per turn (0.16.0).** `chat(..., parallel_tool_calls=False)`
+(also `stream_chat`) asks the model for at most one tool call per turn:
+OpenAI, Azure, Groq, Mistral and OpenRouter get `parallel_tool_calls: false`,
+Anthropic and Vertex Claude get `disable_parallel_tool_use` on `tool_choice`
+(`{"type": "auto"}` is added when you gave none; `tool_choice="none"` is
+untouched). Gemini's OpenAI-compatible endpoint, Hugging Face and a generic
+`openai_compat` host have no documented switch, so nothing is sent: the call
+works but may still return several tool calls, so keep handling a list.
+`llm_gateway.providers.PARALLEL_TOOL_CALLS_SUPPORTED` says which is which.
+Leaving it unset (`None`, the default) sends nothing.
+
+**Tool result size guard (0.16.0).** `TOOL_RESULT_MAX_CHARS` (default `0`,
+off) or `chat(..., max_tool_result_chars=N)` cuts any `role: "tool"` message
+longer than N characters (text parts included) to N characters plus a marker
+stating how much was omitted, so one giant tool output is not resent on every
+turn. Your own message list is not modified.
+
 ### Structured output
 
 `response_format` (`{"type": "json_schema", "json_schema": {...}}` or
@@ -1491,6 +1549,7 @@ Messages never contain prompt content, model output or credentials.
 | `STREAM_IDLE_TIMEOUT_SECONDS` | `30` | Streaming: max wait for the stream to start and between chunks. `0` falls back to the SDK default. |
 | `SDK_MAX_RETRIES` | `0` | The provider SDKs' own retry count. The gateway owns retries; leave at `0`. |
 | `CALL_DEADLINE_SECONDS` | `90` | Wall-clock budget for one call across all retries and failovers. `0` disables it. |
+| `TOOL_RESULT_MAX_CHARS` | `0` | Truncate `role: "tool"` message text above this many characters, with a marker, before `chat()`/`stream_chat()` send it. `0` disables it. |
 | `TRACE_INCLUDE_PROMPTS` | `false` | Include (PII-masked) prompt text in traces |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | — | Any OTLP collector (Langfuse, Grafana Cloud, ...) |
 | `OTEL_EXPORTER_OTLP_HEADERS` | — | Comma-separated `key=value` pairs |

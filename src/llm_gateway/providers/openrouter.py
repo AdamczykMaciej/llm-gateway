@@ -45,6 +45,7 @@ def _extra_body(config: GatewayConfig) -> dict:
 _provider = OpenAICompatProvider(
     OpenAICompatSpec(
         provider="openrouter",
+        parallel_tool_calls=True,
         api_key=lambda config: config.openrouter_api_key,
         base_url=lambda config: BASE_URL,
         default_model=lambda config: config.openrouter_model,

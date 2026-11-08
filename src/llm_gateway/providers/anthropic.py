@@ -216,8 +216,13 @@ def _resolve_tool_kwargs(
     tool_choice: object,
     response_format: dict | None,
     messages: list[dict] | None = None,
+    parallel_tool_calls: bool | None = None,
 ) -> tuple[dict, bool]:
-    """Shared by chat() and stream_chat(). Returns (kwargs, emulating_structured_output)."""
+    """Shared by chat() and stream_chat(). Returns (kwargs, emulating_structured_output).
+
+    `parallel_tool_calls=False` sets `disable_parallel_tool_use` on the
+    `tool_choice` (adding `{"type": "auto"}` when the caller gave none);
+    `True`/`None` change nothing."""
     structured_tool = to_anthropic_structured_output_tool(response_format)
     if structured_tool:
         return (
@@ -241,6 +246,8 @@ def _resolve_tool_kwargs(
         return {}, False
     kwargs: dict = {"tools": anthropic_tools}
     choice = to_anthropic_tool_choice(tool_choice)
+    if parallel_tool_calls is False:
+        choice = {**(choice or {"type": "auto"}), "disable_parallel_tool_use": True}
     if choice:
         kwargs["tool_choice"] = choice
     return kwargs, False
@@ -348,6 +355,7 @@ async def chat(
     tool_choice: object = None,
     sampling: dict | None = None,
     response_format: dict | None = None,
+    parallel_tool_calls: bool | None = None,
 ) -> ChatResult:
     async def run(chosen: str) -> ChatResult:
         return await messages_chat(
@@ -362,6 +370,7 @@ async def chat(
             response_format=response_format,
             thinking=config.anthropic_thinking,
             effort=config.anthropic_effort,
+            parallel_tool_calls=parallel_tool_calls,
         )
 
     try:
@@ -386,10 +395,11 @@ async def messages_chat(
     response_format: dict | None,
     thinking: str = "",
     effort: str = "",
+    parallel_tool_calls: bool | None = None,
 ) -> ChatResult:
     system, anthropic_messages = to_anthropic_messages(messages)
     tool_kwargs, emulating_structured_output = _resolve_tool_kwargs(
-        tools, tool_choice, response_format, messages
+        tools, tool_choice, response_format, messages, parallel_tool_calls
     )
     kwargs: dict = {**_sampling_kwargs(sampling, model), **tool_kwargs}
     _apply_thinking_effort(kwargs, model, thinking, effort)
@@ -437,6 +447,7 @@ async def _stream_chat(
     tool_choice: object = None,
     sampling: dict | None = None,
     response_format: dict | None = None,
+    parallel_tool_calls: bool | None = None,
     cache_system: bool = False,
 ) -> AsyncIterator[StreamDelta]:
     chosen = model or default_model(config)
@@ -455,6 +466,7 @@ async def _stream_chat(
             thinking=config.anthropic_thinking,
             effort=config.anthropic_effort,
             cache_system=cache_system,
+            parallel_tool_calls=parallel_tool_calls,
         )
         try:
             async with aclosing(deltas):
@@ -485,6 +497,7 @@ async def messages_stream(
     thinking: str = "",
     effort: str = "",
     cache_system: bool = False,
+    parallel_tool_calls: bool | None = None,
 ) -> AsyncIterator[StreamDelta]:
     """Translate Anthropic's raw SSE event stream into normalized
     StreamDelta chunks. Anthropic's tool-call streaming already arrives
@@ -501,7 +514,7 @@ async def messages_stream(
     if cache_system:
         system = system_param_from_messages(messages, model, cache_system=True)
     tool_kwargs, emulating_structured_output = _resolve_tool_kwargs(
-        tools, tool_choice, response_format, messages
+        tools, tool_choice, response_format, messages, parallel_tool_calls
     )
     kwargs: dict = {**_sampling_kwargs(sampling, model), **tool_kwargs}
     _apply_thinking_effort(kwargs, model, thinking, effort)
@@ -610,6 +623,7 @@ async def stream_chat(
     tool_choice: object = None,
     sampling: dict | None = None,
     response_format: dict | None = None,
+    parallel_tool_calls: bool | None = None,
     cache_system: bool = False,
 ) -> AsyncIterator[StreamDelta]:
     """`_stream_chat()` behind `guard_empty_stream()`: a stream with no text
@@ -624,6 +638,7 @@ async def stream_chat(
         sampling=sampling,
         response_format=response_format,
         cache_system=cache_system,
+        parallel_tool_calls=parallel_tool_calls,
     )
     guarded = guard_empty_stream(deltas, provider=PROVIDER, model=model or default_model(config))
     async with aclosing(guarded):

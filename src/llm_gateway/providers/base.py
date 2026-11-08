@@ -375,6 +375,9 @@ class ChatResult:
     cache_read_input_tokens: int = 0
     cache_creation_input_tokens: int = 0
     reasoning_tokens: int = 0
+    # The call's correlation id, set by chat() (see tracing.resolve_request_id).
+    # Excluded from equality: it identifies the call, not the answer.
+    request_id: str | None = field(default=None, compare=False)
 
     @property
     def usage(self) -> Usage:
@@ -406,6 +409,8 @@ class StreamDelta:
     # Which provider served the stream. Set by `stream_chat()` on the chunk
     # carrying usage, so a caller can attribute cost after a failover.
     provider: str | None = None
+    # The call's correlation id; set with `provider` on the usage chunk.
+    request_id: str | None = None
 
 
 def _tool_arguments(raw: str | None) -> dict:

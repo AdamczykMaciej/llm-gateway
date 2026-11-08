@@ -158,7 +158,15 @@ class InvalidOutputError(Exception):
     content, a refusal, or structured output that is not valid JSON or fails
     schema validation. Raised inside one provider attempt, so the engine fails
     over to the next provider. The message never includes the model's output,
-    which can echo prompt content, including personal data."""
+    which can echo prompt content, including personal data.
+
+    `paths` lists where validation failed (dotted, e.g. `items.1.qty`;
+    `<root>` for the top level) when the failure came from a schema check,
+    else it is empty. Paths are field names, never values."""
+
+    def __init__(self, message: str = "", paths: tuple[str, ...] = ()) -> None:
+        super().__init__(message)
+        self.paths = paths
 
 
 class ProviderAuthError(Exception):

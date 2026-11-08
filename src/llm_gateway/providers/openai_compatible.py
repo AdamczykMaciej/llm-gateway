@@ -66,6 +66,9 @@ class OpenAICompatSpec:
     token_provider: Callable[[GatewayConfig], Callable[[], Awaitable[str]]] | None = None
     # Extra values that make two clients differ (e.g. the credential source).
     client_key: Callable[[GatewayConfig], tuple] = field(default=lambda config: ())
+    # Whether the host documents the `parallel_tool_calls` request field. Off
+    # unless the spec says so: an unknown host may reject an unknown field.
+    parallel_tool_calls: bool = False
 
 
 class OpenAICompatProvider:
@@ -174,12 +177,15 @@ class OpenAICompatProvider:
         tool_choice: object,
         sampling: dict | None,
         response_format: dict | None,
+        parallel_tool_calls: bool | None = None,
     ) -> dict:
         kwargs: dict = {**openai_sampling_kwargs(sampling), **self._extra(config)}
         if tools:
             kwargs["tools"] = tools
             if tool_choice is not None:
                 kwargs["tool_choice"] = tool_choice
+            if parallel_tool_calls is not None and self.spec.parallel_tool_calls:
+                kwargs["parallel_tool_calls"] = parallel_tool_calls
         if response_format is not None:
             kwargs["response_format"] = response_format
         return kwargs
@@ -195,13 +201,16 @@ class OpenAICompatProvider:
         tool_choice: object = None,
         sampling: dict | None = None,
         response_format: dict | None = None,
+        parallel_tool_calls: bool | None = None,
     ) -> ChatResult:
         model = model or self.default_model(config)
         resp = await self._sdk(config).chat.completions.create(
             model=model,
             max_tokens=max_tokens,
             messages=messages,
-            **self._chat_kwargs(config, tools, tool_choice, sampling, response_format),
+            **self._chat_kwargs(
+                config, tools, tool_choice, sampling, response_format, parallel_tool_calls
+            ),
         )
         return parse_openai_style_response(resp, model, provider=self.spec.provider)
 
@@ -216,6 +225,7 @@ class OpenAICompatProvider:
         tool_choice: object = None,
         sampling: dict | None = None,
         response_format: dict | None = None,
+        parallel_tool_calls: bool | None = None,
     ) -> AsyncIterator[StreamDelta]:
         model = model or self.default_model(config)
         stream = await self._sdk(config).chat.completions.create(
@@ -224,7 +234,9 @@ class OpenAICompatProvider:
             messages=messages,
             stream=True,
             stream_options={"include_usage": True},
-            **self._chat_kwargs(config, tools, tool_choice, sampling, response_format),
+            **self._chat_kwargs(
+                config, tools, tool_choice, sampling, response_format, parallel_tool_calls
+            ),
             **stream_request_options(config),
         )
         async for chunk in stream:
@@ -241,6 +253,7 @@ class OpenAICompatProvider:
         tool_choice: object = None,
         sampling: dict | None = None,
         response_format: dict | None = None,
+        parallel_tool_calls: bool | None = None,
         cache_system: bool = False,
     ) -> AsyncIterator[StreamDelta]:
         """`_stream_chat()` behind `guard_empty_stream()`: a stream with no
@@ -255,6 +268,7 @@ class OpenAICompatProvider:
             tool_choice=tool_choice,
             sampling=sampling,
             response_format=response_format,
+            parallel_tool_calls=parallel_tool_calls,
         )
         guarded = guard_empty_stream(
             deltas,

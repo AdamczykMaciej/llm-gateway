@@ -51,8 +51,9 @@ from .providers.base import StreamDelta
 from .retry import Deadline, call_with_retry
 from .router import record_provider_failure
 from .routing import RequestProfile, plan_chain
+from .tool_results import cap_tool_results, resolve_cap
 from .tool_validation import validate_chat_request
-from .tracing import get_tracer, set_chat_attributes
+from .tracing import emit_attempt_span, get_tracer, resolve_request_id, set_chat_attributes
 
 logger = logging.getLogger("llm_gateway")
 
@@ -70,6 +71,9 @@ async def stream_chat(
     response_format: dict | None = None,
     policy: ProviderPolicy | None = None,
     cache_system: bool = False,
+    request_id: str | None = None,
+    parallel_tool_calls: bool | None = None,
+    max_tool_result_chars: int | None = None,
 ) -> AsyncGenerator[StreamDelta, None]:
     """Stream a chat completion. `policy` narrows `config.policy` as in
     `complete_with_usage()`; the chain is filtered before the first provider
@@ -80,12 +84,22 @@ async def stream_chat(
     Anthropic and Vertex Claude the **first** system message is the cacheable
     static prefix (it gets `cache_control`); pass the per-request part as a
     second system message. Other providers ignore it. Cache hits and writes
-    arrive in the final chunk's `usage_details`."""
+    arrive in the final chunk's `usage_details`.
+
+    `request_id`, `parallel_tool_calls` and `max_tool_result_chars` behave as
+    in `chat()`; the request id arrives on the final (usage) chunk and is on
+    every span."""
+    rid = resolve_request_id(request_id)
     validate_chat_request(messages, tools, tool_choice)
     config = config or GatewayConfig()
+    messages = cap_tool_results(
+        messages, resolve_cap(max_tool_result_chars, config.tool_result_max_chars)
+    )
     # Only passed when used, so provider callables written against the older
     # signature keep working.
     extra: dict = {"cache_system": True} if cache_system else {}
+    if parallel_tool_calls is not None:
+        extra["parallel_tool_calls"] = parallel_tool_calls
     order = [force_provider] if force_provider else config.provider_order_list
     model_override = model if force_provider else None
 
@@ -97,6 +111,8 @@ async def stream_chat(
 
     with tracer.start_as_current_span("llm_gateway.stream_chat") as span:
         span.set_attribute("llm_gateway.fallback", False)
+        span.set_attribute("llm_gateway.request_id", rid)
+        attempt_no = 0
         plan = plan_chain(
             order,
             config=config,
@@ -132,6 +148,8 @@ async def stream_chat(
 
             attempted_any = True
             is_fallback = index > 0
+            attempt_no += 1
+            attempt_started_ns = time.time_ns()
 
             async def open_stream(stream_fn=stream_fn):
                 generator = stream_fn(
@@ -163,6 +181,15 @@ async def stream_chat(
                     provider, e, config=config, deadline=deadline, model=resolved_model
                 )
                 last_error = e
+                emit_attempt_span(
+                    tracer,
+                    request_id=rid,
+                    attempt=attempt_no,
+                    provider=provider,
+                    model=resolved_model,
+                    started_ns=attempt_started_ns,
+                    error=e,
+                )
                 latency = time.monotonic() * 1000 - start
                 set_chat_attributes(
                     span,
@@ -199,7 +226,7 @@ async def stream_chat(
                             )
                             reasoning_tokens = delta.usage_details.reasoning_tokens
                         # Attribute the usage to the provider that actually served.
-                        delta = dataclasses.replace(delta, provider=provider)
+                        delta = dataclasses.replace(delta, provider=provider, request_id=rid)
                     if delta.finish_reason:
                         finish_reason = delta.finish_reason
                     yield delta
@@ -227,6 +254,16 @@ async def stream_chat(
                 # response is released and the upstream request stops.
                 await generator.aclose()
 
+            emit_attempt_span(
+                tracer,
+                request_id=rid,
+                attempt=attempt_no,
+                provider=provider,
+                model=resolved_model,
+                started_ns=attempt_started_ns,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+            )
             latency = time.monotonic() * 1000 - start
             set_chat_attributes(
                 span,

@@ -302,6 +302,12 @@ class GatewayConfig(BaseSettings):
     # on the next one.
     call_deadline_seconds: float = 90.0
 
+    # Tool results (role "tool" messages) longer than this many characters are
+    # truncated, with a marker, before chat()/stream_chat() send them on, so
+    # one giant tool output can't blow the context window or the bill. 0 (the
+    # default) disables the guard. A per-call `max_tool_result_chars` wins.
+    tool_result_max_chars: int = 0
+
     # ── Tracing ───────────────────────────────────────────────────────────
     # Prompts are never traced unless this is explicitly enabled, and even
     # then they're PII-masked first (see pii.mask_pii). Off by default.

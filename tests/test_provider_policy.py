@@ -455,7 +455,8 @@ async def test_exclusions_are_logged_and_traced_without_prompt_content(caplog):
             config=_config(provider_order="anthropic,groq", policy_ignore="anthropic"),
         )
 
-    (span,) = exporter.get_finished_spans()
+    # The call span; its per-attempt child spans are checked in test_agentic_pass_2.
+    (span,) = (s for s in exporter.get_finished_spans() if s.name != "llm_gateway.attempt")
     assert span.attributes["llm_gateway.policy"] == "ignore=anthropic"
     assert span.attributes["llm_gateway.policy.eligible_providers"] == ("groq",)
     assert span.attributes["llm_gateway.policy.excluded_providers"] == ("anthropic",)

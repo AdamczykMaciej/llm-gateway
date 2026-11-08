@@ -108,6 +108,7 @@ async def chat(
     tool_choice: object = None,
     sampling: dict | None = None,
     response_format: dict | None = None,
+    parallel_tool_calls: bool | None = None,
 ) -> ChatResult:
     model = model or default_model(config)
     kwargs: dict = openai_sampling_kwargs(sampling)
@@ -115,6 +116,8 @@ async def chat(
         kwargs["tools"] = tools
         if tool_choice is not None:
             kwargs["tool_choice"] = tool_choice
+        if parallel_tool_calls is not None:
+            kwargs["parallel_tool_calls"] = parallel_tool_calls
     if response_format is not None:
         kwargs["response_format"] = response_format
     resp = await _client(config).chat.completions.create(
@@ -133,6 +136,7 @@ async def _stream_chat(
     tool_choice: object = None,
     sampling: dict | None = None,
     response_format: dict | None = None,
+    parallel_tool_calls: bool | None = None,
 ) -> AsyncIterator[StreamDelta]:
     model = model or default_model(config)
     kwargs: dict = openai_sampling_kwargs(sampling)
@@ -140,6 +144,8 @@ async def _stream_chat(
         kwargs["tools"] = tools
         if tool_choice is not None:
             kwargs["tool_choice"] = tool_choice
+        if parallel_tool_calls is not None:
+            kwargs["parallel_tool_calls"] = parallel_tool_calls
     if response_format is not None:
         kwargs["response_format"] = response_format
     stream = await _client(config).chat.completions.create(
@@ -164,6 +170,7 @@ async def stream_chat(
     tool_choice: object = None,
     sampling: dict | None = None,
     response_format: dict | None = None,
+    parallel_tool_calls: bool | None = None,
     cache_system: bool = False,
 ) -> AsyncIterator[StreamDelta]:
     """`_stream_chat()` behind `guard_empty_stream()`: a stream with no text
@@ -177,6 +184,7 @@ async def stream_chat(
         tool_choice=tool_choice,
         sampling=sampling,
         response_format=response_format,
+        parallel_tool_calls=parallel_tool_calls,
     )
     guarded = guard_empty_stream(
         deltas, provider="openai", model=model or default_model(config), strip_think=True
