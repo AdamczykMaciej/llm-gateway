@@ -1506,6 +1506,48 @@ Messages never contain prompt content, model output or credentials.
 | `POLICY_SORT` | `order` | Chain ordering: `order` (as `PROVIDER_ORDER`) or by price |
 | `MODEL_PRICES` | `{}` | JSON overrides for the built-in USD-per-million-token price table |
 
+## Privacy layer (reversible redaction)
+
+`llm_gateway.privacy` puts a redaction step in front of any call and an
+explicit policy on what comes back. It is provider-agnostic and adds no
+dependency.
+
+```python
+from llm_gateway import PrivacyLayer, Privacy, OutputPolicy, Span
+
+class MyRedactor:                      # the Redactor protocol: text -> spans
+    def detect(self, text):
+        ...                            # yield Span(start, end, "email") ...
+
+layer = PrivacyLayer(strict=True, on_audit=lambda ev: log.info("%s", ev))
+privacy = Privacy(redactor=MyRedactor(), output=OutputPolicy.RESTORE)
+completion = await layer.complete_with_usage(system=..., prompt=..., privacy=privacy)
+# also: layer.chat(messages=..., privacy=...) and layer.stream_chat(...)
+```
+
+- **Redaction** covers the system prompt, the user prompt, every chat message
+  (string or content parts), assistant tool-call arguments and tool results.
+  The same value always maps to the same token, different values never share
+  one. Tokens are `[kind_N]` (`[person_1]`); `TokenFormat(numbered=False)`
+  gives `[kind]`, in which case a second value of a kind gets no token (it is
+  removed) so a restore can never swap two people.
+- **Vault**: one per call, in memory only. Its `repr` shows a count, it cannot
+  be pickled or copied, and it is cleared when the call ends, also on error.
+- **Output policy**, chosen on every call: `RESTORE` (tokens this call issued
+  become the original value again: for text only the data owner sees), `STRIP`
+  (they are removed: for anything stored or that may describe a third party;
+  `strip_pattern` also removes an app's own placeholder vocabulary), `PASSTHROUGH`.
+  It is applied to `Completion.text`, to `Completion.parsed` (a pydantic model is
+  re-validated; if the policy leaves it invalid the call raises
+  `InvalidOutputError` instead of leaking a token), and to tool-call arguments.
+- **Strict mode**: `PrivacyLayer(strict=True)` raises `PrivacyPolicyMissingError`
+  for a call with no `privacy=`, before anything is sent. Opting out is
+  explicit and states why: `Privacy.passthrough("public job ad")`.
+- **Streaming**: a token split across chunks (also inside tool-call
+  arguments) is held back until it is complete, then restored or stripped.
+- **Audit hook**: `on_audit(AuditEvent)` receives counts per kind, the policy,
+  the number restored and stripped, and the passthrough reason. Never a value.
+
 ## PII masking
 
 `llm_gateway.pii.mask_pii()` redacts emails, phone numbers, IBANs, card

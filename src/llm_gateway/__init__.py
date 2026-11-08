@@ -44,6 +44,17 @@ from .errors import (
 from .pii import mask_pii
 from .policy import BudgetCheck, ProviderMetadata, ProviderPolicy
 from .pricing import ModelPrice
+from .privacy import (
+    AuditEvent,
+    OutputPolicy,
+    Privacy,
+    PrivacyLayer,
+    PrivacyPolicyMissingError,
+    Redactor,
+    Span,
+    TokenFormat,
+    Vault,
+)
 from .providers.base import ChatResult, StreamDelta, ToolCall, Usage
 from .residency import residency_report
 from .router import Completion, LLMError, complete, complete_with_usage
@@ -77,5 +88,14 @@ __all__ = [
     "ProviderAuthError",
     "GatewayConfig",
     "mask_pii",
+    "AuditEvent",
+    "OutputPolicy",
+    "Privacy",
+    "PrivacyLayer",
+    "PrivacyPolicyMissingError",
+    "Redactor",
+    "Span",
+    "TokenFormat",
+    "Vault",
     "reset_circuit_breakers",
 ]
