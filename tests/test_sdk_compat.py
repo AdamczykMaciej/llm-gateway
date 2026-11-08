@@ -37,6 +37,11 @@ pytestmark = pytest.mark.asyncio
 
 
 @pytest.fixture(autouse=True)
+def _no_retry_jitter(monkeypatch):
+    monkeypatch.setattr("llm_gateway.retry.random.uniform", lambda lo, hi: hi)
+
+
+@pytest.fixture(autouse=True)
 def _reset_breakers():
     reset_circuit_breakers()
     yield

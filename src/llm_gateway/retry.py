@@ -5,17 +5,20 @@ overall call deadline that bound how long any of that may take.
 Only errors `errors.policy_for()` marks retryable (connection errors, 5xx,
 overloaded) are retried: an auth failure or a malformed request fails the
 same way on the next try, and a timeout or a 429 is better spent on the next
-provider than on waiting for this one again. No jitter — just a small fixed
-number of attempts with a doubling delay between them. Not a
+provider than on waiting for this one again. Just a small fixed
+number of attempts with a doubling, jittered delay between them (so a fleet
+of callers hitting the same provider blip does not retry in lockstep), which
+honors a provider's `Retry-After` when it asks for longer. Not a
 general-purpose retry library.
 """
 
 import asyncio
+import random
 import time
 from collections.abc import Awaitable, Callable
 from typing import TypeVar
 
-from .errors import is_retryable
+from .errors import is_retryable, retry_after_seconds
 
 T = TypeVar("T")
 
@@ -23,6 +26,11 @@ T = TypeVar("T")
 def _bounded(seconds: float | None) -> float | None:
     """`None` for "no bound" — 0/negative settings disable a bound."""
     return seconds if seconds is not None and seconds > 0 else None
+
+
+def _jitter(delay: float) -> float:
+    """Spread `delay` over [50%, 100%] of itself."""
+    return delay * random.uniform(0.5, 1.0)
 
 
 class Deadline:
@@ -58,7 +66,8 @@ async def call_with_retry(
     should_retry: Callable[[Exception], bool] = is_retryable,
 ) -> T:
     """Call `call()` up to `attempts` times (minimum 1), sleeping
-    `base_delay_seconds * 2**i` between attempts, but only while
+    about `base_delay_seconds * 2**i` (jittered, or the provider's
+    `Retry-After` if longer) between attempts, but only while
     `should_retry(error)` holds and the backoff still fits in `deadline`.
     Each attempt is cut off after `attempt_timeout_seconds` (or when the
     deadline runs out, whichever is sooner) with a builtin `TimeoutError`.
@@ -74,7 +83,10 @@ async def call_with_retry(
             last_error = e
             if i == attempts - 1 or not should_retry(e):
                 break
-            delay = base_delay_seconds * (2**i)
+            delay = _jitter(base_delay_seconds * (2**i))
+            requested = retry_after_seconds(e)
+            if requested is not None:
+                delay = max(delay, requested)
             remaining = deadline.remaining()
             if remaining is not None and remaining <= delay:
                 break

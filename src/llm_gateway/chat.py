@@ -96,6 +96,8 @@ async def chat(
                 break
             if not await plan.allows(provider, span):
                 continue
+            if not force_provider and not breaker.allow(provider):
+                continue
 
             attempted_any = True
             is_fallback = index > 0

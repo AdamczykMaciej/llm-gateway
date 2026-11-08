@@ -380,6 +380,24 @@ def policy_for(exc: BaseException) -> ErrorPolicy:
     return POLICIES[classify(exc)]
 
 
+def retry_after_seconds(exc: BaseException) -> float | None:
+    """Seconds a provider asked us to wait (`Retry-After`, delta-seconds form)
+    on an SDK status error, or `None`. Capped at 60 s so a hostile or broken
+    header can't park a call; the retry loop still drops the retry if it
+    doesn't fit the call deadline."""
+    response = getattr(exc, "response", None)
+    headers = getattr(response, "headers", None)
+    if headers is None:
+        return None
+    try:
+        value = float(headers.get("retry-after"))
+    except (TypeError, ValueError, AttributeError):
+        return None
+    if not value >= 0:  # also rejects NaN
+        return None
+    return min(value, 60.0)
+
+
 def is_retryable(exc: BaseException) -> bool:
     return policy_for(exc).retry
 

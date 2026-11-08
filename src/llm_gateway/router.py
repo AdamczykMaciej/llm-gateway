@@ -221,6 +221,8 @@ async def complete_with_usage(
                 break
             if not await plan.allows(provider, span):
                 continue
+            if not force_provider and not breaker.allow(provider):
+                continue
 
             attempted_any = True
             is_fallback = index > 0
