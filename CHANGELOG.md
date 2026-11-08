@@ -15,7 +15,9 @@ Documentation, typing and API audit. No behaviour changes.
   backward-compatible call shapes below.
 - No public name was renamed in 0.16.5-0.18.1, so there is nothing to deprecate: the one-argument
   forms `redact_secrets(text, config)` and `cost_usd(price, usage)` still work unchanged.
-- `pyright` strict on `src/llm_gateway` is clean.
+- Typing: standard `pyright` on `src` is clean. Strict mode is not yet: about 1,900 findings, almost
+  all bare `dict`/untyped `[]` inside the provider adapters (`providers/*`, `structured.py`,
+  `router.py`); tracked as follow-up work.
 
 ### Upgrading to 0.18 (hosts)
 
