@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.16.4
+
+Reliability pass 3: the HTTP service's SSE path. Defaults are generous; each knob below disables
+with `0`.
+
+- Slow readers: a body write blocked longer than `STREAM_WRITE_TIMEOUT_SECONDS` (30) closes the
+  stream and, through `aclosing`, the upstream provider request. The body generator is now always
+  closed explicitly, not left to the garbage collector.
+- `MAX_CONCURRENT_STREAMS` (256): over it, new streaming requests get `503` with `Retry-After`.
+- Graceful shutdown: on lifespan shutdown the service answers new calls `503`, waits up to
+  `SHUTDOWN_GRACE_SECONDS` (20) for in-flight non-streaming calls, ends open streams with a final
+  SSE error event and `[DONE]`, then closes the providers.
+- `STREAM_HEARTBEAT_SECONDS` (15): an idle stream gets an SSE `: keepalive` comment so proxies do
+  not cut the connection.
+- Backpressure: the upstream stream feeds a bounded queue (8 chunks), so a slow client stalls the
+  provider read instead of buffering the response in memory.
+
 ## 0.16.3
 
 Repo hygiene. No behaviour change.
