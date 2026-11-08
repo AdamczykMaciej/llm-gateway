@@ -386,6 +386,37 @@ def classify(exc: BaseException) -> ErrorKind:
     return ErrorKind.UNKNOWN
 
 
+_MODEL_MISSING_CODES = frozenset({"model_not_found", "deployment_not_found", "deploymentnotfound"})
+
+
+def is_model_scoped(exc: BaseException) -> str | None:
+    """Whether a provider error is specific to the model that was called, so a
+    breaker may open that (provider, model) instead of the whole provider.
+
+    `"missing"`: the model (or Azure deployment) does not exist for this
+    account, a 404 naming the model or a `model_not_found`-style code; it
+    cannot heal by itself. `"overloaded"`: the model is overloaded (HTTP 529
+    or an `overloaded_error` body). `None` otherwise: auth, billing, rate
+    limits, timeouts, connection and ordinary 5xx failures stay provider-wide.
+    Reads only the error's own status, code and message."""
+    if not isinstance(exc, _SDK_ERRORS):
+        return None
+    status = getattr(exc, "status_code", None)
+    if isinstance(status, int) and status == 529:
+        return "overloaded"
+    body = getattr(exc, "body", None)
+    code = str(_body_error_code(body) or "").lower()
+    nested = body.get("error") if isinstance(body, dict) else None
+    source = nested if isinstance(nested, dict) else body if isinstance(body, dict) else {}
+    if str(source.get("type") or "") == "overloaded_error":
+        return "overloaded"
+    if code in _MODEL_MISSING_CODES:
+        return "missing"
+    if status == 404 and "model" in _error_text(exc):
+        return "missing"
+    return None
+
+
 def policy_for(exc: BaseException) -> ErrorPolicy:
     return POLICIES[classify(exc)]
 

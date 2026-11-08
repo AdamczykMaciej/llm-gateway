@@ -55,6 +55,7 @@ from .privacy import (
     TokenFormat,
     Vault,
 )
+from .providers import aclose_all as aclose
 from .providers.base import ChatResult, StreamDelta, ToolCall, Usage
 from .residency import residency_report
 from .router import Completion, LLMError, complete, complete_with_usage
@@ -98,4 +99,5 @@ __all__ = [
     "TokenFormat",
     "Vault",
     "reset_circuit_breakers",
+    "aclose",
 ]

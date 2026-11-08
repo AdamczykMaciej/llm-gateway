@@ -92,18 +92,18 @@ async def chat(
                 continue
             if not CONFIGURED[provider](config):
                 continue
-            if not force_provider and breaker.is_open(provider):
+            resolved_model = model_override or DEFAULT_MODEL[provider](config)
+            if not force_provider and breaker.is_open(provider, resolved_model):
                 continue
             if deadline.expired:
                 break
             if not await plan.allows(provider, span):
                 continue
-            if not force_provider and not breaker.allow(provider):
+            if not force_provider and not breaker.allow(provider, resolved_model):
                 continue
 
             attempted_any = True
             is_fallback = index > 0
-            resolved_model = model_override or DEFAULT_MODEL[provider](config)
 
             try:
                 result = await call_with_retry(
@@ -123,7 +123,9 @@ async def chat(
                     deadline=deadline,
                 )
             except Exception as e:  # noqa: BLE001 — any provider failure (after its retries) tries the next
-                record_provider_failure(provider, e, config=config, deadline=deadline)
+                record_provider_failure(
+                    provider, e, config=config, deadline=deadline, model=resolved_model
+                )
                 last_error = e
                 latency = time.monotonic() * 1000 - start
                 set_chat_attributes(
@@ -139,7 +141,7 @@ async def chat(
                 )
                 continue
 
-            breaker.record_success(provider)
+            breaker.record_success(provider, resolved_model)
             latency = time.monotonic() * 1000 - start
             set_chat_attributes(
                 span,

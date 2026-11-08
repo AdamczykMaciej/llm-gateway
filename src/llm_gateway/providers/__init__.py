@@ -1,3 +1,5 @@
+import logging
+
 from . import (
     anthropic,
     azure,
@@ -103,3 +105,26 @@ __all__ = [
     "DEFAULT_MODEL",
     "RESIDENCY",
 ]
+
+
+async def aclose_all() -> None:
+    """Close every provider's cached SDK clients and credentials. Call on
+    application shutdown; the clients are rebuilt lazily if used again."""
+    for module in (
+        anthropic,
+        azure,
+        gemini,
+        groq,
+        huggingface,
+        mistral,
+        openai,
+        openai_compat,
+        openrouter,
+        vertex,
+    ):
+        try:
+            await module.aclose()
+        except Exception:  # noqa: BLE001 — one failing close must not skip the rest
+            logging.getLogger("llm_gateway").warning(
+                "llm_gateway: closing %s failed", module.__name__, exc_info=True
+            )

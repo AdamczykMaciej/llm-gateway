@@ -46,13 +46,19 @@ logger = logging.getLogger("llm_gateway")
 
 
 def record_provider_failure(
-    provider: str, error: Exception, *, config: GatewayConfig, deadline: Deadline
+    provider: str,
+    error: Exception,
+    *,
+    config: GatewayConfig,
+    deadline: Deadline,
+    model: str | None = None,
 ) -> None:
     """Feed a provider's definitive failure (retries exhausted or not
     applicable) to its circuit breaker, per errors.POLICIES. Shared by all
     three engines. A timeout that only fired because the call's deadline ran
     out is not counted: it says more about earlier providers using up the
-    budget than about this one."""
+    budget than about this one. With `model`, a model-specific failure opens
+    only that (provider, model) (see breaker.py)."""
     if deadline.expired and isinstance(error, TimeoutError):
         return
     if classify(error) is ErrorKind.BILLING:
@@ -68,6 +74,7 @@ def record_provider_failure(
         error,
         threshold=config.breaker_failure_threshold,
         cooldown_seconds=config.breaker_cooldown_seconds,
+        model=model,
     )
 
 
@@ -215,18 +222,18 @@ async def complete_with_usage(
                 continue
             if not CONFIGURED[provider](config):
                 continue
-            if not force_provider and breaker.is_open(provider):
+            resolved_model = model_override or DEFAULT_MODEL[provider](config)
+            if not force_provider and breaker.is_open(provider, resolved_model):
                 continue
             if deadline.expired:
                 break
             if not await plan.allows(provider, span):
                 continue
-            if not force_provider and not breaker.allow(provider):
+            if not force_provider and not breaker.allow(provider, resolved_model):
                 continue
 
             attempted_any = True
             is_fallback = index > 0
-            resolved_model = model_override or DEFAULT_MODEL[provider](config)
 
             async def attempt(call=call):
                 result = await call(config, system, prompt, max_tokens, model_override, **extra)
@@ -244,7 +251,9 @@ async def complete_with_usage(
                     deadline=deadline,
                 )
             except Exception as e:  # noqa: BLE001 — any provider failure (after its retries) tries the next
-                record_provider_failure(provider, e, config=config, deadline=deadline)
+                record_provider_failure(
+                    provider, e, config=config, deadline=deadline, model=resolved_model
+                )
                 last_error = e
                 latency = time.monotonic() * 1000 - start
                 set_call_attributes(
@@ -262,7 +271,7 @@ async def complete_with_usage(
                 )
                 continue
 
-            breaker.record_success(provider)
+            breaker.record_success(provider, resolved_model)
             latency = time.monotonic() * 1000 - start
             usage = result.usage
             set_call_attributes(

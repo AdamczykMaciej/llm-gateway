@@ -536,10 +536,13 @@ async def test_request_error_is_not_retried_fails_over_and_never_trips_breaker(e
     assert not breaker.is_open("anthropic")
 
 
+overloaded = _status(529)
+
+
 @pytest.mark.parametrize("engine", _ENGINES)
 @pytest.mark.parametrize(
     "respond",
-    [_status(500), _status(503), _status(529), _connection_refused],
+    [_status(500), _status(503), overloaded, _connection_refused],
     ids=["500", "503", "529-overloaded", "connection-error"],
 )
 async def test_transient_error_is_retried_once_then_fails_over(engine, respond):
@@ -552,7 +555,12 @@ async def test_transient_error_is_retried_once_then_fails_over(engine, respond):
         assert await _run(engine, config) == "from groq"
     assert len(primary.bodies) == 2
     sleep.assert_awaited_once_with(config.retry_base_delay_seconds)
-    assert breaker.is_open("anthropic")
+    if respond is overloaded:
+        # An overloaded model is model-scoped: only that model is parked.
+        assert not breaker.is_open("anthropic")
+        assert breaker.is_open("anthropic", config.claude_model)
+    else:
+        assert breaker.is_open("anthropic")
 
 
 @pytest.mark.parametrize("engine", _ENGINES)

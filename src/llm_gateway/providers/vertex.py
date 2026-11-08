@@ -65,7 +65,9 @@ from .base import (
     ChatResult,
     ProviderResult,
     StreamDelta,
+    close_clients,
     guard_empty_stream,
+    remember_client,
     sdk_client_cache_key,
     sdk_client_options,
     stream_request_options,
@@ -324,17 +326,20 @@ async def _client(config: GatewayConfig) -> Any:
         http_client=http_client_class(verify=False) if not config.ssl_verify else None,
         **sdk_client_options(config),
     )
-    return _clients.setdefault(key, client)
+    existing = _clients.get(key)
+    if existing is not None:
+        # Another task built the same client while this one awaited the
+        # credentials: keep the cached one and release this duplicate's pool.
+        await client.close()
+        return existing
+    return remember_client(_clients, key, client)
 
 
 async def aclose() -> None:
     """Close every cached SDK client and Azure credential (e.g. on shutdown)."""
-    clients = list(_clients.values())
     closeables = [closeable for _, closeable in _credentials.values() if closeable is not None]
-    _clients.clear()
     _credentials.clear()
-    for client in clients:
-        await client.close()
+    await close_clients(_clients)
     for closeable in closeables:
         closeable.close()
 

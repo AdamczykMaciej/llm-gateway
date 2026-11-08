@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.15.3
+
+Second reliability pass (breaker scope, client lifecycle, bounded state).
+
+- Fix (high): the circuit breaker was keyed per provider only, so one retired or overloaded model
+  (a 404 `model_not_found`, a 529 `overloaded_error`) took the whole provider out of rotation, or,
+  for a 404, was never parked and hit on every call. Those failures now open only the
+  (provider, model) key (`errors.is_model_scoped`); auth, billing, rate-limit, timeout and
+  connection failures still open the whole provider. `breaker.is_open/allow/record_success/
+  record_failure/record_error` take an optional `model=`; without it nothing changes. All three
+  engines pass the resolved model.
+- Fix (high): the Anthropic, OpenAI, Groq, Mistral, OpenRouter, Hugging Face and generic
+  OpenAI-compatible SDK clients were never closed on shutdown (only Azure, Gemini and Vertex were).
+  Every provider module now has `aclose()`; new `llm_gateway.aclose()` closes them all (one failing
+  close does not skip the rest) and the HTTP service calls it on shutdown.
+- Fix (medium): opening a stream had no attempt bound, so a hang before the first byte (credential
+  fetch, connect) lasted until the 90 s call deadline; it is now bounded by
+  `stream_idle_timeout_seconds`.
+- Fix (medium): the per-credential SDK client caches and the model-scoped breaker state were
+  unbounded (rotating keys, caller-chosen model ids). Client caches are capped at 16 (oldest
+  evicted and closed after a grace period) and model-scoped breaker keys at 256. A success no longer
+  leaves a zeroed breaker entry behind.
+- Fix (low): two concurrent first calls to Vertex both built an SDK client and one connection pool
+  leaked; the loser is now closed.
+- Verified, no change needed: every adapter (Anthropic, OpenAI, Groq, Azure, Vertex, Gemini,
+  Mistral, OpenRouter, Hugging Face, OpenAI-compatible) passes the connect/read/write/pool
+  deadlines to its SDK client. Per-key usage and rate-limit maps are keyed by authenticated keys
+  only, so they are bounded by the configured key list.
+- Tests: engine-level half-open concurrency (25 `complete` and 15 `chat` calls admit exactly one
+  probe, the rest fail over), model-scoped breaker behaviour, per-adapter timeouts, client reuse,
+  shutdown, cancellation safety and cache bounds.
+
 ## 0.15.2
 
 Second security pass (privacy layer, service, URLs, tracing).

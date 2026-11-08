@@ -17,10 +17,7 @@ from .. import breaker
 from ..chat import chat as chat_engine
 from ..config import GatewayConfig
 from ..errors import InvalidRequestError, PolicyViolationError, redact_secrets
-from ..providers import CONFIGURED
-from ..providers import azure as azure_provider
-from ..providers import gemini as gemini_provider
-from ..providers import vertex as vertex_provider
+from ..providers import CONFIGURED, aclose_all
 from ..router import LLMError
 from ..streaming import stream_chat as stream_engine
 from . import usage as usage_store
@@ -56,9 +53,7 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         yield
         # Entra and managed-identity credentials hold their own HTTP sessions.
-        await azure_provider.aclose()
-        await gemini_provider.aclose()
-        await vertex_provider.aclose()
+        await aclose_all()
 
     # With keys configured, the interactive docs and the schema are not public.
     docs_kwargs: dict[str, Any] = (

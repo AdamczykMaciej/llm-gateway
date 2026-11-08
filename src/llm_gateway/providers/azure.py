@@ -38,11 +38,13 @@ from .base import (
     ChatResult,
     ProviderResult,
     StreamDelta,
+    close_clients,
     guard_empty_stream,
     openai_sampling_kwargs,
     parse_openai_style_chunk,
     parse_openai_style_response,
     provider_result_from_openai_style,
+    remember_client,
     sdk_client_cache_key,
     sdk_client_options,
     stream_request_options,
@@ -182,18 +184,15 @@ def _client(config: GatewayConfig) -> AsyncOpenAI:
             http_client=_http_client(config),
             **sdk_client_options(config),
         )
-        _clients[key] = client
+        remember_client(_clients, key, client)
     return client
 
 
 async def aclose() -> None:
     """Close every cached SDK client and Entra credential (e.g. on shutdown)."""
-    clients = list(_clients.values())
     credentials = [credential for credential, _ in _credentials.values()]
-    _clients.clear()
     _credentials.clear()
-    for client in clients:
-        await client.close()
+    await close_clients(_clients)
     for credential in credentials:
         await credential.close()
 

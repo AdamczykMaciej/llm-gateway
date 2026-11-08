@@ -52,6 +52,7 @@ def _client(config: GatewayConfig) -> AsyncOpenAI:
 # Looked up by name at call time, so `patch.object(<module>, "_client", ...)`
 # works exactly as for the other providers.
 _provider.client_factory = lambda config: _client(config)
+aclose = _provider.aclose
 configured = _provider.configured
 default_model = _provider.default_model
 call = _provider.call
