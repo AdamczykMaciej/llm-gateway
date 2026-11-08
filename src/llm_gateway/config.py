@@ -1,7 +1,9 @@
 """Configuration for the gateway, generic across any consuming application."""
 
+import ipaddress
 import json
 import re
+import socket
 from typing import Literal
 from urllib.parse import urlsplit
 
@@ -85,6 +87,40 @@ def azure_app_id_uri_scope(app_id_uri: str) -> str:
     return f"{app_id_uri.rstrip('/')}/.default"
 
 
+_METADATA_HOSTS = frozenset({"metadata.google.internal", "metadata.goog", "metadata"})
+_METADATA_NETWORKS = (
+    ipaddress.ip_network("fd00:ec2::/32"),  # AWS IMDS over IPv6
+    ipaddress.ip_network("100.100.100.200/32"),  # Alibaba Cloud metadata
+)
+# inet_aton also reads 2852039166, 0xa9fea9fe, 0251.0376.0251.0376 and 169.254.43518.
+_NUMERIC_HOST = re.compile(r"(0x[0-9a-f]+|\d+)(\.(0x[0-9a-f]+|\d+)){0,3}", re.IGNORECASE)
+
+
+def _is_metadata_host(host: str) -> bool:
+    """A cloud instance-metadata endpoint or any link-local address: a
+    configured base URL there would turn the gateway into an SSRF proxy for
+    instance credentials."""
+    host = host.lower().rstrip(".")
+    if host in _METADATA_HOSTS:
+        return True
+    ip: ipaddress.IPv4Address | ipaddress.IPv6Address | None = None
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        if _NUMERIC_HOST.fullmatch(host):
+            try:
+                ip = ipaddress.IPv4Address(socket.inet_aton(host))
+            except (OSError, ValueError):
+                ip = None
+    if ip is None:
+        return False
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    return ip.is_link_local or any(
+        ip in net for net in _METADATA_NETWORKS if net.version == ip.version
+    )
+
+
 def _check_http_url(value: str, name: str) -> None:
     """An http(s) URL without embedded credentials. The message never repeats
     the value: it may carry a password."""
@@ -104,6 +140,8 @@ def _check_http_url(value: str, name: str) -> None:
         )
     if not parts.hostname:
         raise ValueError(f"{name} has no host")
+    if _is_metadata_host(parts.hostname):
+        raise ValueError(f"{name} must not point at a link-local or cloud metadata address")
 
 
 class GatewayConfig(BaseSettings):

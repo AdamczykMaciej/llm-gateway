@@ -520,11 +520,18 @@ _SECRET_PATTERNS = (
 _URL_CREDENTIALS = re.compile(r"(?i)\b([a-z][a-z0-9+.-]{1,15}://)[^\s/@:]{1,256}:[^\s/@]{1,256}@")
 
 
-def redact_secrets(text: str, config: "GatewayConfig | None" = None) -> str:
+def redact_secrets(
+    text: str, config: "GatewayConfig | None" = None, *, max_chars: int | None = None
+) -> str:
     """Scrub credentials from provider error text before it goes into an
     exception message, a span status or an HTTP response: configured key
     values verbatim, plus bearer tokens, `api-key: ...` pairs, and the common
-    provider key shapes (providers sometimes echo the rejected key)."""
+    provider key shapes (providers sometimes echo the rejected key).
+    With `max_chars`, longer text is cut (before scrubbing, so the work stays
+    bounded) and marked `... [truncated]`."""
+    truncated = max_chars is not None and len(text) > max_chars
+    if truncated:
+        text = text[: max_chars or 0]
     if config is not None:
         for value in sorted(config.secret_values, key=len, reverse=True):
             text = text.replace(value, "[REDACTED]")
@@ -533,11 +540,21 @@ def redact_secrets(text: str, config: "GatewayConfig | None" = None) -> str:
     text = _SECRET_PATTERNS[1].sub(r"\1\2[REDACTED]", text)
     for pattern in _SECRET_PATTERNS[2:]:
         text = pattern.sub("[REDACTED]", text)
-    return text
+    return f"{text}... [truncated]" if truncated else text
+
+
+ERROR_DETAIL_MAX_CHARS = 1000
+
+
+def error_detail(error: BaseException | None, config: "GatewayConfig | None" = None) -> str:
+    """A provider error's text for a gateway exception message or span status:
+    scrubbed of credentials and capped (a provider body can be megabytes and
+    can echo request content)."""
+    return redact_secrets(str(error), config, max_chars=ERROR_DETAIL_MAX_CHARS)
 
 
 def deadline_exceeded(
     seconds: float, last_error: Exception | None, config: "GatewayConfig | None" = None
 ) -> LLMDeadlineExceeded:
-    detail = f" Last error: {redact_secrets(str(last_error), config)}" if last_error else ""
+    detail = f" Last error: {error_detail(last_error, config)}" if last_error else ""
     return LLMDeadlineExceeded(f"Call deadline of {seconds:g}s exceeded.{detail}")

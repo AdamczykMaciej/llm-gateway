@@ -51,6 +51,7 @@ from .base import (
     remember_client,
     sdk_client_cache_key,
     sdk_client_options,
+    sdk_http_client,
     stream_request_options,
 )
 
@@ -105,7 +106,7 @@ def _client(config: GatewayConfig) -> AsyncAnthropic:
         # anthropic>=1.0 only accepts httpx2 clients (a plain httpx.AsyncClient
         # raises TypeError). The SDK's own factory is httpx2-backed and keeps
         # its default connection limits/redirect handling.
-        http_client = DefaultAsyncHttpxClient(verify=False) if not config.ssl_verify else None
+        http_client = sdk_http_client(DefaultAsyncHttpxClient, config)
         client = AsyncAnthropic(
             api_key=config.anthropic_api_key,
             http_client=http_client,

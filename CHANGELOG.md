@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.16.8
+
+Third security pass (redirects, metadata URLs, error and span text).
+
+- Fix (medium): the SDK clients followed redirects, and httpx only strips `Authorization` across
+  origins, so a hostile or compromised endpoint could bounce `x-api-key` / `api-key` headers to
+  another host. Every provider client now has `follow_redirects=False` (and still honors
+  `ssl_verify`).
+- Fix (medium): `openai_compat_base_url`, `huggingface_base_url` and `azure_endpoint` accept
+  link-local and cloud metadata hosts (169.254.0.0/16 including numeric/hex and IPv4-mapped forms,
+  `fe80::/10`, `fd00:ec2::/32`, `100.100.100.200`, `metadata.google.internal`); they are now
+  rejected at config time. Loopback and private ranges stay allowed.
+- Fix (medium): the call spans (`chat`, `stream_chat`, `complete`) recorded the escaping exception,
+  including the chained provider error text, as a span event and used the message as status
+  description. They now record no exception event and the status carries the exception type only.
+- Fix (low): provider error text in `AllProvidersExhaustedError`, the deadline error and mid-stream
+  log lines was unbounded; it is capped at 1000 characters (`redact_secrets(..., max_chars=)`,
+  new `errors.error_detail`).
+- Checked and already correct: config reprs hide keys, no pickle/eval, privacy and tool JSON depth
+  limits, `pip-audit` clean for the dependencies (only pip itself, a tooling finding).
+
 ## 0.16.7
 
 Agentic pass 3: tool calling in agent loops.

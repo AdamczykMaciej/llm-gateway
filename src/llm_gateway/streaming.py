@@ -43,7 +43,7 @@ from .errors import (
     GatewayNotConfiguredError,
     LLMError,
     deadline_exceeded,
-    redact_secrets,
+    error_detail,
 )
 from .policy import ProviderPolicy
 from .providers import CONFIGURED, DEFAULT_MODEL, STREAM_CALLS
@@ -53,7 +53,13 @@ from .router import record_provider_failure
 from .routing import RequestProfile, plan_chain
 from .tool_results import cap_tool_results, resolve_cap
 from .tool_validation import validate_chat_request
-from .tracing import emit_attempt_span, get_tracer, resolve_request_id, set_chat_attributes
+from .tracing import (
+    call_span,
+    emit_attempt_span,
+    get_tracer,
+    resolve_request_id,
+    set_chat_attributes,
+)
 
 logger = logging.getLogger("llm_gateway")
 
@@ -119,7 +125,7 @@ async def stream_chat(
     attempted_any = False
     last_error: Exception | None = None
 
-    with tracer.start_as_current_span("llm_gateway.stream_chat") as span:
+    with call_span(tracer, "llm_gateway.stream_chat") as span:
         span.set_attribute("llm_gateway.fallback", False)
         span.set_attribute("llm_gateway.request_id", rid)
         attempt_no = 0
@@ -344,7 +350,7 @@ async def stream_chat(
             ) from last_error
         span.set_status(
             StatusCode.ERROR,
-            redact_secrets(str(last_error), config) if last_error else "No provider available",
+            type(last_error).__name__ if last_error else "No provider available",
         )
         if not attempted_any:
             if plan.denied:
@@ -362,5 +368,5 @@ async def stream_chat(
             )
         raise AllProvidersExhaustedError(
             "All configured providers failed. Last error: "
-            f"{redact_secrets(str(last_error), config)}{plan.failure_note()}"
+            f"{error_detail(last_error, config)}{plan.failure_note()}"
         ) from last_error

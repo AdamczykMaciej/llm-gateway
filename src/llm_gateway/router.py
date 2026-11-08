@@ -26,7 +26,7 @@ from .errors import (
     LLMError,
     classify,
     deadline_exceeded,
-    redact_secrets,
+    error_detail,
 )
 from .policy import ProviderPolicy
 from .pricing import cost_usd, lookup_price
@@ -35,7 +35,13 @@ from .providers.base import Usage
 from .retry import Deadline, call_with_retry
 from .routing import RequestProfile, plan_chain, record_cost
 from .structured import OutputSchema, OutputValidator
-from .tracing import emit_attempt_span, get_tracer, resolve_request_id, set_call_attributes
+from .tracing import (
+    call_span,
+    emit_attempt_span,
+    get_tracer,
+    resolve_request_id,
+    set_call_attributes,
+)
 
 __all__ = [
     "Completion",
@@ -326,7 +332,7 @@ async def _complete_once(
     attempted_any = False
     last_error: Exception | None = None
 
-    with tracer.start_as_current_span("llm_gateway.complete") as span:
+    with call_span(tracer, "llm_gateway.complete") as span:
         span.set_attribute("llm_gateway.fallback", False)
         span.set_attribute("llm_gateway.request_id", request_id)
         attempt_no = 0
@@ -491,7 +497,7 @@ async def _complete_once(
             ) from last_error
         span.set_status(
             StatusCode.ERROR,
-            redact_secrets(str(last_error), config) if last_error else "No provider available",
+            type(last_error).__name__ if last_error else "No provider available",
         )
         if not attempted_any:
             if plan.denied:
@@ -509,5 +515,5 @@ async def _complete_once(
             )
         raise AllProvidersExhaustedError(
             "All configured providers failed. Last error: "
-            f"{redact_secrets(str(last_error), config)}{plan.failure_note()}"
+            f"{error_detail(last_error, config)}{plan.failure_note()}"
         ) from last_error
