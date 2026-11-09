@@ -4,6 +4,7 @@ import ipaddress
 import json
 import re
 import socket
+import unicodedata
 from collections.abc import Callable
 from typing import Any, Literal
 from urllib.parse import urlsplit
@@ -94,6 +95,7 @@ _METADATA_NETWORKS = (
     ipaddress.ip_network("100.100.100.200/32"),  # Alibaba Cloud metadata
 )
 # inet_aton also reads 2852039166, 0xa9fea9fe, 0251.0376.0251.0376 and 169.254.43518.
+_DOT_LOOKALIKES = str.maketrans({"\u3002": ".", "\uff0e": ".", "\uff61": "."})
 _NUMERIC_HOST = re.compile(r"(0x[0-9a-f]+|\d+)(\.(0x[0-9a-f]+|\d+)){0,3}", re.IGNORECASE)
 
 
@@ -101,7 +103,10 @@ def _is_metadata_host(host: str) -> bool:
     """A cloud instance-metadata endpoint or any link-local address: a
     configured base URL there would turn the gateway into an SSRF proxy for
     instance credentials."""
-    host = host.lower().rstrip(".")
+    # HTTP clients map full-width digits and ideographic full stops (U+3002,
+    # U+FF0E, U+FF61) to ASCII (IDNA), so "169。254。169。254" reaches
+    # 169.254.169.254; judge the host the way the client will read it.
+    host = unicodedata.normalize("NFKC", host).translate(_DOT_LOOKALIKES).lower().rstrip(".")
     if host in _METADATA_HOSTS:
         return True
     ip: ipaddress.IPv4Address | ipaddress.IPv6Address | None = None
