@@ -304,6 +304,39 @@ assert cost_usd(mine, Usage(input_tokens=1_000_000, output_tokens=1_000_000)) ==
 assert cost_usd(None, Usage(input_tokens=1, output_tokens=1)) is None  # unknown, never 0
 ```
 
+#### Reserving budget before a call (0.28.0)
+
+Do not take the maximum over the whole price table: a price row for a model your
+config never calls (a new premium model, say) would inflate every estimate. Price
+only what the call can route to:
+
+<!-- runnable: estimate-max-cost -->
+```python
+from llm_gateway import GatewayConfig, ModelPrice, estimate_max_cost
+
+config = GatewayConfig(
+    anthropic_api_key="k",
+    claude_model="m1",
+    provider_order="anthropic",
+    model_prices={"anthropic/m1": ModelPrice(input_per_mtok=1.0, output_per_mtok=2.0)},
+)
+est = estimate_max_cost(config, input_tokens=10_000, max_output_tokens=1_000)
+if est.max_cost_usd is None:  # unpriced model, or nothing routable: never treated as 0
+    raise RuntimeError(f"cannot price: {est.unpriced or dict(est.excluded)}")
+reserve = est.max_cost_usd  # reserve this, then settle with Completion.cost_usd
+assert est.models[0].key == "anthropic/m1"
+```
+
+`estimate_max_cost(config, input_tokens=, max_output_tokens=, policy=None,
+provider=None, model=None, chat=False)` runs the router's own planner, so it covers
+the `provider_order` chain minus providers without credentials, retired models and
+anything `config.policy` or the per-call `policy` excludes. Pass the same `policy`,
+`provider`/`model` and `chat` flag as the real call. `routable_models(config, ...)`
+lists the pairs. A `CostEstimate` has `models`, `max_cost_usd` (`None` if any
+routable model is unpriced or nothing is routable), `unpriced`, `excluded`,
+`complete` and `priced_max_cost_usd` (a lower bound). Set `MODEL_PRICES` for any
+model you route to that the built-in table lacks.
+
 ### Security notes
 
 - **Redirects are off** on every provider client: a redirect cannot carry your key to another host.
