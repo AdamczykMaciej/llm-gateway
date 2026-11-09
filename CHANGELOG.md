@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.18.3
+
+Strict typing for the provider adapters, `structured.py` and `router.py`. No behaviour changes.
+
+- `[tool.pyright]` now runs strict on `src/llm_gateway/providers`, `structured.py` and `router.py`
+  (the rest stays standard). Findings in those modules: 1,430 before, 0 after; whole `src` is 0.
+- New `providers/_wire.py`: TypedDicts for the OpenAI-shaped message / tool / tool-call / stream
+  delta dicts (`OpenAIMessage`, `OpenAITool`, `OpenAIToolCall`, `ToolCallDelta`) and the Anthropic
+  request blocks (`AnthropicTextBlock`, `AnthropicImageBlock`, `AnthropicToolUseBlock`,
+  `AnthropicToolResultBlock`, `AnthropicMessage`, `AnthropicTool`). At runtime they are plain dicts.
+  `StreamDelta.tool_call_deltas` is now `list[ToolCallDelta]`; public call signatures still take
+  `list[dict[str, Any]]`, so existing callers type-check unchanged.
+- No real bug surfaced while typing, so no behaviour fix is included.
+
 ## 0.18.2
 
 Documentation, typing and API audit. No behaviour changes.

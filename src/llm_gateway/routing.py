@@ -25,6 +25,7 @@ the call's span. Neither contains request content.
 import logging
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from typing import Any
 
 from opentelemetry import trace
 
@@ -44,7 +45,7 @@ _COST = "cost"
 _BUDGET = "budget"
 
 
-def _has_images(messages: list[dict] | None) -> bool:
+def _has_images(messages: list[dict[str, Any]] | None) -> bool:
     for message in messages or ():
         content = message.get("content")
         if isinstance(content, list) and any(
@@ -66,7 +67,12 @@ class RequestProfile:
 
     @classmethod
     def for_completion(
-        cls, *, system: str, prompt: str, max_tokens: int, output_schema: dict | None = None
+        cls,
+        *,
+        system: str,
+        prompt: str,
+        max_tokens: int,
+        output_schema: dict[str, Any] | None = None,
     ) -> "RequestProfile":
         return cls(
             features=("structured_output",) if output_schema is not None else (),
@@ -78,11 +84,11 @@ class RequestProfile:
     def for_chat(
         cls,
         *,
-        messages: list[dict],
-        tools: list[dict] | None,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None,
         tool_choice: object,
         max_tokens: int,
-        response_format: dict | None,
+        response_format: dict[str, Any] | None,
         streaming: bool = False,
     ) -> "RequestProfile":
         features = []
@@ -168,7 +174,7 @@ class ChainPlan:
         return any(CONFIGURED[p](config) for p in self.providers if p in CONFIGURED)
 
 
-def _available(provider: str, config: GatewayConfig, registry: Mapping) -> bool:
+def _available(provider: str, config: GatewayConfig, registry: Mapping[str, Any]) -> bool:
     if provider not in registry:
         return False
     configured = CONFIGURED.get(provider)
@@ -181,7 +187,7 @@ def plan_chain(
     config: GatewayConfig,
     policy: ProviderPolicy | None,
     profile: RequestProfile,
-    registry: Mapping,
+    registry: Mapping[str, Any],
     model_override: str | None,
     span: trace.Span | None = None,
 ) -> ChainPlan:

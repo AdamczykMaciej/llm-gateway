@@ -19,7 +19,7 @@ import logging
 from collections.abc import AsyncGenerator, Iterable
 from contextlib import aclosing
 from dataclasses import dataclass, field
-from typing import Any, cast
+from typing import Any, TypeVar, cast
 
 # The same class as anthropic.Timeout — both SDKs re-export httpx2.Timeout.
 from openai import Timeout
@@ -27,11 +27,14 @@ from openai.types.chat import ChatCompletionMessageParam
 
 from ..config import GatewayConfig
 from ..errors import EmptyCompletionError, InvalidOutputError, ToolCallTruncatedError
+from ._wire import ToolCallDelta, ToolCallDeltaFunction
 
 logger = logging.getLogger("llm_gateway")
 
+C = TypeVar("C")
 
-def sdk_messages(messages: list[dict]) -> list[ChatCompletionMessageParam]:
+
+def sdk_messages(messages: list[dict[str, Any]]) -> list[ChatCompletionMessageParam]:
     """The gateway's OpenAI-format message dicts, typed for the OpenAI SDK.
 
     The shape is validated by `chat()` before any provider is called, so this
@@ -59,7 +62,7 @@ OPENAI_SAMPLING_KEYS = (
 )
 
 
-def openai_sampling_kwargs(sampling: dict | None) -> dict:
+def openai_sampling_kwargs(sampling: dict[str, Any] | None) -> dict[str, Any]:
     """Filter to only the set (non-None) sampling keys — safe to **-expand
     directly into an OpenAI-compatible SDK call (OpenAI, Groq)."""
     if not sampling:
@@ -78,19 +81,19 @@ def sdk_http_client(factory: Any, config: GatewayConfig) -> Any:
     follow redirects by default, and httpx only strips `Authorization` across
     origins, so a hostile or compromised endpoint could bounce the request
     (with `x-api-key` / `api-key` headers) to another host. Honors ssl_verify."""
-    kwargs: dict = {"follow_redirects": False}
+    kwargs: dict[str, Any] = {"follow_redirects": False}
     if not config.ssl_verify:
         kwargs["verify"] = False
     return factory(**kwargs)
 
 
-def sdk_client_options(config: GatewayConfig) -> dict:
+def sdk_client_options(config: GatewayConfig) -> dict[str, Any]:
     """Constructor kwargs shared by every provider's SDK client: the
     per-attempt request timeout and the SDK's own retry count (see
     GatewayConfig.sdk_max_retries for why that is 0 by default). An
     omitted `timeout` keeps the SDK default — passing None would disable
     timeouts entirely."""
-    options: dict = {"max_retries": max(config.sdk_max_retries, 0)}
+    options: dict[str, Any] = {"max_retries": max(config.sdk_max_retries, 0)}
     timeout = _sdk_timeout(config.request_timeout_seconds)
     if timeout is not None:
         options["timeout"] = timeout
@@ -103,7 +106,7 @@ def sdk_client_options(config: GatewayConfig) -> dict:
 # evicted and closed after a grace period that lets its in-flight calls end.
 MAX_CACHED_CLIENTS = 16
 EVICTED_CLIENT_GRACE_SECONDS = 120.0
-_closing: set[asyncio.Task] = set()
+_closing: set[asyncio.Task[None]] = set()
 
 
 async def _close_later(client: Any, grace: float) -> None:
@@ -116,7 +119,7 @@ async def _close_later(client: Any, grace: float) -> None:
             logger.debug("llm_gateway: closing an evicted client failed", exc_info=True)
 
 
-def remember_client(cache: dict, key: tuple, client: Any) -> Any:
+def remember_client(cache: dict[tuple[Any, ...], C], key: tuple[Any, ...], client: C) -> C:
     """Store `client` under `key`, evicting the oldest entries beyond
     MAX_CACHED_CLIENTS. Returns `client`."""
     cache[key] = client
@@ -133,7 +136,7 @@ def remember_client(cache: dict, key: tuple, client: Any) -> Any:
     return client
 
 
-async def close_clients(cache: dict) -> None:
+async def close_clients(cache: dict[tuple[Any, ...], Any]) -> None:
     """Empty `cache` and close every client in it (and any evicted client
     still waiting out its grace period). One failing close does not stop the
     rest; cancellation still propagates."""
@@ -151,7 +154,7 @@ async def close_clients(cache: dict) -> None:
             logger.warning("llm_gateway: closing an SDK client failed", exc_info=True)
 
 
-def sdk_client_cache_key(api_key: str, config: GatewayConfig) -> tuple:
+def sdk_client_cache_key(api_key: str, config: GatewayConfig) -> tuple[Any, ...]:
     return (
         api_key,
         config.ssl_verify,
@@ -160,7 +163,7 @@ def sdk_client_cache_key(api_key: str, config: GatewayConfig) -> tuple:
     )
 
 
-def stream_request_options(config: GatewayConfig) -> dict:
+def stream_request_options(config: GatewayConfig) -> dict[str, Any]:
     """Per-request kwargs for a streaming SDK call: an httpx read timeout
     bounds the wait for the response to start and every gap between chunks,
     without capping how long a steadily-flowing stream may run."""
@@ -197,7 +200,7 @@ class Usage:
         return max(self.input_tokens - cached, 0)
 
     def __add__(self, other: "Usage") -> "Usage":
-        if not isinstance(other, Usage):
+        if not isinstance(other, Usage):  # pyright: ignore[reportUnnecessaryIsInstance]
             return NotImplemented
         return Usage(
             self.input_tokens + other.input_tokens,
@@ -284,7 +287,7 @@ REASONING_REJECTED_SAMPLING = (
 )
 
 
-def drop_keys(kwargs: dict, keys: tuple[str, ...]) -> dict:
+def drop_keys(kwargs: dict[str, Any], keys: tuple[str, ...]) -> dict[str, Any]:
     return {k: v for k, v in kwargs.items() if k not in keys}
 
 
@@ -404,7 +407,7 @@ class ProviderResult:
 class ToolCall:
     id: str
     name: str
-    arguments: dict
+    arguments: dict[str, Any]
 
 
 @dataclass(frozen=True)
@@ -413,7 +416,7 @@ class ChatResult:
     model: str
     input_tokens: int
     output_tokens: int
-    tool_calls: list[ToolCall] = field(default_factory=list)
+    tool_calls: list[ToolCall] = field(default_factory=list[ToolCall])
     finish_reason: str = "stop"  # "stop" | "tool_calls"
     cache_read_input_tokens: int = 0
     cache_creation_input_tokens: int = 0
@@ -443,7 +446,7 @@ class StreamDelta:
     OpenAI streaming, e.g. LangChain's, works unmodified)."""
 
     content: str | None = None
-    tool_call_deltas: list[dict] | None = None
+    tool_call_deltas: list[ToolCallDelta] | None = None
     finish_reason: str | None = None
     model: str | None = None
     usage: tuple[int, int] | None = None  # (input_tokens, output_tokens) — final chunk only
@@ -465,7 +468,7 @@ class StreamDelta:
     failed_error: str | None = None  # exception class name only
 
 
-def _tool_arguments(raw: str | None) -> dict:
+def _tool_arguments(raw: str | None) -> dict[str, Any]:
     """A tool call's arguments from the provider's JSON string. Truncated or
     malformed JSON (or anything but an object) is `InvalidOutputError`, so the
     call fails over, instead of an unclassified parse error (`UNKNOWN`) that
@@ -478,7 +481,7 @@ def _tool_arguments(raw: str | None) -> dict:
         return {}
     if not isinstance(arguments, dict):
         raise InvalidOutputError("Tool call arguments are not a JSON object.")
-    return arguments
+    return cast("dict[str, Any]", arguments)
 
 
 def _first_choice(resp: Any, model: str, provider: str) -> Any:
@@ -508,6 +511,7 @@ def parse_openai_style_response(resp: Any, model: str, provider: str = "openai")
     if getattr(msg, "refusal", None) and not msg.tool_calls:
         raise InvalidOutputError("The model refused the request (message.refusal is set).")
     finish_reason = normalize_finish_reason(choice.finish_reason)
+    raw_tool_calls = cast("list[Any]", msg.tool_calls or [])
     try:
         tool_calls = [
             ToolCall(
@@ -515,14 +519,14 @@ def parse_openai_style_response(resp: Any, model: str, provider: str = "openai")
                 name=tc.function.name,
                 arguments=_tool_arguments(tc.function.arguments),
             )
-            for tc in (msg.tool_calls or [])
+            for tc in raw_tool_calls
         ]
     except InvalidOutputError:
         if finish_reason == "length":
             raise ToolCallTruncatedError(
                 "The reply was cut off by the token limit inside a tool call; "
                 "retry with a larger max_tokens.",
-                tuple(tc.function.name for tc in msg.tool_calls),
+                tuple(tc.function.name for tc in raw_tool_calls),
             ) from None
         raise
     if tool_calls:
@@ -601,19 +605,20 @@ def parse_openai_style_chunk(chunk: Any, model: str) -> StreamDelta:
 
     choice = chunk.choices[0]
     delta = choice.delta
-    tool_call_deltas = None
+    tool_call_deltas: list[ToolCallDelta] | None = None
     if delta.tool_calls:
-        tool_call_deltas = [
-            {
-                "index": tc.index,
-                **({"id": tc.id, "type": "function"} if tc.id else {}),
-                "function": {
-                    **({"name": tc.function.name} if tc.function and tc.function.name else {}),
-                    "arguments": (tc.function.arguments or "") if tc.function else "",
-                },
-            }
-            for tc in delta.tool_calls
-        ]
+        tool_call_deltas = []
+        for tc in cast("list[Any]", delta.tool_calls):
+            fragment: ToolCallDelta = {"index": tc.index}
+            if tc.id:
+                fragment["id"] = tc.id
+                fragment["type"] = "function"
+            function: ToolCallDeltaFunction = {}
+            if tc.function and tc.function.name:
+                function["name"] = tc.function.name
+            function["arguments"] = (tc.function.arguments or "") if tc.function else ""
+            fragment["function"] = function
+            tool_call_deltas.append(fragment)
     return StreamDelta(
         content=delta.content,
         tool_call_deltas=tool_call_deltas,
@@ -650,7 +655,7 @@ class ToolIndexNormalizer:
             index += 1
         return index
 
-    def _remap(self, fragment: dict) -> dict:
+    def _remap(self, fragment: ToolCallDelta) -> ToolCallDelta:
         raw = fragment.get("index")
         call_id = fragment.get("id")
         if call_id:

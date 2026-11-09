@@ -17,6 +17,7 @@ save.
 """
 
 import math
+from typing import Any
 
 # Matched by the longest prefix of the model id, so dated snapshots
 # ("claude-haiku-4-5-20251001") and point releases resolve correctly.
@@ -56,7 +57,7 @@ def estimate_tokens(text: str) -> int:
     return math.ceil(len(text) / CHARS_PER_TOKEN_ESTIMATE)
 
 
-def system_param(system: str, model: str, cache_system: bool) -> str | list[dict]:
+def system_param(system: str, model: str, cache_system: bool) -> str | list[dict[str, Any]]:
     """The `system` argument for messages.create(): the plain string, or a
     single text block carrying `cache_control` when caching was requested and
     the prefix is long enough to be cached."""
@@ -66,8 +67,8 @@ def system_param(system: str, model: str, cache_system: bool) -> str | list[dict
 
 
 def system_param_from_messages(
-    messages: list[dict], model: str, cache_system: bool
-) -> str | list[dict]:
+    messages: list[dict[str, Any]], model: str, cache_system: bool
+) -> str | list[dict[str, Any]]:
     """The `system` argument for a chat/stream request built from `messages`.
 
     Without `cache_system`, or with nothing cacheable, the system messages are
@@ -83,7 +84,7 @@ def system_param_from_messages(
         return joined
     if estimate_tokens(parts[0]) < min_cacheable_tokens(model):
         return joined
-    blocks: list[dict] = [
+    blocks: list[dict[str, Any]] = [
         {"type": "text", "text": parts[0], "cache_control": {"type": "ephemeral"}}
     ]
     blocks.extend({"type": "text", "text": text} for text in parts[1:])

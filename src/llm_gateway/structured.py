@@ -21,8 +21,9 @@ circuit breaker).
 import copy
 import json
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 from pydantic import BaseModel, ValidationError
 
@@ -60,7 +61,17 @@ _LITERAL_KEYS = frozenset({"enum", "const", "required", "type", "description", "
 _SCHEMA_MAP_KEYS = frozenset({"properties", "$defs", "definitions"})
 
 
-def _is_object_schema(node: dict) -> bool:
+def _dict(value: object) -> dict[str, Any] | None:
+    """`value` as a JSON object, or None. Schemas and data are untrusted JSON,
+    so every reader narrows with this instead of trusting a type hint."""
+    return cast("dict[str, Any]", value) if isinstance(value, dict) else None
+
+
+def _list(value: object) -> list[Any] | None:
+    return cast("list[Any]", value) if isinstance(value, list) else None
+
+
+def _is_object_schema(node: dict[str, Any]) -> bool:
     type_ = node.get("type")
     return (
         type_ == "object" or (isinstance(type_, list) and "object" in type_) or "properties" in node
@@ -68,20 +79,25 @@ def _is_object_schema(node: dict) -> bool:
 
 
 def _strict(node: Any, *, require_all: bool) -> Any:
-    if isinstance(node, list):
-        return [_strict(item, require_all=require_all) for item in node]
-    if not isinstance(node, dict):
+    items = _list(node)
+    if items is not None:
+        return [_strict(item, require_all=require_all) for item in items]
+    mapping = _dict(node)
+    if mapping is None:
         return node
     out: dict[str, Any] = {}
-    for key, value in node.items():
+    for key, value in mapping.items():
         if key in _UNSUPPORTED_KEYWORDS:
             continue
         if key == "minItems" and value not in (0, 1):
             continue
         if key == "format" and value not in _SUPPORTED_FORMATS:
             continue
-        if key in _SCHEMA_MAP_KEYS and isinstance(value, dict):
-            out[key] = {name: _strict(sub, require_all=require_all) for name, sub in value.items()}
+        value_map = _dict(value)
+        if key in _SCHEMA_MAP_KEYS and value_map is not None:
+            out[key] = {
+                name: _strict(sub, require_all=require_all) for name, sub in value_map.items()
+            }
         elif key == "oneOf":
             out["anyOf"] = _strict(value, require_all=require_all)
         elif key in _LITERAL_KEYS:
@@ -95,7 +111,7 @@ def _strict(node: Any, *, require_all: bool) -> Any:
     return out
 
 
-def to_strict_schema(schema: dict, *, require_all_properties: bool) -> dict:
+def to_strict_schema(schema: dict[str, Any], *, require_all_properties: bool) -> dict[str, Any]:
     """Return a copy of `schema` that strict/constrained-decoding modes
     accept: every object gets `additionalProperties: false`, unsupported
     keywords are dropped, and `oneOf` becomes `anyOf`.
@@ -163,21 +179,23 @@ class OutputSchema:
     """A caller's schema, normalized once per call."""
 
     name: str
-    json_schema: dict
+    json_schema: dict[str, Any]
     model: type[BaseModel] | None = None
 
     @classmethod
-    def from_spec(cls, spec: dict | type[BaseModel], name: str | None = None) -> "OutputSchema":
-        if isinstance(spec, type) and issubclass(spec, BaseModel):
+    def from_spec(
+        cls, spec: dict[str, Any] | type[BaseModel], name: str | None = None
+    ) -> "OutputSchema":
+        if isinstance(spec, type) and issubclass(spec, BaseModel):  # pyright: ignore[reportUnnecessaryIsInstance]
             return cls(_safe_name(name or spec.__name__), spec.model_json_schema(), spec)
-        if isinstance(spec, dict):
+        if isinstance(spec, dict):  # pyright: ignore[reportUnnecessaryIsInstance]
             return cls(_safe_name(name or str(spec.get("title") or "response")), spec)
         raise TypeError("output_schema must be a pydantic BaseModel subclass or a JSON Schema dict")
 
-    def strict_schema(self, *, require_all_properties: bool) -> dict:
+    def strict_schema(self, *, require_all_properties: bool) -> dict[str, Any]:
         return to_strict_schema(self.json_schema, require_all_properties=require_all_properties)
 
-    def openai_response_format(self) -> dict:
+    def openai_response_format(self) -> dict[str, Any]:
         """OpenAI-wire `response_format` for strict JSON-schema output."""
         return {
             "type": "json_schema",
@@ -243,7 +261,7 @@ class OutputSchema:
 # ── Opt-in output validation: complete_with_usage(validate=...) ─────────────
 
 _MAX_VALIDATION_ERRORS = 20
-_JSON_TYPE_CHECKS = {
+_JSON_TYPE_CHECKS: dict[str, Callable[[object], bool]] = {
     "object": lambda v: isinstance(v, dict),
     "array": lambda v: isinstance(v, list),
     "string": lambda v: isinstance(v, str),
@@ -254,15 +272,16 @@ _JSON_TYPE_CHECKS = {
 }
 
 
-def _resolve_ref(root: dict, ref: str) -> Any:
+def _resolve_ref(root: dict[str, Any], ref: str) -> Any:
     node: Any = root
     if not ref.startswith("#/"):
         return {}
     for part in ref[2:].split("/"):
+        current = _dict(node)
         node = (
-            node.get(part.replace("~1", "/").replace("~0", "~")) if isinstance(node, dict) else {}
+            current.get(part.replace("~1", "/").replace("~0", "~")) if current is not None else {}
         )
-    return node if isinstance(node, dict) else {}
+    return _dict(node) or {}
 
 
 def _json_equal(a: Any, b: Any) -> bool:
@@ -270,58 +289,68 @@ def _json_equal(a: Any, b: Any) -> bool:
     not `0`, at any depth."""
     if isinstance(a, bool) or isinstance(b, bool):
         return isinstance(a, bool) and isinstance(b, bool) and a == b
-    if isinstance(a, dict) and isinstance(b, dict):
-        return a.keys() == b.keys() and all(_json_equal(a[k], b[k]) for k in a)
-    if isinstance(a, list) and isinstance(b, list):
-        return len(a) == len(b) and all(_json_equal(x, y) for x, y in zip(a, b, strict=True))
+    a_map, b_map = _dict(a), _dict(b)
+    if a_map is not None and b_map is not None:
+        return a_map.keys() == b_map.keys() and all(_json_equal(a_map[k], b_map[k]) for k in a_map)
+    a_list, b_list = _list(a), _list(b)
+    if a_list is not None and b_list is not None:
+        return len(a_list) == len(b_list) and all(
+            _json_equal(x, y) for x, y in zip(a_list, b_list, strict=True)
+        )
     return a == b
 
 
 def _schema_errors(
-    data: Any, schema: Any, root: dict, path: str, out: list[str], depth: int = 0
+    data: Any, schema: Any, root: dict[str, Any], path: str, out: list[str], depth: int = 0
 ) -> None:
     """Append the paths where `data` violates `schema`. A subset of JSON
     Schema: type, enum, const, required, properties, additionalProperties
     (false), items, anyOf/oneOf and local $ref. Other keywords are ignored."""
-    if len(out) >= _MAX_VALIDATION_ERRORS or not isinstance(schema, dict) or depth > 64:
+    schema_map = _dict(schema)
+    if len(out) >= _MAX_VALIDATION_ERRORS or schema_map is None or depth > 64:
         return
+    schema = schema_map
     here = path or "<root>"
     if "$ref" in schema:
         _schema_errors(data, _resolve_ref(root, schema["$ref"]), root, path, out, depth + 1)
         return
     types = schema.get("type")
     if types is not None:
-        names = types if isinstance(types, list) else [types]
-        if not any(_JSON_TYPE_CHECKS.get(n, lambda v: True)(data) for n in names):
+        names = cast("list[Any]", types) if isinstance(types, list) else [types]
+        if not any(_JSON_TYPE_CHECKS.get(n, lambda _: True)(data) for n in names):
             out.append(here)
             return
-    if "enum" in schema and not any(_json_equal(data, v) for v in schema["enum"] or []):
+    if "enum" in schema and not any(
+        _json_equal(data, v) for v in cast("list[Any]", schema["enum"] or [])
+    ):
         out.append(here)
     if "const" in schema and not _json_equal(data, schema["const"]):
         out.append(here)
     for key in ("anyOf", "oneOf"):
-        branches = schema.get(key)
-        if isinstance(branches, list) and branches:
-            attempts = []
+        branches = _list(schema.get(key))
+        if branches:
+            attempts: list[list[str]] = []
             for branch in branches:
                 found: list[str] = []
                 _schema_errors(data, branch, root, path, found, depth + 1)
                 attempts.append(found)
             if not any(not found for found in attempts):
                 out.append(here)
-    if isinstance(data, dict):
-        properties = schema.get("properties") or {}
-        for name in schema.get("required") or []:
-            if name not in data:
+    data_map = _dict(data)
+    data_list = _list(data)
+    if data_map is not None:
+        properties = cast("dict[str, Any]", schema.get("properties") or {})
+        for name in cast("list[Any]", schema.get("required") or []):
+            if name not in data_map:
                 out.append(f"{path}.{name}" if path else name)
-        for name, value in data.items():
+        for name, value in data_map.items():
             child = f"{path}.{name}" if path else name
             if name in properties:
                 _schema_errors(value, properties[name], root, child, out, depth + 1)
             elif schema.get("additionalProperties") is False:
                 out.append(child)
-    elif isinstance(data, list) and isinstance(schema.get("items"), dict):
-        for index, value in enumerate(data):
+    elif data_list is not None and isinstance(schema.get("items"), dict):
+        for index, value in enumerate(data_list):
             child = f"{path}.{index}" if path else str(index)
             _schema_errors(value, schema["items"], root, child, out, depth + 1)
 
@@ -331,11 +360,11 @@ class OutputValidator:
     """A caller's `validate=` spec: a pydantic model class (full validation)
     or a JSON Schema dict (the subset `_schema_errors` documents)."""
 
-    spec: dict | type[BaseModel]
+    spec: dict[str, Any] | type[BaseModel]
 
     @classmethod
-    def from_spec(cls, spec: dict | type[BaseModel]) -> "OutputValidator":
-        if (isinstance(spec, type) and issubclass(spec, BaseModel)) or isinstance(spec, dict):
+    def from_spec(cls, spec: dict[str, Any] | type[BaseModel]) -> "OutputValidator":
+        if (isinstance(spec, type) and issubclass(spec, BaseModel)) or isinstance(spec, dict):  # pyright: ignore[reportUnnecessaryIsInstance]
             return cls(spec)
         raise TypeError("validate must be a pydantic BaseModel subclass or a JSON Schema dict")
 

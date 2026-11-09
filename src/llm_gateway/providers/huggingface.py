@@ -1,3 +1,4 @@
+# pyright: reportPrivateUsage=false
 """Hugging Face: the Inference Providers router or a dedicated Inference Endpoint.
 
 Both speak the OpenAI Chat Completions API

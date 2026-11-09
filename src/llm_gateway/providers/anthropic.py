@@ -96,7 +96,7 @@ _MODEL_REJECTION_HINTS = (
 # `AsyncAnthropicVertex`, which share the `messages` resource.
 ClientFactory = Callable[[], Awaitable[Any]]
 
-_clients: dict[tuple, AsyncAnthropic] = {}
+_clients: dict[tuple[Any, ...], AsyncAnthropic] = {}
 
 
 def _client(config: GatewayConfig) -> AsyncAnthropic:
@@ -143,7 +143,7 @@ def default_model(config: GatewayConfig) -> str:
 _BODY_ONLY_SAMPLING_KEYS = ("temperature", "top_p")
 
 
-def _sampling_kwargs(sampling: dict | None, model: str | None = None) -> dict:
+def _sampling_kwargs(sampling: dict[str, Any] | None, model: str | None = None) -> dict[str, Any]:
     """SDK-call kwargs for translated sampling params. Shared by chat() and
     stream_chat(). `temperature`/`top_p` are dropped for a model that rejects
     them (see _REJECTS_SAMPLING); `stop_sequences` always passes."""
@@ -162,7 +162,7 @@ def _sampling_kwargs(sampling: dict | None, model: str | None = None) -> dict:
     return params
 
 
-def _apply_thinking_effort(kwargs: dict, model: str, thinking: str, effort: str) -> None:
+def _apply_thinking_effort(kwargs: dict[str, Any], model: str, thinking: str, effort: str) -> None:
     """Add `output_config.effort` and `thinking` to the request for the models
     that take them; a no-op for any other model (so the same config is safe
     after a fallback to an older model). Haiku 5.5 thinks by default and bills
@@ -214,12 +214,12 @@ def _fallback_model(config: GatewayConfig, requested: str | None, exc: BaseExcep
 
 
 def _resolve_tool_kwargs(
-    tools: list[dict] | None,
+    tools: list[dict[str, Any]] | None,
     tool_choice: object,
-    response_format: dict | None,
-    messages: list[dict] | None = None,
+    response_format: dict[str, Any] | None,
+    messages: list[dict[str, Any]] | None = None,
     parallel_tool_calls: bool | None = None,
-) -> tuple[dict, bool]:
+) -> tuple[dict[str, Any], bool]:
     """Shared by chat() and stream_chat(). Returns (kwargs, emulating_structured_output).
 
     `parallel_tool_calls=False` sets `disable_parallel_tool_use` on the
@@ -246,7 +246,7 @@ def _resolve_tool_kwargs(
         return {}, False
     if not anthropic_tools:
         return {}, False
-    kwargs: dict = {"tools": anthropic_tools}
+    kwargs: dict[str, Any] = {"tools": anthropic_tools}
     choice = to_anthropic_tool_choice(tool_choice)
     if parallel_tool_calls is False:
         choice = {**(choice or {"type": "auto"}), "disable_parallel_tool_use": True}
@@ -304,7 +304,7 @@ async def messages_call(
     """Plain completion. The answer is every `text` block joined in order:
     a model that thinks returns `thinking`/`redacted_thinking` blocks before
     its text, so the first block is not necessarily the answer."""
-    kwargs: dict = {}
+    kwargs: dict[str, Any] = {}
     if output_schema is not None:
         # Native structured outputs (constrained decoding), which Anthropic's
         # docs recommend over forcing a tool call. Forced tool use is also
@@ -317,7 +317,7 @@ async def messages_call(
             }
         }
     _apply_thinking_effort(kwargs, model, thinking, effort)
-    resp = await (await get_client()).messages.create(
+    resp: Any = await (await get_client()).messages.create(
         model=model,
         max_tokens=max_tokens,
         system=system_param(system, model, cache_system),
@@ -349,14 +349,14 @@ async def messages_call(
 
 async def chat(
     config: GatewayConfig,
-    messages: list[dict],
-    tools: list[dict] | None,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None,
     max_tokens: int,
     *,
     model: str | None = None,
     tool_choice: object = None,
-    sampling: dict | None = None,
-    response_format: dict | None = None,
+    sampling: dict[str, Any] | None = None,
+    response_format: dict[str, Any] | None = None,
     parallel_tool_calls: bool | None = None,
 ) -> ChatResult:
     async def run(chosen: str) -> ChatResult:
@@ -389,12 +389,12 @@ async def messages_chat(
     *,
     provider: str,
     model: str,
-    messages: list[dict],
-    tools: list[dict] | None,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None,
     max_tokens: int,
     tool_choice: object,
-    sampling: dict | None,
-    response_format: dict | None,
+    sampling: dict[str, Any] | None,
+    response_format: dict[str, Any] | None,
     thinking: str = "",
     effort: str = "",
     parallel_tool_calls: bool | None = None,
@@ -404,10 +404,10 @@ async def messages_chat(
     tool_kwargs, emulating_structured_output = _resolve_tool_kwargs(
         tools, tool_choice, response_format, messages, parallel_tool_calls
     )
-    kwargs: dict = {**_sampling_kwargs(sampling, model), **tool_kwargs}
+    kwargs: dict[str, Any] = {**_sampling_kwargs(sampling, model), **tool_kwargs}
     _apply_thinking_effort(kwargs, model, thinking, effort)
 
-    resp = await (await get_client()).messages.create(
+    resp: Any = await (await get_client()).messages.create(
         model=model,
         max_tokens=max_tokens,
         system=system,
@@ -442,14 +442,14 @@ async def messages_chat(
 
 async def _stream_chat(
     config: GatewayConfig,
-    messages: list[dict],
-    tools: list[dict] | None,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None,
     max_tokens: int,
     *,
     model: str | None = None,
     tool_choice: object = None,
-    sampling: dict | None = None,
-    response_format: dict | None = None,
+    sampling: dict[str, Any] | None = None,
+    response_format: dict[str, Any] | None = None,
     parallel_tool_calls: bool | None = None,
     cache_system: bool = False,
 ) -> AsyncGenerator[StreamDelta]:
@@ -490,13 +490,13 @@ async def messages_stream(
     get_client: ClientFactory,
     *,
     model: str,
-    messages: list[dict],
-    tools: list[dict] | None,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None,
     max_tokens: int,
     tool_choice: object,
-    sampling: dict | None,
-    response_format: dict | None,
-    request_options: dict,
+    sampling: dict[str, Any] | None,
+    response_format: dict[str, Any] | None,
+    request_options: dict[str, Any],
     thinking: str = "",
     effort: str = "",
     cache_system: bool = False,
@@ -520,7 +520,7 @@ async def messages_stream(
     tool_kwargs, emulating_structured_output = _resolve_tool_kwargs(
         tools, tool_choice, response_format, messages, parallel_tool_calls
     )
-    kwargs: dict = {**_sampling_kwargs(sampling, model), **tool_kwargs}
+    kwargs: dict[str, Any] = {**_sampling_kwargs(sampling, model), **tool_kwargs}
     _apply_thinking_effort(kwargs, model, thinking, effort)
 
     # Raw Anthropic usage fields. message_start carries the input side;
@@ -580,10 +580,11 @@ async def messages_stream(
                     if event.index == structured_tool_index:
                         structured_output_parts.append(delta.partial_json)
                         continue
+                    block_index: int = event.index
                     yield StreamDelta(
                         tool_call_deltas=[
                             {
-                                "index": tool_ordinals.get(event.index, event.index),
+                                "index": tool_ordinals.get(block_index, block_index),
                                 "function": {"arguments": delta.partial_json},
                             }
                         ],
@@ -619,14 +620,14 @@ def _update_usage(raw_usage: dict[str, int], sdk_usage: object) -> None:
 
 async def stream_chat(
     config: GatewayConfig,
-    messages: list[dict],
-    tools: list[dict] | None,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None,
     max_tokens: int,
     *,
     model: str | None = None,
     tool_choice: object = None,
-    sampling: dict | None = None,
-    response_format: dict | None = None,
+    sampling: dict[str, Any] | None = None,
+    response_format: dict[str, Any] | None = None,
     parallel_tool_calls: bool | None = None,
     cache_system: bool = False,
 ) -> AsyncGenerator[StreamDelta]:

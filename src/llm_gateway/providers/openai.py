@@ -1,6 +1,7 @@
 import re
 from collections.abc import AsyncGenerator
 from contextlib import aclosing
+from typing import Any, cast
 
 from openai import AsyncOpenAI, DefaultAsyncHttpx2Client
 
@@ -27,7 +28,7 @@ from .base import (
     stream_request_options,
 )
 
-_clients: dict[tuple, AsyncOpenAI] = {}
+_clients: dict[tuple[Any, ...], AsyncOpenAI] = {}
 
 # Reasoning models (o-series, gpt-5 family; `gpt-5-chat*` is not one): the API
 # rejects `max_tokens` (it wants `max_completion_tokens`, which also covers
@@ -35,7 +36,7 @@ _clients: dict[tuple, AsyncOpenAI] = {}
 _REASONING_MODEL = re.compile(r"^(?:o\d|gpt-5(?!-chat))")
 
 
-def _request_params(model: str, max_tokens: int, kwargs: dict) -> dict:
+def _request_params(model: str, max_tokens: int, kwargs: dict[str, Any]) -> dict[str, Any]:
     """`max_tokens` and sampling kwargs in the form `model` accepts."""
     if _REASONING_MODEL.match(model):
         return {
@@ -87,34 +88,37 @@ async def call(
     # `cache_system` needs nothing here: OpenAI caches long prompt prefixes
     # automatically and reports hits as usage.prompt_tokens_details.cached_tokens.
     model = model or default_model(config)
-    kwargs: dict = {}
+    kwargs: dict[str, Any] = {}
     if output_schema is not None:
         kwargs["response_format"] = output_schema.openai_response_format()
-    resp = await _client(config).chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": prompt},
-        ],
-        **_request_params(model, max_tokens, kwargs),
+    resp = cast(
+        "Any",
+        await _client(config).chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": prompt},
+            ],
+            **_request_params(model, max_tokens, kwargs),
+        ),
     )
     return provider_result_from_openai_style(resp, model, provider="openai")
 
 
 async def chat(
     config: GatewayConfig,
-    messages: list[dict],
-    tools: list[dict] | None,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None,
     max_tokens: int,
     *,
     model: str | None = None,
     tool_choice: object = None,
-    sampling: dict | None = None,
-    response_format: dict | None = None,
+    sampling: dict[str, Any] | None = None,
+    response_format: dict[str, Any] | None = None,
     parallel_tool_calls: bool | None = None,
 ) -> ChatResult:
     model = model or default_model(config)
-    kwargs: dict = openai_sampling_kwargs(sampling)
+    kwargs: dict[str, Any] = openai_sampling_kwargs(sampling)
     if tools:
         kwargs["tools"] = tools
         if tool_choice is not None:
@@ -123,26 +127,31 @@ async def chat(
             kwargs["parallel_tool_calls"] = parallel_tool_calls
     if response_format is not None:
         kwargs["response_format"] = response_format
-    resp = await _client(config).chat.completions.create(
-        model=model, messages=sdk_messages(messages), **_request_params(model, max_tokens, kwargs)
+    resp = cast(
+        "Any",
+        await _client(config).chat.completions.create(
+            model=model,
+            messages=sdk_messages(messages),
+            **_request_params(model, max_tokens, kwargs),
+        ),
     )
     return parse_openai_style_response(resp, model, provider="openai")
 
 
 async def _stream_chat(
     config: GatewayConfig,
-    messages: list[dict],
-    tools: list[dict] | None,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None,
     max_tokens: int,
     *,
     model: str | None = None,
     tool_choice: object = None,
-    sampling: dict | None = None,
-    response_format: dict | None = None,
+    sampling: dict[str, Any] | None = None,
+    response_format: dict[str, Any] | None = None,
     parallel_tool_calls: bool | None = None,
 ) -> AsyncGenerator[StreamDelta]:
     model = model or default_model(config)
-    kwargs: dict = openai_sampling_kwargs(sampling)
+    kwargs: dict[str, Any] = openai_sampling_kwargs(sampling)
     if tools:
         kwargs["tools"] = tools
         if tool_choice is not None:
@@ -166,14 +175,14 @@ async def _stream_chat(
 
 async def stream_chat(
     config: GatewayConfig,
-    messages: list[dict],
-    tools: list[dict] | None,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None,
     max_tokens: int,
     *,
     model: str | None = None,
     tool_choice: object = None,
-    sampling: dict | None = None,
-    response_format: dict | None = None,
+    sampling: dict[str, Any] | None = None,
+    response_format: dict[str, Any] | None = None,
     parallel_tool_calls: bool | None = None,
     cache_system: bool = False,
 ) -> AsyncGenerator[StreamDelta]:

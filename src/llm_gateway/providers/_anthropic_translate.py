@@ -16,13 +16,23 @@ naturally, or every `tool_choice` variant.
 """
 
 import json
-from typing import Any
+from typing import Any, cast
 
 from ..errors import InvalidRequestError, ToolCallTruncatedError
+from ._wire import (
+    AnthropicBlock,
+    AnthropicImageBlock,
+    AnthropicMessage,
+    AnthropicTextBlock,
+    AnthropicTool,
+    AnthropicToolResultBlock,
+    AnthropicToolUseBlock,
+    as_dict,
+)
 from .base import ChatResult, ToolCall, Usage, as_int, normalize_finish_reason
 
 
-def _translate_image_url(url: str) -> dict:
+def _translate_image_url(url: str) -> AnthropicImageBlock:
     """OpenAI's `image_url.url` is either a data: URI or an https:// URL —
     Anthropic wants a `source` block naming which kind explicitly."""
     if url.startswith("data:"):
@@ -35,25 +45,28 @@ def _translate_image_url(url: str) -> dict:
     return {"type": "image", "source": {"type": "url", "url": url}}
 
 
-def _translate_content(content: str | list[dict] | None) -> str | list[dict]:
+def _translate_content(content: str | list[dict[str, Any]] | None) -> str | list[AnthropicBlock]:
     """Plain string content passes through unchanged. OpenAI's multi-part
     content list (text + image_url parts, for multi-modal messages) is
     translated block-by-block — everything but image_url is already
     Anthropic-shaped (`{"type": "text", "text": ...}` is identical in both)."""
     if not isinstance(content, list):
         return content or ""
-    blocks = []
+    blocks: list[AnthropicBlock] = []
     for part in content:
-        kind = part.get("type") if isinstance(part, dict) else None
+        # Caller data: a non-dict part is rejected below, not trusted by its type hint.
+        kind = (as_dict(part) or {}).get("type")
         if kind == "image_url":
             image = part.get("image_url")
-            url = image.get("url") if isinstance(image, dict) else image
+            image_dict = as_dict(image)
+            url = image_dict.get("url") if image_dict is not None else image
             if not isinstance(url, str) or not url:
                 raise InvalidRequestError("An image_url content part has no url.")
             blocks.append(_translate_image_url(url))
         elif kind == "text":
-            if str(part.get("text") or "").strip():  # Anthropic rejects empty text blocks
-                blocks.append(part)
+            text = str(part.get("text") or "")
+            if text.strip():  # Anthropic rejects empty text blocks
+                blocks.append(cast("AnthropicTextBlock", part))
         else:
             raise InvalidRequestError(
                 f"Content part type {kind!r} is not supported by Anthropic; "
@@ -64,7 +77,7 @@ def _translate_content(content: str | list[dict] | None) -> str | list[dict]:
     return blocks
 
 
-def _parse_tool_arguments(arguments: str | None) -> Any:
+def _parse_tool_arguments(arguments: str | None) -> dict[str, Any]:
     """Parse a tool call's JSON arguments from the caller's message history.
     Hostile input (invalid JSON, or nesting deep enough to blow the parser's
     recursion limit) becomes a plain ValueError, never a RecursionError."""
@@ -74,10 +87,10 @@ def _parse_tool_arguments(arguments: str | None) -> Any:
         raise InvalidRequestError("tool call arguments are not valid JSON") from None
     if not isinstance(parsed, dict):
         raise InvalidRequestError("tool call arguments are not a JSON object")
-    return parsed
+    return cast("dict[str, Any]", parsed)
 
 
-def _tool_result_content(content: Any) -> Any:
+def _tool_result_content(content: Any) -> str | list[AnthropicBlock]:
     """A tool message's content for a `tool_result` block: text stays text, a
     list of OpenAI parts becomes Anthropic text/image blocks (a result may
     carry an image, e.g. a screenshot)."""
@@ -85,56 +98,53 @@ def _tool_result_content(content: Any) -> Any:
         return ""
     if isinstance(content, str):
         return content
-    return _translate_content(content)
+    return _translate_content(cast("list[dict[str, Any]]", content))
 
 
-def _system_text(content: str | list[dict]) -> str:
+def _system_text(content: str | list[dict[str, Any]]) -> str:
     """A system message's text: OpenAI also allows a list of text parts."""
     if isinstance(content, str):
         return content
-    return "\n".join(
-        str(part.get("text", ""))
-        for part in content
-        if isinstance(part, dict) and part.get("type") == "text"
-    )
+    parts = (as_dict(part) for part in content)
+    return "\n".join(str(p.get("text", "")) for p in parts if p and p.get("type") == "text")
 
 
-def to_anthropic_messages(messages: list[dict]) -> tuple[str, list[dict]]:
+def to_anthropic_messages(messages: list[dict[str, Any]]) -> tuple[str, list[AnthropicMessage]]:
     """Return (system_prompt, anthropic_messages)."""
     system_parts = [
         _system_text(m["content"]) for m in messages if m["role"] == "system" and m.get("content")
     ]
     system = "\n".join(part for part in system_parts if part)
 
-    anthropic_messages: list[dict] = []
+    anthropic_messages: list[AnthropicMessage] = []
     for m in messages:
         role = m["role"]
         if role == "system":
             continue
 
         if role == "tool":
-            block = {
+            block: AnthropicToolResultBlock = {
                 "type": "tool_result",
                 "tool_use_id": m["tool_call_id"],
                 "content": _tool_result_content(m.get("content")),
             }
             # Consecutive tool results belong in one user turn, mirroring how
             # an assistant message can request several tool calls at once.
+            previous = anthropic_messages[-1] if anthropic_messages else None
+            previous_content = previous["content"] if previous else None
             if (
-                anthropic_messages
-                and anthropic_messages[-1]["role"] == "user"
-                and all(
-                    isinstance(b, dict) and b.get("type") == "tool_result"
-                    for b in anthropic_messages[-1]["content"]
-                )
+                previous is not None
+                and previous["role"] == "user"
+                and isinstance(previous_content, list)
+                and all(b["type"] == "tool_result" for b in previous_content)
             ):
-                anthropic_messages[-1]["content"].append(block)
+                previous_content.append(block)
             else:
                 anthropic_messages.append({"role": "user", "content": [block]})
             continue
 
         if role == "assistant" and m.get("tool_calls"):
-            content: list[dict] = []
+            content: list[AnthropicBlock] = []
             if m.get("content"):
                 translated = _translate_content(m["content"])
                 if isinstance(translated, list):
@@ -142,14 +152,13 @@ def to_anthropic_messages(messages: list[dict]) -> tuple[str, list[dict]]:
                 else:
                     content.append({"type": "text", "text": translated})
             for tc in m["tool_calls"]:
-                content.append(
-                    {
-                        "type": "tool_use",
-                        "id": tc["id"],
-                        "name": tc["function"]["name"],
-                        "input": _parse_tool_arguments(tc["function"]["arguments"]),
-                    }
-                )
+                tool_use: AnthropicToolUseBlock = {
+                    "type": "tool_use",
+                    "id": tc["id"],
+                    "name": tc["function"]["name"],
+                    "input": _parse_tool_arguments(tc["function"]["arguments"]),
+                }
+                content.append(tool_use)
             anthropic_messages.append({"role": "assistant", "content": content})
             continue
 
@@ -158,7 +167,7 @@ def to_anthropic_messages(messages: list[dict]) -> tuple[str, list[dict]]:
     return system, anthropic_messages
 
 
-def to_anthropic_tools(tools: list[dict] | None) -> list[dict] | None:
+def to_anthropic_tools(tools: list[dict[str, Any]] | None) -> list[AnthropicTool] | None:
     if not tools:
         return None
     return [
@@ -171,7 +180,7 @@ def to_anthropic_tools(tools: list[dict] | None) -> list[dict] | None:
     ]
 
 
-def to_anthropic_tool_choice(tool_choice: Any) -> dict | None:
+def to_anthropic_tool_choice(tool_choice: Any) -> dict[str, Any] | None:
     """Best-effort mapping — Anthropic has no direct equivalent of OpenAI's
     "none", so that case is left unmapped (falls back to the model's own
     default rather than a hard block)."""
@@ -181,12 +190,13 @@ def to_anthropic_tool_choice(tool_choice: Any) -> dict | None:
         return {"type": "auto"}
     if tool_choice == "required":
         return {"type": "any"}
-    if isinstance(tool_choice, dict) and tool_choice.get("type") == "function":
-        return {"type": "tool", "name": tool_choice["function"]["name"]}
+    choice = as_dict(tool_choice)
+    if choice is not None and choice.get("type") == "function":
+        return {"type": "tool", "name": choice["function"]["name"]}
     return None
 
 
-def to_anthropic_sampling(sampling: dict | None) -> dict:
+def to_anthropic_sampling(sampling: dict[str, Any] | None) -> dict[str, Any]:
     """Best-effort mapping of OpenAI-named sampling params. `seed`,
     `presence_penalty`, and `frequency_penalty` have no Anthropic equivalent
     and are silently dropped, not errored. Returns Messages-API field names;
@@ -194,7 +204,7 @@ def to_anthropic_sampling(sampling: dict | None) -> dict:
     1.x SDK no longer takes temperature/top_p as named arguments)."""
     if not sampling:
         return {}
-    out: dict = {}
+    out: dict[str, Any] = {}
     if sampling.get("temperature") is not None:
         out["temperature"] = sampling["temperature"]
     if sampling.get("top_p") is not None:
@@ -219,7 +229,9 @@ _JSON_OBJECT_INSTRUCTION = (
 )
 
 
-def json_object_messages(messages: list[dict], response_format: dict | None) -> list[dict]:
+def json_object_messages(
+    messages: list[dict[str, Any]], response_format: dict[str, Any] | None
+) -> list[dict[str, Any]]:
     """Anthropic has no JSON mode, so `response_format={"type": "json_object"}`
     would otherwise be dropped silently and prose could come back. Append a
     system instruction instead (last, so a cached system prefix is unchanged).
@@ -229,7 +241,9 @@ def json_object_messages(messages: list[dict], response_format: dict | None) -> 
     return [*messages, {"role": "system", "content": _JSON_OBJECT_INSTRUCTION}]
 
 
-def to_anthropic_structured_output_tool(response_format: dict | None) -> dict | None:
+def to_anthropic_structured_output_tool(
+    response_format: dict[str, Any] | None,
+) -> dict[str, Any] | None:
     if not response_format or response_format.get("type") != "json_schema":
         return None
     schema = response_format["json_schema"]["schema"]

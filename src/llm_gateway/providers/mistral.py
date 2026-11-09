@@ -1,3 +1,4 @@
+# pyright: reportPrivateUsage=false
 """Mistral AI (https://api.mistral.ai/v1), an OpenAI-compatible host.
 
 Mistral AI is a French company; its API is served from EU infrastructure.
