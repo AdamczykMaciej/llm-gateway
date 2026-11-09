@@ -63,6 +63,9 @@ class OutputPolicy(StrEnum):
 
 @dataclass(frozen=True)
 class Span:
+    """A detected piece of personal data: `text[start:end]`, labelled `kind`
+    (e.g. "EMAIL"), as returned by a `Redactor`."""
+
     start: int
     end: int
     kind: str
@@ -78,11 +81,15 @@ class Redactor(Protocol):
 
 @dataclass(frozen=True)
 class TokenFormat:
+    """How a placeholder token looks: `[EMAIL_1]` by default (`numbered`), or
+    `[EMAIL]` when unnumbered, wrapped in `open` / `close`."""
+
     numbered: bool = True
     open: str = "["
     close: str = "]"
 
     def render(self, kind: str, n: int) -> str:
+        """The token text for the `n`th value of `kind`."""
         return (
             f"{self.open}{kind}_{n}{self.close}"
             if self.numbered
@@ -91,6 +98,7 @@ class TokenFormat:
 
     @property
     def pattern(self) -> re.Pattern[str]:
+        """A compiled regex matching a token in this format."""
         o, c = re.escape(self.open), re.escape(self.close)
         suffix = r"_\d+" if self.numbered else ""
         return re.compile(rf"{o}[A-Za-z][A-Za-z0-9 _-]{{0,30}}?{suffix}{c}")
@@ -143,18 +151,22 @@ class Vault:
         return token
 
     def original(self, token: str) -> str | None:
+        """The original text behind `token`, or None if the vault never issued it."""
         return self._by_token.get(token)
 
     def tokens(self) -> frozenset[str]:
+        """Every token the vault has issued."""
         return frozenset(self._by_token)
 
     def counts(self) -> dict[str, int]:
+        """How many distinct values of each kind the vault holds."""
         return dict(self._counts)
 
     def __len__(self) -> int:
         return len(self._by_token)
 
     def clear(self) -> None:
+        """Forget every stored value; issued tokens no longer resolve."""
         self._by_token.clear()
         self._by_value.clear()
         self._counts.clear()
@@ -207,12 +219,12 @@ class Privacy:
 
     @classmethod
     def passthrough(cls, reason: str, label: str = "") -> Privacy:
-        if not reason or not reason.strip():
-            raise ValueError("a passthrough policy needs a reason")
         """A policy that sends text unredacted, for a stated `reason`.
 
         Raises:
             ValueError: `reason` is empty or whitespace."""
+        if not reason or not reason.strip():
+            raise ValueError("a passthrough policy needs a reason")
         return cls(None, OutputPolicy.PASSTHROUGH, reason=reason, label=label)
 
 

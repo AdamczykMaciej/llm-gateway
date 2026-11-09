@@ -32,8 +32,9 @@ import asyncio
 import dataclasses
 import logging
 import time
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Sequence
 from contextlib import aclosing
+from typing import Any, cast
 
 from opentelemetry.trace import StatusCode
 
@@ -70,6 +71,7 @@ from .tracing import (
     resolve_request_id,
     set_chat_attributes,
 )
+from .types import Message, ToolChoice, ToolSpec
 
 logger = logging.getLogger("llm_gateway")
 
@@ -123,9 +125,9 @@ def _positive(seconds: float | None) -> float | None:
 
 async def stream_chat(
     *,
-    messages: list[dict],
-    tools: list[dict] | None = None,
-    tool_choice: object = None,
+    messages: Sequence[Message | dict[str, Any]],
+    tools: Sequence[ToolSpec | dict[str, Any]] | None = None,
+    tool_choice: ToolChoice | dict[str, Any] | str | None = None,
     max_tokens: int = 2000,
     config: GatewayConfig | None = None,
     force_provider: str | None = None,
@@ -215,8 +217,8 @@ async def stream_chat(
     """
     ikey = resolve_idempotency_key(idempotency_key)
     impl = _stream_chat(
-        messages=messages,
-        tools=tools,
+        messages=cast("list[dict]", messages),
+        tools=cast("list[dict] | None", tools),
         tool_choice=tool_choice,
         max_tokens=max_tokens,
         config=config,

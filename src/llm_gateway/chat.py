@@ -14,6 +14,8 @@ import asyncio
 import dataclasses
 import logging
 import time
+from collections.abc import Sequence
+from typing import Any, cast
 
 from opentelemetry.trace import StatusCode
 
@@ -45,6 +47,7 @@ from .tracing import (
     resolve_request_id,
     set_chat_attributes,
 )
+from .types import Message, ToolChoice, ToolSpec
 
 logger = logging.getLogger("llm_gateway")
 
@@ -377,9 +380,9 @@ async def _chat(
 
 async def chat(
     *,
-    messages: list[dict],
-    tools: list[dict] | None = None,
-    tool_choice: object = None,
+    messages: Sequence[Message | dict[str, Any]],
+    tools: Sequence[ToolSpec | dict[str, Any]] | None = None,
+    tool_choice: ToolChoice | dict[str, Any] | str | None = None,
     max_tokens: int = 2000,
     config: GatewayConfig | None = None,
     force_provider: str | None = None,
@@ -407,8 +410,8 @@ async def chat(
     different request raises `InvalidRequestError`. Nothing is cached after
     the call finishes. Without a key, behaviour is unchanged."""
     impl_kwargs = {
-        "messages": messages,
-        "tools": tools,
+        "messages": cast("list[dict]", messages),
+        "tools": cast("list[dict] | None", tools),
         "tool_choice": tool_choice,
         "max_tokens": max_tokens,
         "config": config,

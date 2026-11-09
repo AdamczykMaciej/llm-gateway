@@ -24,6 +24,7 @@ from typing import Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
+from ._validation import config_error
 from .errors import PolicyViolationError
 
 # Provider ids the policy understands (the providers/ registry's ids).
@@ -49,9 +50,12 @@ _REGION = re.compile(r"[a-z][a-z0-9_-]{0,31}")
 def normalize_region(value: str, *, field_name: str) -> str:
     region = str(value).strip().lower()
     if not _REGION.fullmatch(region):
-        raise ValueError(
-            f"{field_name} must be a short lowercase region code such as 'eu', 'us' or "
-            f"'global', got {value!r}"
+        raise config_error(
+            field_name,
+            "must be a short lowercase region code",
+            given=value,
+            fix="use a code such as 'eu', 'us' or 'global' (letters, digits, '-' or '_', "
+            "at most 32 characters, starting with a letter)",
         )
     return region
 
@@ -87,9 +91,11 @@ def provider_ids(value: Iterable[str] | str, *, field_name: str) -> tuple[str, .
     ids = tuple(dict.fromkeys(str(item).strip().lower() for item in items if str(item).strip()))
     unknown = [i for i in ids if i not in KNOWN_PROVIDERS]
     if unknown:
-        raise ValueError(
-            f"{field_name}: unknown provider id(s) {', '.join(map(repr, unknown))}; "
-            f"known ids are {', '.join(KNOWN_PROVIDERS)}"
+        raise config_error(
+            field_name,
+            "has an unknown provider id",
+            shown=", ".join(map(repr, unknown)),
+            fix=f"use only known ids: {', '.join(KNOWN_PROVIDERS)}",
         )
     return ids
 
@@ -183,7 +189,12 @@ class ProviderPolicy:
         if self.residency is not None:
             residency = normalize_region(self.residency, field_name="residency")
             if residency == "unknown":
-                raise ValueError("residency cannot be 'unknown'")
+                raise config_error(
+                    "residency",
+                    "cannot be 'unknown'",
+                    given=self.residency,
+                    fix="name the region you require, e.g. 'eu', or leave it unset",
+                )
             object.__setattr__(self, "residency", residency)
         if self.only is not None:
             object.__setattr__(self, "only", provider_ids(self.only, field_name="only"))
@@ -196,10 +207,20 @@ class ProviderPolicy:
                 or math.isnan(cap)
                 or cap < 0
             ):
-                raise ValueError(f"max_cost_usd must be a non-negative number, got {cap!r}")
+                raise config_error(
+                    "max_cost_usd",
+                    "must be a non-negative number",
+                    given=cap,
+                    fix="pass a USD amount such as 0.05, or None for no cap",
+                )
             object.__setattr__(self, "max_cost_usd", float(cap))
         if self.sort not in (None, "order", "price"):
-            raise ValueError(f"sort must be 'order' or 'price', got {self.sort!r}")
+            raise config_error(
+                "sort",
+                "must be 'order' or 'price'",
+                given=self.sort,
+                fix="use 'order' (keep PROVIDER_ORDER) or 'price' (cheapest first)",
+            )
         if self.budget_check is not None and not callable(self.budget_check):
             raise TypeError("budget_check must be callable")
 

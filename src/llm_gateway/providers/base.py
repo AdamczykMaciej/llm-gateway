@@ -196,6 +196,7 @@ class Usage:
 
     @property
     def uncached_input_tokens(self) -> int:
+        """Input tokens billed at the base rate (total minus cache reads and writes)."""
         cached = self.cache_read_input_tokens + self.cache_creation_input_tokens
         return max(self.input_tokens - cached, 0)
 
@@ -406,6 +407,7 @@ class ProviderResult:
 
     @property
     def usage(self) -> Usage:
+        """These token counts as a `Usage`."""
         return Usage(
             self.input_tokens,
             self.output_tokens,
@@ -417,6 +419,10 @@ class ProviderResult:
 
 @dataclass(frozen=True)
 class ToolCall:
+    """One tool call requested by the model: the provider's `id` (echo it as
+    `tool_call_id` in the `role: "tool"` answer), the tool `name` and the
+    parsed `arguments` object."""
+
     id: str
     name: str
     arguments: dict[str, Any]
@@ -424,6 +430,10 @@ class ToolCall:
 
 @dataclass(frozen=True)
 class ChatResult:
+    """The result of `chat()`: the reply `content` (None when the turn is only
+    `tool_calls`), the `model` that answered, token counts, any `tool_calls`
+    and the `finish_reason` ("stop" or "tool_calls")."""
+
     content: str | None
     model: str
     input_tokens: int
@@ -439,6 +449,7 @@ class ChatResult:
 
     @property
     def usage(self) -> Usage:
+        """These token counts as a `Usage`."""
         return Usage(
             self.input_tokens,
             self.output_tokens,
