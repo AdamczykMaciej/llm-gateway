@@ -85,6 +85,15 @@ def is_open(provider: str, model: str | None = None) -> bool:
     return any(_state(k, now) == "open" for k in _keys(provider, model))
 
 
+def state(provider: str, model: str | None = None) -> str:
+    """Pure read for diagnostics: 'open', 'probe' (half-open, the next caller
+    is the probe) or 'closed'; the most restrictive of the provider's and the
+    (provider, model) state."""
+    now = time.monotonic()
+    states = [_state(k, now) for k in _keys(provider, model)]
+    return "open" if "open" in states else "probe" if "probe" in states else "closed"
+
+
 def allow(provider: str, model: str | None = None) -> bool:
     """Admit a call. Closed: always. Open: never. Half-open (cooldown over,
     not yet proven healthy): exactly one caller, the probe, until it reports

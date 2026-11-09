@@ -33,6 +33,7 @@ import dataclasses
 import logging
 import time
 from collections.abc import AsyncGenerator
+from contextlib import aclosing
 
 from opentelemetry.trace import StatusCode
 
@@ -51,6 +52,7 @@ from .errors import (
     classify,
     deadline_exceeded,
 )
+from .idempotency import IDEMPOTENCY_HEADER_PROVIDERS, stream_slot
 from .policy import ProviderPolicy
 from .providers import CONFIGURED, DEFAULT_MODEL, STREAM_CALLS
 from .providers.base import StreamDelta, Usage
@@ -62,7 +64,9 @@ from .tool_validation import validate_chat_request
 from .tracing import (
     call_span,
     emit_attempt_span,
+    fallback_reason_of,
     get_tracer,
+    resolve_idempotency_key,
     resolve_request_id,
     set_chat_attributes,
 )
@@ -136,6 +140,7 @@ async def stream_chat(
     on_attempt: AttemptHook | None = None,
     first_token_timeout_seconds: float | None = None,
     restart_on_failure: bool | None = None,
+    idempotency_key: str | None = None,
 ) -> AsyncGenerator[StreamDelta, None]:
     """Stream a chat completion.
 
@@ -186,8 +191,20 @@ async def stream_chat(
     take over, the original mid-stream error is raised. Every attempt is
     reported to `on_attempt` and gets its own span.
 
+    `idempotency_key`: as in `chat()`: validated (`InvalidRequestError` before
+        any chunk), put on the call span, every attempt span and every
+        `AttemptReport`, and sent as the `Idempotency-Key` header to OpenAI
+        only (also on a restart attempt, which streams the same request). A
+        stream cannot be shared between consumers, so unlike `chat()` there is
+        no de-duplication: a second `stream_chat()` with the same key while the
+        first is still open (not finished, failed or closed) raises
+        `InvalidRequestError` on first iteration, before any provider call.
+        The key is free again once the first stream ends. Without a key,
+        behaviour is unchanged.
+
     Raises:
-        InvalidRequestError: malformed request (see `chat()`), before any chunk.
+        InvalidRequestError: malformed request (see `chat()`), before any chunk;
+            or `idempotency_key` already in use by an open stream.
         PolicyViolationError: no provider satisfies the routing policy, before
             any chunk.
         LLMDeadlineExceeded: the call deadline ran out.
@@ -196,6 +213,59 @@ async def stream_chat(
             (unless `restart_on_failure`), so a later failure propagates to the
             consumer.
     """
+    ikey = resolve_idempotency_key(idempotency_key)
+    impl = _stream_chat(
+        messages=messages,
+        tools=tools,
+        tool_choice=tool_choice,
+        max_tokens=max_tokens,
+        config=config,
+        force_provider=force_provider,
+        model=model,
+        sampling=sampling,
+        response_format=response_format,
+        policy=policy,
+        cache_system=cache_system,
+        request_id=request_id,
+        parallel_tool_calls=parallel_tool_calls,
+        max_tool_result_chars=max_tool_result_chars,
+        on_attempt=on_attempt,
+        first_token_timeout_seconds=first_token_timeout_seconds,
+        restart_on_failure=restart_on_failure,
+        idempotency_key=ikey,
+    )
+    async with aclosing(impl) as chunks:
+        if ikey is None:
+            async for delta in chunks:
+                yield delta
+        else:
+            with stream_slot(ikey):
+                async for delta in chunks:
+                    yield delta
+
+
+async def _stream_chat(
+    *,
+    messages: list[dict],
+    tools: list[dict] | None = None,
+    tool_choice: object = None,
+    max_tokens: int = 2000,
+    config: GatewayConfig | None = None,
+    force_provider: str | None = None,
+    model: str | None = None,
+    sampling: dict | None = None,
+    response_format: dict | None = None,
+    policy: ProviderPolicy | None = None,
+    cache_system: bool = False,
+    request_id: str | None = None,
+    parallel_tool_calls: bool | None = None,
+    max_tool_result_chars: int | None = None,
+    on_attempt: AttemptHook | None = None,
+    first_token_timeout_seconds: float | None = None,
+    restart_on_failure: bool | None = None,
+    idempotency_key: str | None = None,
+) -> AsyncGenerator[StreamDelta, None]:
+    """The body of `stream_chat()`; see there for the contract."""
     rid = resolve_request_id(request_id)
     validate_chat_request(messages, tools, tool_choice)
     config = config or GatewayConfig()
@@ -207,6 +277,7 @@ async def stream_chat(
     extra: dict = {"cache_system": True} if cache_system else {}
     if parallel_tool_calls is not None:
         extra["parallel_tool_calls"] = parallel_tool_calls
+    ikey = idempotency_key
     order = [force_provider] if force_provider else config.provider_order_list
     model_override = model if force_provider else None
     first_token_limit = _positive(
@@ -235,6 +306,8 @@ async def stream_chat(
     with call_span(tracer, "llm_gateway.stream_chat") as span:
         span.set_attribute("llm_gateway.fallback", False)
         span.set_attribute("llm_gateway.request_id", rid)
+        if idempotency_key:
+            span.set_attribute("llm_gateway.idempotency_key", idempotency_key)
         attempt_no = 0
         plan = plan_chain(
             order,
@@ -266,6 +339,7 @@ async def stream_chat(
                 break
             if not await plan.allows(provider, span):
                 continue
+            breaker_state = breaker.state(provider, resolved_model)
             if not force_provider and not breaker.allow(provider, resolved_model):
                 continue
 
@@ -273,8 +347,20 @@ async def stream_chat(
             is_fallback = index > 0
             attempt_no += 1
             attempt_started_ns = time.time_ns()
+            span_extra: dict = {
+                "idempotency_key": ikey,
+                "breaker_state": breaker_state,
+                "fallback_reason": fallback_reason_of(last_error)
+                if is_fallback or attempt_no > 1
+                else None,
+            }
+            attempt_extra = (
+                {**extra, "idempotency_key": ikey}
+                if ikey and provider in IDEMPOTENCY_HEADER_PROVIDERS
+                else extra
+            )
 
-            async def open_stream(stream_fn=stream_fn):
+            async def open_stream(stream_fn=stream_fn, attempt_extra=attempt_extra):
                 generator = stream_fn(
                     config,
                     messages,
@@ -284,7 +370,7 @@ async def stream_chat(
                     tool_choice=tool_choice,
                     sampling=sampling,
                     response_format=response_format,
-                    **extra,
+                    **attempt_extra,
                 )
                 try:
                     # Its own timeout scope, so a miss is told apart from the
@@ -318,6 +404,7 @@ async def stream_chat(
                 breaker.release_probe(provider, resolved_model)
                 emit_attempt_span(
                     tracer,
+                    **span_extra,
                     request_id=rid,
                     attempt=attempt_no,
                     provider=provider,
@@ -328,6 +415,7 @@ async def stream_chat(
                 await report_attempt(
                     on_attempt,
                     config,
+                    idempotency_key=ikey,
                     request_id=rid,
                     attempt=attempt_no,
                     provider=provider,
@@ -351,6 +439,7 @@ async def stream_chat(
                 last_error = e
                 emit_attempt_span(
                     tracer,
+                    **span_extra,
                     request_id=rid,
                     attempt=attempt_no,
                     provider=provider,
@@ -361,6 +450,7 @@ async def stream_chat(
                 await report_attempt(
                     on_attempt,
                     config,
+                    idempotency_key=ikey,
                     request_id=rid,
                     attempt=attempt_no,
                     provider=provider,
@@ -413,6 +503,7 @@ async def stream_chat(
             if first_delta is None:
                 emit_attempt_span(
                     tracer,
+                    **span_extra,
                     request_id=rid,
                     attempt=attempt_no,
                     provider=provider,
@@ -422,6 +513,7 @@ async def stream_chat(
                 await report_attempt(
                     on_attempt,
                     config,
+                    idempotency_key=ikey,
                     request_id=rid,
                     attempt=attempt_no,
                     provider=provider,
@@ -505,6 +597,7 @@ async def stream_chat(
                 # failed, or abandoned by the consumer.
                 emit_attempt_span(
                     tracer,
+                    **span_extra,
                     request_id=rid,
                     attempt=attempt_no,
                     provider=provider,
@@ -527,6 +620,7 @@ async def stream_chat(
                 await report_attempt(
                     on_attempt,
                     config,
+                    idempotency_key=ikey,
                     request_id=rid,
                     attempt=attempt_no,
                     provider=provider,

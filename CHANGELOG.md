@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.26.0
+
+Idempotency keys everywhere, plus two more attempt-span attributes. Opt-in and backward
+compatible: nothing changes without `idempotency_key=`.
+
+- New: `stream_chat`, `complete` and `complete_with_usage` take `idempotency_key=` with the same
+  rules as `chat()` (1-128 chars of letters, digits, `. _ : -`; `InvalidRequestError` otherwise).
+  The key is on the call span, every attempt span and every `AttemptReport`, and is sent as the
+  `Idempotency-Key` header to OpenAI only (`call` and streaming); no other provider receives it.
+- New: concurrent `complete()` / `complete_with_usage()` calls with the same key and the same
+  request share one provider call and result; same key, different request raises
+  `InvalidRequestError`. A key is scoped per operation (the same key on `chat()` and `complete()`
+  does not collide). `repair_attempts` repair calls keep the key on spans and reports but do not
+  send the OpenAI header (their body differs, OpenAI would reject the reuse).
+- Decision for streams: no fan-out. A stream is consumed, not replayed, and each consumer drives its
+  own upstream request, so sharing one would need buffering and replay. A second `stream_chat()`
+  with the same key while the first is still open raises `InvalidRequestError` on first iteration,
+  before any provider call. The key is free again when the first stream ends, fails or is closed.
+- New: attempt spans carry `llm_gateway.fallback_reason` (the `ErrorKind` of the previous failure,
+  or `skipped` when earlier providers were passed over without a call; only on attempts that are a
+  fallback or a later attempt) and `llm_gateway.breaker_state` (`closed`, `probe` or `open`, read
+  just before the attempt was admitted) on `chat`, `stream_chat` and `complete*`.
+- New: `breaker.state(provider, model=None)`, a pure read for diagnostics.
+
 ## 0.25.0
 
 Idempotency keys. Opt-in and backward compatible: nothing changes without `idempotency_key=`.
@@ -13,7 +37,7 @@ Idempotency keys. Opt-in and backward compatible: nothing changes without `idemp
   provider call and result (followers fire no `on_attempt`). Same key, different request raises
   `InvalidRequestError`. Nothing is cached after the call ends; one waiter cancelling does not
   cancel the others.
-- Not done: `stream_chat` and `complete*` take no key yet; Anthropic documents no idempotency header.
+- Not done: Anthropic documents no idempotency header, so it gets none.
 
 ## 0.24.0
 
