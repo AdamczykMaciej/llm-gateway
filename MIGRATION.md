@@ -4,6 +4,16 @@ No release in this range removes a public name or changes a function signature
 incompatibly; every new argument defaults to the old behaviour. This page lists
 the behaviour changes a caller might notice. Details are in `CHANGELOG.md`.
 
+## Budget estimates: price the routable models only (0.28.0)
+
+Nothing changes unless you opt in. If you estimate a worst-case cost from the whole
+`DEFAULT_PRICES` table, every new price row (for example a premium model you never
+call) raises your estimate. Replace that with `estimate_max_cost(config,
+input_tokens=..., max_output_tokens=..., policy=...)`: it prices only the chain the
+call can really use and returns `max_cost_usd=None` (with `unpriced`) rather than 0
+when a price is missing. Reserve `max_cost_usd`, then settle with
+`Completion.cost_usd`. See "Reserving budget before a call" in the README.
+
 ## Requests are validated before any provider call (0.14.0)
 
 `chat()` and `stream_chat()` raise `InvalidRequestError` (an `LLMError` and a

@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.28.0
+
+Correct pre-call cost estimates. Additive; no behaviour change to existing calls.
+
+- New: `estimate_max_cost(config, input_tokens=, max_output_tokens=, policy=, provider=, model=,
+  chat=)` returns a `CostEstimate` priced over only the models the call can route to, found with
+  the router's own `plan_chain` (provider chain, credentials, retired models, config and per-call
+  policy). An unrelated price row, such as a new premium model, no longer changes it.
+- New: `routable_models(config, ...)`, plus `CostEstimate` and `RoutableModel`, all exported.
+- An unpriced routable model gives `max_cost_usd=None` and is listed in `unpriced`, never 0;
+  an unroutable call returns an empty estimate with `excluded` reasons instead of raising.
+- Docs: README "Reserving budget before a call" and a MIGRATION entry.
+
 ## 0.27.1
 
 Supply-chain and release hygiene. No runtime behaviour change.

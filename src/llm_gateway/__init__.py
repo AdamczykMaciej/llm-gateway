@@ -48,6 +48,7 @@ from .errors import (
     ToolCallTruncatedError,
     UnsupportedCapabilityError,
 )
+from .estimate import CostEstimate, RoutableModel, estimate_max_cost, routable_models
 from .pii import mask_pii
 from .policy import BudgetCheck, ProviderMetadata, ProviderPolicy
 from .pricing import LongContextTier, ModelPrice
@@ -101,6 +102,10 @@ __all__ = [
     "ProviderMetadata",
     "LongContextTier",
     "ModelPrice",
+    "CostEstimate",
+    "RoutableModel",
+    "estimate_max_cost",
+    "routable_models",
     "BudgetCheck",
     "PolicyViolationError",
     "UnsupportedCapabilityError",
