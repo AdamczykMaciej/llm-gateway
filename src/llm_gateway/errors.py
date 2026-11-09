@@ -157,6 +157,14 @@ class UnsupportedCapabilityError(PolicyViolationError):
     A subclass of `PolicyViolationError`, so one `except` covers both."""
 
 
+class ModelRetiredError(PolicyViolationError):
+    """Every provider was excluded only because its model is retired (the
+    vendor's announced shutdown date has passed; see lifecycle.py). Raised
+    before any network call. Turn the check off with
+    `GatewayConfig.block_retired_models=False`. A subclass of
+    `PolicyViolationError`."""
+
+
 class InvalidRequestError(LLMError, ValueError):
     """The request itself is malformed, so no provider was tried: a bad tool
     definition or JSON Schema, a `tool_choice` naming an unknown tool, or a

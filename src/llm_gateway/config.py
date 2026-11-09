@@ -447,6 +447,12 @@ class GatewayConfig(BaseSettings):
     # before any network call and never falls through to another provider.
     # None = off (the default; behaviour unchanged).
     require_residency: str | None = None
+    # Model lifecycle (lifecycle.py): skip a provider whose model the vendor has
+    # retired (announced shutdown date reached), and log one WARNING per model
+    # retiring within `retirement_warning_days`. Turn the block off when a
+    # contract keeps a model alive past its public shutdown date.
+    block_retired_models: bool = True
+    retirement_warning_days: int = 90
     policy_require_zero_retention: bool = False
     policy_forbid_training: bool = False
     policy_require_dpa: bool = False

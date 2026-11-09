@@ -41,18 +41,23 @@ class ModelCapabilities:
 UNKNOWN = ModelCapabilities()
 
 # Anthropic structured outputs, from the Claude API docs' supported-model
-# list (https://platform.claude.com/docs/en/build-with-claude/structured-outputs).
-# Other Claude models are unknown, not unsupported.
+# list (https://platform.claude.com/docs/en/build-with-claude/structured-outputs,
+# checked 2026-11-09). Other Claude models, including retired ones, are
+# unknown, not unsupported.
 _ANTHROPIC_STRICT_OUTPUT_MODELS = (
     "claude-fable-5",
     "claude-mythos-5",
     "claude-opus-5",
     "claude-opus-4-8",
+    "claude-opus-4-7",
+    "claude-opus-4-6",
     "claude-sonnet-5",
+    "claude-sonnet-4-6",
+    "claude-sonnet-4-5",
     "claude-haiku-4-5",
     "claude-haiku-5-5",
     "claude-opus-4-5",
-    "claude-opus-4-1",
+    "claude-mythos-preview",
 )
 
 # OpenAI strict json_schema (https://platform.openai.com/docs/guides/structured-outputs):

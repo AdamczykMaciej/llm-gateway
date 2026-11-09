@@ -362,7 +362,7 @@ async def test_groq_non_strict_model_uses_json_mode_with_schema_in_system_prompt
     # json_schema); models without strict support still get JSON mode.
     fenced = f"```json\n{_VERDICT_JSON}\n```"
     recorder = _Recorder(_openai_reply(fenced))
-    config = _single("groq", groq_model="llama-3.1-8b-instant")
+    config = _single("groq", groq_model="llama-3.1-8b-instant", block_retired_models=False)
     with _real_sdk_providers(groq=recorder):
         result = await complete_with_usage(
             system="Be strict.", prompt="p", config=config, output_schema=Verdict

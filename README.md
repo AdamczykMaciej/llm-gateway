@@ -1480,6 +1480,7 @@ event with code 400.
 | `POLICY_REQUIRE_PARAMETERS` | `false` | Also skip models with unknown support for a requested feature, and JSON-mode-only models for `output_schema`. |
 | `POLICY_MAX_COST_USD` | `0` | Cap on a call's estimated worst-case cost. `0` disables it. |
 | `POLICY_SORT` | `order` | `order` or `price`. |
+| `BLOCK_RETIRED_MODELS` / `RETIREMENT_WARNING_DAYS` | `true` / `90` | Skip providers whose model the vendor has retired (`ModelRetiredError` when none is left) and warn about models retiring within the window. See `llm_gateway/lifecycle.py` for the sources. |
 | `MODEL_PRICES` | `{}` | JSON object: `"provider/model"` → `input_per_mtok`, `output_per_mtok`, optional `cached_input_per_mtok`, `cache_write_per_mtok`. Merged over the defaults. |
 
 Not covered yet: `chat()` / `stream_chat()` results don't carry `cost_usd`;
@@ -1966,6 +1967,7 @@ you finally see.
 | `LLMDeadlineExceeded` | `CALL_DEADLINE_SECONDS` ran out across retries and failovers | no | no (stops the chain) | yes, possibly with a higher deadline |
 | `PolicyViolationError` | The routing policy excludes every provider (residency, retention, DPA, cost cap, ...) | no | n/a (raised before any attempt) | no, change the policy or request |
 | `ResidencyViolationError` | `REQUIRE_RESIDENCY` is set and no provider matches (subclass of `PolicyViolationError`) | no | n/a | no |
+| `ModelRetiredError` | Providers were excluded only because their model is retired (announced shutdown date reached; `lifecycle.py`). Subclass of `PolicyViolationError` | no | n/a | no, change the model or set `BLOCK_RETIRED_MODELS=false` |
 | `UnsupportedCapabilityError` | Providers were excluded only because their model can't do a feature the request uses (subclass of `PolicyViolationError`) | no | n/a | no, drop the feature |
 | `InvalidRequestError` | The request is malformed (bad tool definition, schema, `tool_choice`, tool-result pairing); also a `ValueError`; HTTP 400 | no | n/a (raised before any attempt) | no, fix the request |
 | `PrivacyPolicyMissingError` | A `PrivacyLayer(strict=True)` call had no `privacy=` policy; a `RuntimeError`, raised before anything is sent | no | n/a | no, pass a policy |

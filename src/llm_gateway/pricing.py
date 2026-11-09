@@ -119,6 +119,15 @@ _CLAUDE_SONNET_5_5 = ModelPrice(
     cache_write_1h_per_mtok=4.00,
     batch_multiplier=0.5,
 )
+# Cache hits are 0.025x base input on Fable 5.1.
+_CLAUDE_FABLE_5_1 = ModelPrice(
+    input_per_mtok=10.00,
+    output_per_mtok=50.00,
+    cached_input_per_mtok=0.25,
+    cache_write_per_mtok=12.50,
+    cache_write_1h_per_mtok=20.00,
+    batch_multiplier=0.5,
+)
 _CLAUDE_OPUS_5_5 = ModelPrice(
     input_per_mtok=4.00,
     output_per_mtok=20.00,
@@ -148,6 +157,7 @@ DEFAULT_PRICES: dict[str, ModelPrice] = {
     "anthropic/claude-haiku-5-5": _CLAUDE_HAIKU_5_5,
     "anthropic/claude-sonnet-5-5": _CLAUDE_SONNET_5_5,
     "anthropic/claude-opus-5-5": _CLAUDE_OPUS_5_5,
+    "anthropic/claude-fable-5-1": _CLAUDE_FABLE_5_1,
     # Global-endpoint prices; see VERTEX_REGIONAL_PREMIUM.
     "vertex/claude-haiku-4-5@20251001": _CLAUDE_HAIKU_4_5_VERTEX_GLOBAL,
     "vertex/claude-haiku-4-5": _CLAUDE_HAIKU_4_5_VERTEX_GLOBAL,
@@ -192,6 +202,7 @@ PRICE_SOURCES: dict[str, tuple[str, str]] = {
     "anthropic/claude-haiku-5-5": (_ANTHROPIC_PRICING, _CHECKED),
     "anthropic/claude-sonnet-5-5": (_ANTHROPIC_PRICING, _CHECKED),
     "anthropic/claude-opus-5-5": (_ANTHROPIC_PRICING, _CHECKED),
+    "anthropic/claude-fable-5-1": (_ANTHROPIC_PRICING, _CHECKED),
     "vertex/claude-haiku-4-5@20251001": (_VERTEX_PAGE + " (unverified)", "2026-09-14"),
     "vertex/claude-haiku-4-5": (_VERTEX_PAGE + " (unverified)", "2026-09-14"),
     "openai/gpt-4o-mini": ("https://developers.openai.com/api/docs/pricing", _CHECKED),

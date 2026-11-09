@@ -22,7 +22,9 @@ GLOBAL = "global"
 UNKNOWN = "unknown"
 
 # Azure regions inside the EU / EEA, for `azure_region` and for endpoint hosts
-# that carry the region (e.g. <resource>.swedencentral.api.cognitive.microsoft.com).
+# that carry the region. Switzerland is in neither, so its regions are not listed
+# (declare `azure_data_zone="eu"` for a Data Zone EU deployment). A host label such as
+# <resource>.swedencentral.api.cognitive.microsoft.com also carries the region.
 AZURE_EU_REGIONS = frozenset(
     {
         "francecentral",
@@ -36,8 +38,6 @@ AZURE_EU_REGIONS = frozenset(
         "polandcentral",
         "spaincentral",
         "swedencentral",
-        "switzerlandnorth",
-        "switzerlandwest",
         "westeurope",
     }
 )

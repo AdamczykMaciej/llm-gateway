@@ -60,6 +60,7 @@ def _config(**overrides) -> GatewayConfig:
         openai_model="gpt-4o-mini",
         provider_order="anthropic,groq,openai",
         retry_attempts=1,
+        block_retired_models=False,  # these tests use a retired Groq model as a fixture
     )
     settings.update(overrides)
     return GatewayConfig(**settings)
