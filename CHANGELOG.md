@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.19.0
+
+Tracing aligned with the OpenTelemetry GenAI semantic conventions (Development status; spec in
+https://github.com/open-telemetry/semantic-conventions-genai, built on semantic-conventions
+v1.45.0, checked 2026-11-09). Additive: every existing attribute is still set.
+
+| Old (deprecated alias, still set) | New (semconv) |
+| --- | --- |
+| `gen_ai.system` | `gen_ai.provider.name` |
+| `llm_gateway.error_code` | `error.type` |
+| `llm_gateway.finish_reason` | `gen_ai.response.finish_reasons` (array) |
+| `gen_ai.prompt` (opt-in) | `gen_ai.input.messages` (opt-in, JSON) |
+| (none) | `gen_ai.operation.name` (`chat`), `gen_ai.response.model` |
+
+- `gen_ai.request.model` on the call span is now the model requested from the provider; the model
+  the provider reported is `gen_ai.response.model` (before, the response model overwrote it).
+- Call and attempt spans have kind `CLIENT`. Span names are unchanged (`llm_gateway.complete`,
+  `.chat`, `.stream_chat`, `.attempt`).
+- New `llm_gateway.fallback` span event when the chain moves on to a later provider;
+  `llm_gateway.stream_restart` now also carries the provider and `error.type`.
+- Cost stays the custom `llm_gateway.cost_usd`; no semconv attribute exists for it.
+- Prompt content is recorded only with `trace_include_prompts=True` (default off, PII-masked,
+  truncated); responses are never recorded.
+
 ## 0.18.7
 
 Multi-step tool-loop tests with a mid-loop failover across Anthropic, Vertex Claude, OpenAI-style
