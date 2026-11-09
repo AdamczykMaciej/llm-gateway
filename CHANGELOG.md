@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.18.4
+
+Supply-chain and dependency audit. No API changes.
+
+- Raised dependency floors that admitted versions with known advisories (pip-audit on the
+  lowest-allowed set of every extra was dirty, on the latest-resolved set clean): `aiohttp>=3.14.4`
+  (azure), `opentelemetry-sdk` / `opentelemetry-exporter-otlp-proto-http>=1.45.1`, and for the
+  service extra `starlette>=1.3.1,<2` with `fastapi>=0.133` (the old `fastapi>=0.110` floor could
+  not even co-install with `starlette>=0.49.1`).
+- sdist no longer ships `infra/`, `.github/`, `Dockerfile` or `.env.example`; the wheel was already
+  source-only and includes `py.typed`. Builds are byte-reproducible with `SOURCE_DATE_EPOCH`.
+- CI: workflow-level `permissions: contents: read` (the deploy job keeps its own grants) and
+  `persist-credentials: false` on checkout. Actions were already pinned by full SHA.
+
 ## 0.18.3
 
 Strict typing for the provider adapters, `structured.py` and `router.py`. No behaviour changes.
