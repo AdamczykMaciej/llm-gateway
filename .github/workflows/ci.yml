@@ -25,10 +25,10 @@ jobs:
           python-version: "3.12"
 
       - name: Install package (dev extras)
-        run: pip install -e ".[dev]"
+        run: pip install -c constraints/dev.txt -e ".[dev,service,azure,vertex]"
 
       - name: Audit dependencies for known vulnerabilities
-        run: pip install pip-audit && pip-audit
+        run: scripts/audit.sh
 
       - name: Lint (ruff)
         run: ruff check .

@@ -26,3 +26,15 @@ Supported version: the latest release only.
 - Vertex key files are rejected: use Workload Identity Federation or ADC.
 - The HTTP service is open when `GATEWAY_API_KEYS` is unset. Set it before
   exposing the service, and keep `SSL_VERIFY` at its default `true`.
+
+## Supply chain
+
+- Runtime dependencies carry upper bounds on the next major; `constraints/dev.txt` pins the
+  test/dev environment (`scripts/lock.sh` regenerates it).
+- `scripts/audit.sh` runs pip-audit (and osv-scanner when installed); advisories are ignored
+  only through `scripts/audit-ignore.txt` with an expiry date and a reason.
+- `scripts/sbom.sh` writes a CycloneDX SBOM to `dist/sbom.cdx.json`.
+- `tests/test_dist_contents.py` builds the wheel and sdist and checks what ships.
+- The wheel contains only `llm_gateway/` and its metadata. The sdist adds tests, docs and
+  `LICENSE`, never `infra/`, CI files or env files.
+- Releases are not published to PyPI automatically.
