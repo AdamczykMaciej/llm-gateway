@@ -33,6 +33,7 @@ from .errors import (
     deadline_exceeded,
     provider_failure,
 )
+from .idempotency import IDEMPOTENCY_HEADER_PROVIDERS, single_flight
 from .policy import ProviderPolicy
 from .pricing import cost_usd, lookup_price
 from .providers import CALLS, CONFIGURED, DEFAULT_MODEL
@@ -43,7 +44,9 @@ from .structured import OutputSchema, OutputValidator
 from .tracing import (
     call_span,
     emit_attempt_span,
+    fallback_reason_of,
     get_tracer,
+    resolve_idempotency_key,
     resolve_request_id,
     set_call_attributes,
 )
@@ -145,6 +148,7 @@ async def complete(
     policy: ProviderPolicy | None = None,
     request_id: str | None = None,
     on_attempt: AttemptHook | None = None,
+    idempotency_key: str | None = None,
 ) -> str:
     """Return a text completion, trying providers in `config.provider_order`.
 
@@ -177,6 +181,7 @@ async def complete(
         policy=policy,
         request_id=request_id,
         on_attempt=on_attempt,
+        idempotency_key=idempotency_key,
     )
     return completion.text
 
@@ -198,6 +203,7 @@ async def complete_with_usage(
     validate: dict[str, Any] | type[BaseModel] | None = None,
     repair_attempts: int = 0,
     on_attempt: AttemptHook | None = None,
+    idempotency_key: str | None = None,
 ) -> Completion[_M]: ...
 @overload
 async def complete_with_usage(
@@ -216,6 +222,7 @@ async def complete_with_usage(
     validate: type[_M],
     repair_attempts: int = 0,
     on_attempt: AttemptHook | None = None,
+    idempotency_key: str | None = None,
 ) -> Completion[_M]: ...
 @overload
 async def complete_with_usage(
@@ -234,6 +241,7 @@ async def complete_with_usage(
     validate: dict[str, Any] | type[BaseModel] | None = None,
     repair_attempts: int = 0,
     on_attempt: AttemptHook | None = None,
+    idempotency_key: str | None = None,
 ) -> Completion[Any]: ...
 async def complete_with_usage(
     *,
@@ -251,6 +259,7 @@ async def complete_with_usage(
     validate: dict[str, Any] | type[BaseModel] | None = None,
     repair_attempts: int = 0,
     on_attempt: AttemptHook | None = None,
+    idempotency_key: str | None = None,
 ) -> Completion[Any]:
     """`complete()`, returning a `Completion` instead of a string.
 
@@ -262,6 +271,17 @@ async def complete_with_usage(
     per provider attempt (served, failed or cancelled), with that attempt's
     usage when known and its cost; replaces `config.on_attempt` for this call.
     Exceptions inside it are logged and ignored (see attempts.py).
+
+    `idempotency_key`: the caller's key for this LOGICAL call (1-128 letters,
+    digits or `. _ : -`; `InvalidRequestError` otherwise), as in `chat()`: on
+    the call span, every attempt span and every `AttemptReport`; sent as the
+    `Idempotency-Key` header to OpenAI only. Concurrent calls in one process
+    with the same key and the same request (also `complete()`) share ONE
+    provider call and result (the followers' `on_attempt` never fires); the
+    same key with a different request raises `InvalidRequestError`. Nothing is
+    cached after the call ends. Repair calls (`repair_attempts`) carry the key on
+    spans and reports but not as the provider header (their body differs).
+    Without a key, behaviour is unchanged.
 
     `validate`: opt-in check of the served text against a pydantic model
     class (full validation) or a JSON Schema dict (a documented subset: type,
@@ -312,6 +332,54 @@ async def complete_with_usage(
         InvalidOutputError: `validate=` failed on the served text (`.paths`
             names the fields), or privacy post-processing left `parsed` invalid.
     """
+    ikey = resolve_idempotency_key(idempotency_key)
+    call_kwargs: dict[str, Any] = {
+        "system": system,
+        "prompt": prompt,
+        "max_tokens": max_tokens,
+        "config": config,
+        "force_provider": force_provider,
+        "model": model,
+        "output_schema": output_schema,
+        "schema_name": schema_name,
+        "cache_system": cache_system,
+        "policy": policy,
+        "request_id": request_id,
+        "validate": validate,
+        "repair_attempts": repair_attempts,
+        "on_attempt": on_attempt,
+        "idempotency_key": ikey,
+    }
+    if ikey is None:
+        return await _complete_with_usage(**call_kwargs)
+    fingerprint = {
+        k: v
+        for k, v in call_kwargs.items()
+        if k not in ("config", "policy", "request_id", "on_attempt", "idempotency_key")
+    }
+    return await single_flight(
+        ikey, fingerprint, lambda: _complete_with_usage(**call_kwargs), scope="complete"
+    )
+
+
+async def _complete_with_usage(
+    *,
+    system: str,
+    prompt: str,
+    max_tokens: int,
+    config: GatewayConfig | None,
+    force_provider: str | None,
+    model: str | None,
+    output_schema: dict[str, Any] | type[BaseModel] | None,
+    schema_name: str | None,
+    cache_system: bool,
+    policy: ProviderPolicy | None,
+    request_id: str | None,
+    validate: dict[str, Any] | type[BaseModel] | None,
+    repair_attempts: int,
+    on_attempt: AttemptHook | None,
+    idempotency_key: str | None,
+) -> Completion[Any]:
     rid = resolve_request_id(request_id)
     if (
         isinstance(repair_attempts, bool)
@@ -333,6 +401,7 @@ async def complete_with_usage(
         "policy": policy,
         "request_id": rid,
         "on_attempt": on_attempt,
+        "idempotency_key": idempotency_key,
     }
     completion = await _complete_once(prompt=prompt, **options)
     if validator is None:
@@ -349,6 +418,9 @@ async def complete_with_usage(
                 **options,
                 "force_provider": completion.provider,
                 "model": completion.model,
+                # Same logical call for correlation, but a different body: the
+                # provider-side header would be rejected as a key reuse.
+                "forward_key": False,
             }
             repaired = await _complete_once(
                 prompt=_repair_prompt(prompt, completion.text, error), **repair_options
@@ -398,6 +470,8 @@ async def _complete_once(
     policy: ProviderPolicy | None,
     request_id: str,
     on_attempt: AttemptHook | None = None,
+    idempotency_key: str | None = None,
+    forward_key: bool = True,
 ) -> Completion:
     schema = (
         OutputSchema.from_spec(output_schema, schema_name) if output_schema is not None else None
@@ -411,6 +485,7 @@ async def _complete_once(
         extra["output_schema"] = schema
     if cache_system:
         extra["cache_system"] = True
+    ikey = idempotency_key
 
     tracer = get_tracer()
     start = time.monotonic() * 1000
@@ -422,6 +497,8 @@ async def _complete_once(
     with call_span(tracer, "llm_gateway.complete") as span:
         span.set_attribute("llm_gateway.fallback", False)
         span.set_attribute("llm_gateway.request_id", request_id)
+        if ikey:
+            span.set_attribute("llm_gateway.idempotency_key", ikey)
         attempt_no = 0
         plan = plan_chain(
             order,
@@ -451,6 +528,7 @@ async def _complete_once(
                 break
             if not await plan.allows(provider, span):
                 continue
+            breaker_state = breaker.state(provider, resolved_model)
             if not force_provider and not breaker.allow(provider, resolved_model):
                 continue
 
@@ -458,14 +536,29 @@ async def _complete_once(
             is_fallback = index > 0
             attempt_no += 1
             attempt_started_ns = time.time_ns()
+            span_extra: dict[str, Any] = {
+                "idempotency_key": ikey,
+                "breaker_state": breaker_state,
+                "fallback_reason": fallback_reason_of(last_error)
+                if is_fallback or attempt_no > 1
+                else None,
+            }
+            attempt_call_extra = (
+                {**extra, "idempotency_key": ikey}
+                if ikey and forward_key and provider in IDEMPOTENCY_HEADER_PROVIDERS
+                else extra
+            )
 
             billed: list[Usage] = []
 
             async def attempt(
                 call: Callable[..., Awaitable[ProviderResult]] = call,
                 billed: list[Usage] = billed,
+                attempt_call_extra: dict[str, Any] = attempt_call_extra,
             ) -> tuple[ProviderResult, Any]:
-                result = await call(config, system, prompt, max_tokens, model_override, **extra)
+                result = await call(
+                    config, system, prompt, max_tokens, model_override, **attempt_call_extra
+                )
                 # Paid for even if the reply then fails schema validation.
                 billed[:] = [result.usage]
                 # Inside the attempt, so invalid structured output is a
@@ -488,6 +581,7 @@ async def _complete_once(
                 breaker.release_probe(provider, resolved_model)
                 emit_attempt_span(
                     tracer,
+                    **span_extra,
                     request_id=request_id,
                     attempt=attempt_no,
                     provider=provider,
@@ -498,6 +592,7 @@ async def _complete_once(
                 await report_attempt(
                     on_attempt,
                     config,
+                    idempotency_key=ikey,
                     request_id=request_id,
                     attempt=attempt_no,
                     provider=provider,
@@ -521,6 +616,7 @@ async def _complete_once(
                 last_error = e
                 emit_attempt_span(
                     tracer,
+                    **span_extra,
                     request_id=request_id,
                     attempt=attempt_no,
                     provider=provider,
@@ -531,6 +627,7 @@ async def _complete_once(
                 await report_attempt(
                     on_attempt,
                     config,
+                    idempotency_key=ikey,
                     request_id=request_id,
                     attempt=attempt_no,
                     provider=provider,
@@ -562,6 +659,7 @@ async def _complete_once(
             usage = result.usage
             emit_attempt_span(
                 tracer,
+                **span_extra,
                 request_id=request_id,
                 attempt=attempt_no,
                 provider=provider,
@@ -608,6 +706,7 @@ async def _complete_once(
             await report_attempt(
                 on_attempt,
                 config,
+                idempotency_key=ikey,
                 request_id=request_id,
                 attempt=attempt_no,
                 provider=provider,

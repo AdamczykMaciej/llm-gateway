@@ -84,11 +84,14 @@ async def call(
     *,
     output_schema: OutputSchema | None = None,
     cache_system: bool = False,
+    idempotency_key: str | None = None,
 ) -> ProviderResult:
     # `cache_system` needs nothing here: OpenAI caches long prompt prefixes
     # automatically and reports hits as usage.prompt_tokens_details.cached_tokens.
     model = model or default_model(config)
     kwargs: dict[str, Any] = {}
+    if idempotency_key:
+        kwargs["extra_headers"] = {"Idempotency-Key": idempotency_key}
     if output_schema is not None:
         kwargs["response_format"] = output_schema.openai_response_format()
     resp = cast(
@@ -152,9 +155,12 @@ async def _stream_chat(
     sampling: dict[str, Any] | None = None,
     response_format: dict[str, Any] | None = None,
     parallel_tool_calls: bool | None = None,
+    idempotency_key: str | None = None,
 ) -> AsyncGenerator[StreamDelta]:
     model = model or default_model(config)
     kwargs: dict[str, Any] = openai_sampling_kwargs(sampling)
+    if idempotency_key:
+        kwargs["extra_headers"] = {"Idempotency-Key": idempotency_key}
     if tools:
         kwargs["tools"] = tools
         if tool_choice is not None:
@@ -188,6 +194,7 @@ async def stream_chat(
     response_format: dict[str, Any] | None = None,
     parallel_tool_calls: bool | None = None,
     cache_system: bool = False,
+    idempotency_key: str | None = None,
 ) -> AsyncGenerator[StreamDelta]:
     """`_stream_chat()` behind `guard_empty_stream()`: a stream with no text
     and no tool calls raises `EmptyCompletionError` before its first chunk."""
@@ -201,6 +208,7 @@ async def stream_chat(
         sampling=sampling,
         response_format=response_format,
         parallel_tool_calls=parallel_tool_calls,
+        idempotency_key=idempotency_key,
     )
     guarded = guard_empty_stream(
         deltas, provider="openai", model=model or default_model(config), strip_think=True

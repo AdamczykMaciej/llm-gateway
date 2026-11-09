@@ -39,6 +39,7 @@ from .tool_validation import unique_tool_call_ids, validate_chat_request
 from .tracing import (
     call_span,
     emit_attempt_span,
+    fallback_reason_of,
     get_tracer,
     resolve_idempotency_key,
     resolve_request_id,
@@ -168,6 +169,7 @@ async def _chat(
                 break
             if not await plan.allows(provider, span):
                 continue
+            breaker_state = breaker.state(provider, resolved_model)
             if not force_provider and not breaker.allow(provider, resolved_model):
                 continue
 
@@ -175,6 +177,13 @@ async def _chat(
             is_fallback = index > 0
             attempt_no += 1
             attempt_started_ns = time.time_ns()
+            span_extra: dict = {
+                "idempotency_key": ikey,
+                "breaker_state": breaker_state,
+                "fallback_reason": fallback_reason_of(last_error)
+                if is_fallback or attempt_no > 1
+                else None,
+            }
 
             attempt_extra = (
                 {**extra, "idempotency_key": ikey}
@@ -206,7 +215,7 @@ async def _chat(
                 breaker.release_probe(provider, resolved_model)
                 emit_attempt_span(
                     tracer,
-                    idempotency_key=ikey,
+                    **span_extra,
                     request_id=rid,
                     attempt=attempt_no,
                     provider=provider,
@@ -241,7 +250,7 @@ async def _chat(
                 last_error = e
                 emit_attempt_span(
                     tracer,
-                    idempotency_key=ikey,
+                    **span_extra,
                     request_id=rid,
                     attempt=attempt_no,
                     provider=provider,
@@ -280,7 +289,7 @@ async def _chat(
             breaker.record_success(provider, resolved_model)
             emit_attempt_span(
                 tracer,
-                idempotency_key=ikey,
+                **span_extra,
                 request_id=rid,
                 attempt=attempt_no,
                 provider=provider,

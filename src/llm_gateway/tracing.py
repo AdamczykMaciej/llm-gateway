@@ -219,6 +219,13 @@ def resolve_idempotency_key(key: object = None) -> str | None:
     return key
 
 
+def fallback_reason_of(error: BaseException | None) -> str:
+    """Why the chain moved on to this attempt: the `ErrorKind` of the previous
+    failure, or "skipped" when earlier providers were passed over without a
+    call (unconfigured, breaker open, policy)."""
+    return "skipped" if error is None else str(classify(error) or ErrorKind.UNKNOWN)
+
+
 def outcome_of(error: BaseException | None) -> str:
     """ "ok", "cancelled" (the caller cancelled or closed the stream: not a
     provider failure), or the `ErrorKind` value of the failure (e.g. "timeout")."""
@@ -240,6 +247,8 @@ def emit_attempt_span(
     output_tokens: int = 0,
     restart: int = 0,
     idempotency_key: str | None = None,
+    fallback_reason: str | None = None,
+    breaker_state: str | None = None,
 ) -> None:
     """Record one provider attempt as a child span of the current call span.
 
@@ -263,6 +272,10 @@ def emit_attempt_span(
         span.set_attribute("gen_ai.usage.output_tokens", output_tokens)
         if idempotency_key:
             span.set_attribute("llm_gateway.idempotency_key", idempotency_key)
+        if fallback_reason:
+            span.set_attribute("llm_gateway.fallback_reason", fallback_reason)
+        if breaker_state:
+            span.set_attribute("llm_gateway.breaker_state", breaker_state)
         if restart:
             span.set_attribute("llm_gateway.restart", restart)
         now = time.time_ns()
