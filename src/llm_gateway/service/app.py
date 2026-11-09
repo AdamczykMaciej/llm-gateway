@@ -213,6 +213,11 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
         if config.gateway_api_keys_list
         else {}
     )
+    if not config.gateway_api_keys_list:
+        logger.warning(
+            "llm_gateway service: GATEWAY_API_KEYS is not set, so every caller is "
+            "accepted; set it before exposing the service"
+        )
     app = FastAPI(title="llm-gateway", version="0.9.0", lifespan=lifespan, **docs_kwargs)
     if config.max_request_bytes > 0:
         app.add_middleware(BodyLimitMiddleware, max_bytes=config.max_request_bytes)

@@ -538,10 +538,18 @@ def is_retryable(exc: BaseException) -> bool:
 _SECRET_PATTERNS = (
     re.compile(r"(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{4,}"),
     re.compile(
-        r"(?i)\b(authorization|x-api-key|api[-_ ]?key|apikey|token|secret|password)"
+        # Also access_token, client_secret, Ocp-Apim-Subscription-Key, ...: up to
+        # three word-and-separator prefixes before the credential name.
+        r"(?i)(?<![A-Za-z0-9])((?:[a-z]{1,20}[-_]){0,3}"
+        r"(?:authorization|x-api-key|api[-_ ]?key|apikey|token|secret|password"
+        r"|subscription[-_]key))"
         r"(\"?\s*[:=]\s*\"?)(?:bearer\s+)?[^\s\",;&'}]{4,}"
     ),
+    # A `key=` query parameter (Gemini's `?key=AIza...`).
+    re.compile(r"(?i)([?&]key)(=)[^\s&\"'#]{4,}"),
     re.compile(r"\b(?:sk|gsk|hf|xai|pk|rk)[-_][A-Za-z0-9_-]{8,}"),
+    re.compile(r"\bAIza[A-Za-z0-9_-]{30,}"),
+    re.compile(r"\bya29\.[A-Za-z0-9_-]{10,}"),
     re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]*"),
 )
 
@@ -567,8 +575,9 @@ def redact_secrets(
             text = text.replace(value, "[REDACTED]")
     text = _URL_CREDENTIALS.sub(r"\1[REDACTED]@", text)
     text = _SECRET_PATTERNS[0].sub(r"\1 [REDACTED]", text)
-    text = _SECRET_PATTERNS[1].sub(r"\1\2[REDACTED]", text)
-    for pattern in _SECRET_PATTERNS[2:]:
+    for pattern in _SECRET_PATTERNS[1:3]:
+        text = pattern.sub(r"\1\2[REDACTED]", text)
+    for pattern in _SECRET_PATTERNS[3:]:
         text = pattern.sub("[REDACTED]", text)
     return f"{text}... [truncated]" if truncated else text
 

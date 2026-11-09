@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.20.2
+
+Security pass 4. No API changes.
+
+- Fix: `redact_secrets` now scrubs `?key=` query parameters (Gemini), bare Google API keys
+  (`AIza...`) and OAuth tokens (`ya29.`), and prefixed names such as `access_token`,
+  `refresh_token`, `client_secret` and `Ocp-Apim-Subscription-Key`.
+- Fix: `GatewayConfig` repr/str no longer shows `otel_exporter_otlp_endpoint` or
+  `otel_exporter_otlp_headers` (usually a token); header values are scrubbed from error text.
+- Hardening: `azure_endpoint` and `huggingface_base_url` must be `https://` (a bearer token is sent
+  there). `openai_compat_base_url` still accepts `http://` for local servers.
+- The HTTP service logs a warning at startup when `GATEWAY_API_KEYS` is unset.
+
 ## 0.20.1
 
 Token and cost accounting fixes. No API changes.

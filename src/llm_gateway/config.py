@@ -127,9 +127,12 @@ def _is_metadata_host(host: str) -> bool:
     )
 
 
-def _check_http_url(value: str, name: str) -> None:
+def _check_http_url(value: str, name: str, *, https_only: bool = False) -> None:
     """An http(s) URL without embedded credentials. The message never repeats
-    the value: it may carry a password."""
+    the value: it may carry a password. `https_only` is for endpoints that
+    receive a bearer token."""
+    if https_only and not value.startswith("https://"):
+        raise ValueError(f"{name} must start with https:// (a token is sent to it)")
     if not value.startswith(("http://", "https://")):
         raise ValueError(f"{name} must start with http:// or https://")
     try:
@@ -381,8 +384,9 @@ class GatewayConfig(BaseSettings):
     # Prompts are never traced unless this is explicitly enabled, and even
     # then they're PII-masked first (see pii.mask_pii). Off by default.
     trace_include_prompts: bool = False
-    otel_exporter_otlp_endpoint: str = ""
-    otel_exporter_otlp_headers: str = ""  # comma-separated key=value pairs
+    otel_exporter_otlp_endpoint: str = Field(default="", repr=False)
+    # Comma-separated key=value pairs; usually carries a token, so never in repr.
+    otel_exporter_otlp_headers: str = Field(default="", repr=False)
 
     # ── HTTP service (llm_gateway.service) ──────────────────────────────
     # Comma-separated bearer keys accepted by the HTTP service. Irrelevant
@@ -641,6 +645,10 @@ class GatewayConfig(BaseSettings):
             self.openai_compat_api_key,
             self.huggingface_api_key,
             *self.gateway_api_keys_list,
+            *(
+                pair.partition("=")[2].strip().removeprefix("Bearer ").strip()
+                for pair in self.otel_exporter_otlp_headers.split(",")
+            ),
         ]
         return tuple(v for v in values if len(v) >= 4)
 
@@ -672,14 +680,16 @@ class GatewayConfig(BaseSettings):
     def _check_optional_url(cls, value: str, info: ValidationInfo) -> str:
         value = value.strip()
         if value:
-            _check_http_url(value, info.field_name or "url")
+            _check_http_url(
+                value, info.field_name or "url", https_only=info.field_name == "azure_endpoint"
+            )
         return value.rstrip("/") if info.field_name == "openai_compat_base_url" else value
 
     @field_validator("huggingface_base_url")
     @classmethod
     def _check_huggingface_base_url(cls, value: str) -> str:
         value = value.strip()
-        _check_http_url(value, "huggingface_base_url")
+        _check_http_url(value, "huggingface_base_url", https_only=True)
         return value.rstrip("/")
 
     @field_validator("provider_metadata")
