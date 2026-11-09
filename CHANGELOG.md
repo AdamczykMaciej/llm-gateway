@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.21.0
+
+Agentic validation pass. Stricter checks; no API changes.
+
+- Fix: tool-argument checks (`check_tool_calls`) and `validate=` ignored most JSON Schema limits,
+  so `minimum`, `maxLength`, `maxItems` and similar passed silently. Now enforced: `minimum`,
+  `maximum`, `exclusiveMinimum/Maximum`, `minLength/maxLength`, `minItems/maxItems/uniqueItems`,
+  `minProperties/maxProperties`, `allOf`, `not`, `additionalProperties` as a schema, and `oneOf`
+  now requires exactly one match. `pattern` and `format` stay unchecked (ReDoS surface).
+- Fix: a dict `output_schema` only had its top-level type and `required` keys checked; the reply
+  is now validated against the whole schema subset (pydantic models were already fully checked).
+- Fix: provider tool-call arguments with a duplicate key or `NaN`/`Infinity` are rejected as
+  `InvalidOutputError` (they fail over) instead of letting the last duplicate win silently.
+
 ## 0.20.2
 
 Security pass 4. No API changes.

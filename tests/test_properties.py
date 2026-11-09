@@ -53,7 +53,13 @@ _REQUEST = httpx2.Request("POST", "https://api.example.test")
 # --- strategies ----------------------------------------------------------
 
 _text = st.text(max_size=40)
-_json_leaf = st.none() | st.booleans() | st.integers() | st.floats(allow_nan=False) | _text
+_json_leaf = (
+    st.none()
+    | st.booleans()
+    | st.integers()
+    | st.floats(allow_nan=False, allow_infinity=False)
+    | _text
+)
 _json = st.recursive(
     _json_leaf,
     lambda c: st.lists(c, max_size=4) | st.dictionaries(_text, c, max_size=4),
