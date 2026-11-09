@@ -1,0 +1,2 @@
+# Accepted advisories. Format: <ID>  <expiry YYYY-MM-DD>  <reason>
+# Empty on purpose: every ignore needs an expiry and a justification.

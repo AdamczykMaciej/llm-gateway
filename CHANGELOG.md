@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.27.1
+
+Supply-chain and release hygiene. No runtime behaviour change.
+
+- Changed: upper bounds added to `typing-extensions` (<5) and to the dev tools (pytest-asyncio,
+  pytest-cov, ruff, pyright, build).
+- New: `constraints/dev.txt` (pinned test/dev environment) and `scripts/lock.sh` to regenerate it;
+  CI installs with it and all extras.
+- New: `scripts/audit.sh` (pip-audit, osv-scanner if installed) with an ignore list,
+  `scripts/audit-ignore.txt`, one `<ID> <expiry> <reason>` per line, expired entries fail.
+  CI runs it. pip-audit: no known vulnerabilities.
+- New: `scripts/sbom.sh` writes a CycloneDX SBOM; `pip-audit` and `cyclonedx-bom` join the dev extra.
+- New: `tests/test_dist_contents.py` builds the wheel and sdist and asserts their file lists.
+- Docs: SECURITY.md supply-chain section. LICENSE (MIT) and `py.typed` were already present.
+
 ## 0.27.0
 
 API ergonomics. Typing and message text only; no runtime behaviour change.
