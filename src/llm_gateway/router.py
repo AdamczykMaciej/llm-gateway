@@ -10,10 +10,11 @@ import logging
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Generic, overload
 
 from opentelemetry.trace import StatusCode
 from pydantic import BaseModel
+from typing_extensions import TypeVar
 
 from . import breaker
 from .attempts import AttemptHook, report_attempt
@@ -90,8 +91,12 @@ def record_provider_failure(
     )
 
 
+_T = TypeVar("_T", default=Any)
+_M = TypeVar("_M", bound=BaseModel)
+
+
 @dataclass(frozen=True)
-class Completion:
+class Completion(Generic[_T]):
     """What `complete_with_usage()` returns: the text plus who served it and
     what it cost.
 
@@ -105,14 +110,18 @@ class Completion:
     it is derived data, so it is excluded from equality. `request_id` is the
     call's correlation id (the caller's `request_id`, or a generated one): it
     is on every span of the call, so a result can be matched to its traces. It
-    identifies the call, not the provider's own request."""
+    identifies the call, not the provider's own request.
+
+    `Completion` is generic in the type of `parsed`: a call with a pydantic
+    model class as `output_schema` or `validate` is typed `Completion[Model]`,
+    any other call `Completion[Any]`. Plain `Completion` means `Completion[Any]`."""
 
     text: str
     provider: str
     model: str
     usage: Usage
     stop_reason: str | None = None
-    parsed: Any = None
+    parsed: _T | None = None
     cost_usd: float | None = field(default=None, compare=False)
     request_id: str | None = field(default=None, compare=False)
 
@@ -165,6 +174,43 @@ async def complete(
     return completion.text
 
 
+@overload
+async def complete_with_usage(
+    *,
+    system: str,
+    prompt: str,
+    max_tokens: int = 2000,
+    config: GatewayConfig | None = None,
+    force_provider: str | None = None,
+    model: str | None = None,
+    output_schema: type[_M],
+    schema_name: str | None = None,
+    cache_system: bool = False,
+    policy: ProviderPolicy | None = None,
+    request_id: str | None = None,
+    validate: dict[str, Any] | type[BaseModel] | None = None,
+    repair_attempts: int = 0,
+    on_attempt: AttemptHook | None = None,
+) -> Completion[_M]: ...
+@overload
+async def complete_with_usage(
+    *,
+    system: str,
+    prompt: str,
+    max_tokens: int = 2000,
+    config: GatewayConfig | None = None,
+    force_provider: str | None = None,
+    model: str | None = None,
+    output_schema: dict[str, Any] | None = None,
+    schema_name: str | None = None,
+    cache_system: bool = False,
+    policy: ProviderPolicy | None = None,
+    request_id: str | None = None,
+    validate: type[_M],
+    repair_attempts: int = 0,
+    on_attempt: AttemptHook | None = None,
+) -> Completion[_M]: ...
+@overload
 async def complete_with_usage(
     *,
     system: str,
@@ -181,7 +227,24 @@ async def complete_with_usage(
     validate: dict[str, Any] | type[BaseModel] | None = None,
     repair_attempts: int = 0,
     on_attempt: AttemptHook | None = None,
-) -> Completion:
+) -> Completion[Any]: ...
+async def complete_with_usage(
+    *,
+    system: str,
+    prompt: str,
+    max_tokens: int = 2000,
+    config: GatewayConfig | None = None,
+    force_provider: str | None = None,
+    model: str | None = None,
+    output_schema: dict[str, Any] | type[BaseModel] | None = None,
+    schema_name: str | None = None,
+    cache_system: bool = False,
+    policy: ProviderPolicy | None = None,
+    request_id: str | None = None,
+    validate: dict[str, Any] | type[BaseModel] | None = None,
+    repair_attempts: int = 0,
+    on_attempt: AttemptHook | None = None,
+) -> Completion[Any]:
     """`complete()`, returning a `Completion` instead of a string.
 
     `request_id`: a correlation id (1-128 of letters, digits, `. _ : -`) put

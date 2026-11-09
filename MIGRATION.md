@@ -78,3 +78,38 @@ If you relied on a sampling value reaching a reasoning model, it no longer does.
 
 Streaming provider functions are annotated `AsyncGenerator[StreamDelta]` (a
 subtype of `AsyncIterator`), so existing annotations keep working.
+
+# Migrating from 0.16 to 0.21
+
+No public name was removed or renamed. These are the behaviour changes to check.
+
+## Stricter schema checks (0.21.0)
+
+Tool-call arguments (`check_tool_calls`) and `validate=` / dict `output_schema` now
+enforce `minimum`/`maximum`, `minLength`/`maxLength`, `minItems`/`maxItems`/`uniqueItems`,
+`allOf`, `not`, schema-valued `additionalProperties`, and `oneOf` means exactly one
+match. A reply that passed before can now raise `InvalidOutputError` (it fails over,
+not retried). Tool-call arguments with duplicate keys or `NaN`/`Infinity` are rejected
+the same way. `pattern` and `format` are still not checked.
+
+Do: if a schema had limits you never meant to enforce, loosen them; log `.paths`
+from `InvalidOutputError` to find the field.
+
+## https-only token endpoints (0.20.2)
+
+`azure_endpoint` and `huggingface_base_url` must start with `https://`; `GatewayConfig`
+raises `ValueError` otherwise. `openai_compat_base_url` still accepts `http://`
+(local servers). `GatewayConfig` repr no longer shows OTLP endpoint or headers.
+
+## Partial streams and metering (0.20.0, 0.20.1)
+
+A stream cut short (consumer `aclose()`, cancellation, mid-stream failure) now reports
+`AttemptReport.partial=True` and `streamed_chars`; treat its `usage`/`cost_usd` as a
+lower bound. The provider stream is closed before `on_attempt` runs. Replies that were
+billed and then rejected carry `usage` on `EmptyCompletionError`/`InvalidOutputError`
+and on the failed attempt report, so a spend ledger no longer sees them as free.
+
+## Typing (0.21.1)
+
+`Completion` is generic: `Completion[Model]` when `output_schema=` or `validate=` is a
+pydantic class. Existing `Completion` annotations are unchanged.

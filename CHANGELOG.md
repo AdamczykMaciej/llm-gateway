@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.21.1
+
+Types and docs. No behaviour change; fully backward compatible.
+
+- New: `Completion` is generic in `parsed`. `complete_with_usage(output_schema=Model)` or
+  `validate=Model` is now typed `Completion[Model]` (so `result.parsed` is `Model | None`);
+  other calls stay `Completion[Any]`, and a bare `Completion` annotation still works.
+- New: `typing-extensions` is a declared dependency (it was already installed through pydantic).
+- Docs: `MIGRATION.md` covers the 0.17-0.21 behaviour changes (stricter tool-argument and
+  `validate=` checks, https-only token endpoints, partial streams and `AttemptReport.partial`).
+- Test: a typed consumer file (`tests/typing/consumer.py`) is checked with pyright in CI.
+
 ## 0.21.0
 
 Agentic validation pass. Stricter checks; no API changes.
