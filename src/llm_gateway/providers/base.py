@@ -221,6 +221,9 @@ class Usage:
         return out
 
 
+_E = TypeVar("_E", "InvalidOutputError", "EmptyCompletionError")
+
+
 def as_int(value: object) -> int:
     """An SDK usage field as an int: None (field absent) and anything
     non-integer count as 0."""
@@ -350,6 +353,12 @@ class _ThinkStripper:
         return out
 
 
+def with_billed_usage(error: _E, usage: Usage | None) -> _E:
+    """`error` with the usage the provider billed for the rejected reply."""
+    error.usage = usage
+    return error
+
+
 def ensure_not_empty(
     text: str | None,
     *,
@@ -358,6 +367,7 @@ def ensure_not_empty(
     model: str,
     finish_reason: str | None,
     reasoning_tokens: int | None,
+    usage: Usage | None = None,
 ) -> None:
     """Raise `EmptyCompletionError` for a reply with no usable text (None,
     empty or whitespace) and no tool calls. Logs a warning with the provider,
@@ -371,12 +381,14 @@ def ensure_not_empty(
         finish_reason,
         reasoning_tokens,
     )
-    raise EmptyCompletionError(
+    error = EmptyCompletionError(
         provider=provider,
         model=model,
         finish_reason=finish_reason,
         reasoning_tokens=reasoning_tokens,
     )
+    error.usage = usage
+    raise error
 
 
 @dataclass(frozen=True)
@@ -496,6 +508,7 @@ def _first_choice(resp: Any, model: str, provider: str) -> Any:
             model=model,
             finish_reason="no_choices",
             reasoning_tokens=usage.reasoning_tokens,
+            usage=usage,
         )
     return resp.choices[0]
 
@@ -508,8 +521,11 @@ def parse_openai_style_response(resp: Any, model: str, provider: str = "openai")
     is `InvalidOutputError` and empty content is `EmptyCompletionError`."""
     choice = _first_choice(resp, model, provider)
     msg = choice.message
+    usage = usage_from_openai_style(resp.usage)
     if getattr(msg, "refusal", None) and not msg.tool_calls:
-        raise InvalidOutputError("The model refused the request (message.refusal is set).")
+        raise with_billed_usage(
+            InvalidOutputError("The model refused the request (message.refusal is set)."), usage
+        )
     finish_reason = normalize_finish_reason(choice.finish_reason)
     raw_tool_calls = cast("list[Any]", msg.tool_calls or [])
     try:
@@ -523,10 +539,13 @@ def parse_openai_style_response(resp: Any, model: str, provider: str = "openai")
         ]
     except InvalidOutputError:
         if finish_reason == "length":
-            raise ToolCallTruncatedError(
-                "The reply was cut off by the token limit inside a tool call; "
-                "retry with a larger max_tokens.",
-                tuple(tc.function.name for tc in raw_tool_calls),
+            raise with_billed_usage(
+                ToolCallTruncatedError(
+                    "The reply was cut off by the token limit inside a tool call; "
+                    "retry with a larger max_tokens.",
+                    tuple(tc.function.name for tc in raw_tool_calls),
+                ),
+                usage,
             ) from None
         raise
     if tool_calls:
@@ -534,7 +553,6 @@ def parse_openai_style_response(resp: Any, model: str, provider: str = "openai")
     elif finish_reason == "tool_calls":
         finish_reason = "stop"
     content = strip_think(msg.content)
-    usage = usage_from_openai_style(resp.usage)
     ensure_not_empty(
         content,
         has_tool_calls=bool(tool_calls),
@@ -542,6 +560,7 @@ def parse_openai_style_response(resp: Any, model: str, provider: str = "openai")
         model=model,
         finish_reason=choice.finish_reason,
         reasoning_tokens=usage.reasoning_tokens,
+        usage=usage,
     )
     return ChatResult(
         # Mistral sends "" next to tool calls where OpenAI sends null; one shape.
@@ -570,9 +589,11 @@ def provider_result_from_openai_style(
     """
     choice = _first_choice(resp, model, provider)
     message = choice.message
-    if getattr(message, "refusal", None):
-        raise InvalidOutputError("The model refused the request (message.refusal is set).")
     usage = usage_from_openai_style(resp.usage)
+    if getattr(message, "refusal", None):
+        raise with_billed_usage(
+            InvalidOutputError("The model refused the request (message.refusal is set)."), usage
+        )
     content = strip_think(message.content)
     ensure_not_empty(
         content,
@@ -580,6 +601,7 @@ def provider_result_from_openai_style(
         model=model,
         finish_reason=choice.finish_reason,
         reasoning_tokens=usage.reasoning_tokens,
+        usage=usage,
     )
     return ProviderResult(
         text=(content or "").strip(),
@@ -736,4 +758,5 @@ async def guard_empty_stream(
             model=model,
             finish_reason=finish_reason,
             reasoning_tokens=details.reasoning_tokens if details else None,
+            usage=details,
         )

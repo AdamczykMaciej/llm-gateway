@@ -43,7 +43,6 @@ from .base import (
     ChatResult,
     ProviderResult,
     StreamDelta,
-    as_int,
     close_clients,
     ensure_not_empty,
     guard_empty_stream,
@@ -53,6 +52,7 @@ from .base import (
     sdk_client_options,
     sdk_http_client,
     stream_request_options,
+    with_billed_usage,
 )
 
 PROVIDER = "anthropic"
@@ -332,9 +332,12 @@ async def messages_call(
         model=model,
         finish_reason=resp.stop_reason,
         reasoning_tokens=usage.reasoning_tokens,
+        usage=usage,
     )
     if output_schema is not None and resp.stop_reason == "refusal":
-        raise InvalidOutputError("The model refused the request (stop_reason=refusal).")
+        raise with_billed_usage(
+            InvalidOutputError("The model refused the request (stop_reason=refusal)."), usage
+        )
     return ProviderResult(
         text=text,
         model=model,
@@ -436,6 +439,7 @@ async def messages_chat(
         model=model,
         finish_reason=resp.stop_reason,
         reasoning_tokens=result.reasoning_tokens,
+        usage=result.usage,
     )
     return result
 
@@ -612,10 +616,15 @@ async def messages_stream(
 
 
 def _update_usage(raw_usage: dict[str, int], sdk_usage: object) -> None:
+    # The input side is cumulative, so it never goes down: a later event that
+    # reports 0 for it (a proxy that fills the fields in) must not erase what
+    # message_start reported. Output tokens start at a placeholder in
+    # message_start, so the latest value wins.
     for name in raw_usage:
         value = getattr(sdk_usage, name, None)
-        if as_int(value) or value == 0:
-            raw_usage[name] = as_int(value)
+        if not isinstance(value, int) or isinstance(value, bool):
+            continue
+        raw_usage[name] = value if name == "output_tokens" else max(raw_usage[name], value)
 
 
 async def stream_chat(

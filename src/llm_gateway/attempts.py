@@ -89,6 +89,11 @@ async def report_attempt(
     hook = hook or config.on_attempt
     if hook is None:
         return
+    if usage is None:
+        # A reply that was billed and then rejected (empty, refusal, cut-off
+        # tool call) carries its usage on the error.
+        carried = getattr(error, "usage", None)
+        usage = carried if isinstance(carried, Usage) else None
     try:
         cost = None
         if usage is not None:

@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.20.1
+
+Token and cost accounting fixes. No API changes.
+
+- Fix: a reply the provider billed and the gateway then rejected (empty completion such as a
+  reasoning model that spent its budget, a refusal, a tool call cut off by `max_tokens`) was
+  reported to `on_attempt` with `usage=None` and `cost_usd=None`, so a spend ledger saw it as free.
+  `EmptyCompletionError` and `InvalidOutputError` now carry `usage` (default `None`) and failed
+  attempt reports use it.
+- Fix: Anthropic streams no longer lose input or cache tokens when a later `message_delta`
+  reports `0` for them; the input side of the usage is cumulative and now only grows.
+- Price table re-checked 2026-11-09 against the Anthropic, OpenAI and Groq pricing pages; no
+  rate changed. Vertex, Mistral and OpenRouter rows are still unverified (flagged in
+  `PRICE_SOURCES`).
+
 ## 0.20.0
 
 Streaming cancellation and metering. Additive, backward compatible.
