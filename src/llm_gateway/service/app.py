@@ -263,6 +263,23 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
         # /_internal/healthz (see infra/terraform/cloud_run.tf).
         return {"status": "ok"}
 
+    @app.get("/v1/providers/health")
+    async def providers_health(api_key: str = Depends(auth_dep)) -> dict:
+        """Per-provider circuit-breaker state and last error class, for an ops
+        dashboard. No error text, no keys."""
+        states = breaker.snapshot()
+        return {
+            "object": "list",
+            "data": [
+                {
+                    "provider": p,
+                    "configured": CONFIGURED[p](config),
+                    "breaker": [s for s in states if s["provider"] == p],
+                }
+                for p in CONFIGURED
+            ],
+        }
+
     @app.get("/v1/models")
     async def models(api_key: str = Depends(auth_dep)) -> dict:
         provider_models = {

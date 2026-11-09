@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.22.0
+
+Outage resilience. Backward compatible (new attributes, config fields and an endpoint).
+
+- New: `AllProvidersExhaustedError.failures` and `LLMDeadlineExceeded.failures` list one
+  `ProviderFailure` (provider, model, `kind`, status, scrubbed detail) per failed attempt, and the
+  message ends with `Causes: anthropic=billing, groq=rate_limited, openai=model_retired.`.
+  Kinds come from `errors.failure_class`: billing, rate_limited, auth, model_retired, overloaded,
+  timeout, network, invalid_request, ...
+- Fix: Groq's 400 `model_decommissioned` (and "has been retired/decommissioned" wording) was a plain
+  invalid request, so a retired model never opened its breaker. It is now model-missing.
+- Fix: HTTP 402 and billing-shaped 403s (OpenAI `billing_not_active`, GCP "billing account ...
+  disabled") were classified as auth/invalid request; they are now billing.
+- New: `breaker_billing_cooldown_seconds` (default 300) and `breaker_model_missing_cooldown_seconds`
+  (default 1800): conditions that need a config change no longer re-probe every 60 s.
+  Never shorter than `breaker_cooldown_seconds`.
+- New: `circuit_breaker_status()` and `GET /v1/providers/health` report per-provider and
+  per-model breaker state, remaining cooldown and last error class (no error text).
+- Test: all providers failing at once, deadline bound with hanging providers, half-open admits one
+  concurrent probe, classification shapes.
+
 ## 0.21.2
 
 Coverage pass 3. Backward compatible.

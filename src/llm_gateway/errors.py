@@ -74,6 +74,7 @@ When *no* provider serves the call at all, `complete()`/`chat()`/
 """
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING
@@ -93,7 +94,12 @@ class LLMError(Exception):
 class LLMDeadlineExceeded(LLMError):
     """The call's overall deadline (`GatewayConfig.call_deadline_seconds`)
     ran out across retries and failovers. A subclass of `LLMError`, so
-    callers that only catch `LLMError` keep working unchanged."""
+    callers that only catch `LLMError` keep working unchanged.
+
+    `failures` lists what each attempted provider failed with (see
+    `ProviderFailure`); empty when none had failed yet."""
+
+    failures: tuple["ProviderFailure", ...] = ()
 
 
 class GatewayNotConfiguredError(LLMError):
@@ -114,7 +120,14 @@ class AllProvidersExhaustedError(LLMError):
     call deadline ran out before any could be attempted). This is the
     "temporarily exhausted, retry shortly" case — the providers are known
     good configuration-wise, just unavailable right now, typically for no
-    longer than `BREAKER_COOLDOWN_SECONDS`. A subclass of `LLMError`."""
+    longer than `BREAKER_COOLDOWN_SECONDS`. A subclass of `LLMError`.
+
+    `failures` has one `ProviderFailure` per failed attempt (provider, model,
+    classified `kind`, status code, redacted detail), so an operator can tell
+    "Anthropic over its spend limit, Groq rate limited, OpenAI model retired"
+    apart without parsing the message. Empty when every breaker was open."""
+
+    failures: tuple["ProviderFailure", ...] = ()
 
 
 class PolicyViolationError(LLMError):
@@ -327,6 +340,8 @@ def _classify_status(status: int) -> ErrorKind:
         return ErrorKind.RATE_LIMITED
     if status in (401, 403):
         return ErrorKind.AUTH
+    if status == 402:  # Payment Required: always an account problem
+        return ErrorKind.BILLING
     return ErrorKind.INVALID_REQUEST
 
 
@@ -399,9 +414,17 @@ _BILLING_MARKERS = (
     "insufficient credits",
     "insufficient balance",
     "out of credits",
+    "billing_not_active",  # OpenAI code
+    "account is not active",  # OpenAI: "...check your billing details"
+    "billing account",  # Vertex/GCP 403: billing account disabled/closed
+    "billing is disabled",
+    "billing has not been enabled",
+    "payment required",
+    "monthly spend",
+    "usage limit has been reached",
 )
 # Only these statuses (or none, inside a 200 stream) can mean "billing".
-_BILLING_STATUSES = frozenset({400, 402, 429})
+_BILLING_STATUSES = frozenset({400, 402, 403, 429})
 
 
 def _error_text(exc: BaseException) -> str:
@@ -472,11 +495,26 @@ def classify(exc: BaseException) -> ErrorKind:
 
 
 _MODEL_MISSING_CODES = frozenset(
-    {"model_not_found", "deployment_not_found", "deploymentnotfound", "invalid_model"}
+    {
+        "model_not_found",
+        "deployment_not_found",
+        "deploymentnotfound",
+        "invalid_model",
+        "model_decommissioned",  # Groq: 400 for a retired model
+        "model_deprecated",
+        "model_retired",
+    }
 )
 # Wording of a bad model id on hosts that answer 400 instead of 404 (Mistral's
 # `invalid_model`, OpenRouter's "<id> is not a valid model ID").
-_MODEL_MISSING_PHRASES = ("not a valid model", "invalid model:")
+_MODEL_MISSING_PHRASES = (
+    "not a valid model",
+    "invalid model:",
+    "has been decommissioned",
+    "has been retired",
+    "model has been deprecated",
+    "is no longer supported",
+)
 
 
 def is_model_scoped(exc: BaseException) -> str | None:
@@ -507,6 +545,74 @@ def is_model_scoped(exc: BaseException) -> str | None:
     if status == 404 and "model" in _error_text(exc):
         return "missing"
     return None
+
+
+_FAILURE_CLASSES: dict[ErrorKind, str] = {
+    ErrorKind.TRANSIENT: "network",
+    ErrorKind.TIMEOUT: "timeout",
+    ErrorKind.RATE_LIMITED: "rate_limited",
+    ErrorKind.AUTH: "auth",
+    ErrorKind.BILLING: "billing",
+    ErrorKind.INVALID_REQUEST: "invalid_request",
+    ErrorKind.INVALID_OUTPUT: "invalid_output",
+    ErrorKind.EMPTY_RESPONSE: "empty_response",
+    ErrorKind.UNKNOWN: "unknown",
+    ErrorKind.POLICY_VIOLATION: "policy_violation",
+}
+FAILURE_CLASSES = frozenset(_FAILURE_CLASSES.values()) | {"model_retired", "overloaded"}
+
+
+def failure_class(exc: BaseException) -> str:
+    """A stable, alertable label for why a provider failed: `billing`
+    (out of credit, spend limit, quota), `rate_limited`, `auth`,
+    `model_retired` (the model or deployment no longer exists: needs a config
+    change), `overloaded`, `timeout`, `network` (connection errors, 5xx),
+    `invalid_request`, `invalid_output`, `empty_response`, `policy_violation`
+    or `unknown`. Billing and auth win over the model check."""
+    kind = classify(exc)
+    if kind in (ErrorKind.BILLING, ErrorKind.AUTH):
+        return _FAILURE_CLASSES[kind]
+    scope = is_model_scoped(exc)
+    if scope == "missing":
+        return "model_retired"
+    if scope == "overloaded":
+        return "overloaded"
+    return _FAILURE_CLASSES[kind]
+
+
+@dataclass(frozen=True)
+class ProviderFailure:
+    """One failed provider attempt, as listed in `AllProvidersExhaustedError.failures`."""
+
+    provider: str
+    model: str | None
+    kind: str
+    """One of `FAILURE_CLASSES` (see `failure_class`)."""
+    status_code: int | None
+    detail: str
+    """Provider error text, credential-scrubbed and capped to 300 chars."""
+
+
+def provider_failure(
+    provider: str,
+    model: str | None,
+    exc: BaseException,
+    config: "GatewayConfig | None" = None,
+) -> ProviderFailure:
+    status = getattr(exc, "status_code", None)
+    return ProviderFailure(
+        provider=provider,
+        model=model,
+        kind=failure_class(exc),
+        status_code=status if isinstance(status, int) else None,
+        detail=redact_secrets(str(exc), config, max_chars=300),
+    )
+
+
+def failure_summary(failures: Sequence[ProviderFailure]) -> str:
+    """`anthropic=billing, groq=rate_limited` (one entry per provider, latest wins)."""
+    latest = {f.provider: f.kind for f in failures}
+    return ", ".join(f"{p}={k}" for p, k in latest.items())
 
 
 def policy_for(exc: BaseException) -> ErrorPolicy:
@@ -593,7 +699,30 @@ def error_detail(error: BaseException | None, config: "GatewayConfig | None" = N
 
 
 def deadline_exceeded(
-    seconds: float, last_error: Exception | None, config: "GatewayConfig | None" = None
+    seconds: float,
+    last_error: Exception | None,
+    config: "GatewayConfig | None" = None,
+    failures: Sequence[ProviderFailure] = (),
 ) -> LLMDeadlineExceeded:
     detail = f" Last error: {error_detail(last_error, config)}" if last_error else ""
-    return LLMDeadlineExceeded(f"Call deadline of {seconds:g}s exceeded.{detail}")
+    causes = f" Causes: {failure_summary(failures)}." if failures else ""
+    error = LLMDeadlineExceeded(f"Call deadline of {seconds:g}s exceeded.{detail}{causes}")
+    error.failures = tuple(failures)
+    return error
+
+
+def all_failed(
+    last_error: Exception | None,
+    config: "GatewayConfig | None",
+    failures: Sequence[ProviderFailure],
+    note: str = "",
+) -> AllProvidersExhaustedError:
+    """The single aggregate error for a chain where every attempt failed: the
+    last error's text (as before) plus each provider's classified cause."""
+    causes = f" Causes: {failure_summary(failures)}." if failures else ""
+    error = AllProvidersExhaustedError(
+        f"All configured providers failed. Last error: {error_detail(last_error, config)}"
+        f"{note}{causes}"
+    )
+    error.failures = tuple(failures)
+    return error

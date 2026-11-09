@@ -314,6 +314,10 @@ class GatewayConfig(BaseSettings):
     provider_order: str = "anthropic,groq,openai"
     breaker_failure_threshold: int = 3
     breaker_cooldown_seconds: float = 60.0
+    # Longer cooldowns for conditions that do not heal on their own: an empty
+    # balance (billing) and a retired model. 0 = use breaker_cooldown_seconds.
+    breaker_billing_cooldown_seconds: float = 300.0
+    breaker_model_missing_cooldown_seconds: float = 1800.0
 
     # Short retry-with-backoff on a single provider before falling over to
     # the next one — see retry.py. Only transient errors (connection

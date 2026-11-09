@@ -483,7 +483,7 @@ async def test_without_a_policy_the_chain_is_unchanged():
         with pytest.raises(LLMError) as info:
             await complete(system="s", prompt="p", config=_config())
     assert attempted == list(PROVIDERS)
-    assert str(info.value) == "All configured providers failed. Last error: down"
+    assert str(info.value).startswith("All configured providers failed. Last error: down")
 
 
 # ─── Capability filter ──────────────────────────────────────────────────────
