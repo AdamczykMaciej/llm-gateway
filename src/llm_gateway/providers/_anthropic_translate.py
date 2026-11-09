@@ -238,17 +238,33 @@ def to_anthropic_messages(messages: list[dict[str, Any]]) -> tuple[str, list[Ant
     return system, anthropic_messages
 
 
+def _function_name(value: object, what: str) -> str:
+    """The `function.name` of a caller-supplied tool or tool_choice. These are
+    untrusted whatever their type hints say; a malformed one is the caller's
+    mistake (`InvalidRequestError`), not a provider failure to fail over on."""
+    outer = as_dict(value)
+    fn = as_dict(outer.get("function")) if outer is not None else None
+    name = fn.get("name") if fn is not None else None
+    if not isinstance(name, str) or not name:
+        raise InvalidRequestError(f"{what} has no function.name string.")
+    return name
+
+
 def to_anthropic_tools(tools: list[dict[str, Any]] | None) -> list[AnthropicTool] | None:
     if not tools:
         return None
-    return [
-        {
-            "name": t["function"]["name"],
-            "description": t["function"].get("description", ""),
-            "input_schema": t["function"].get("parameters", {"type": "object", "properties": {}}),
-        }
-        for t in tools
-    ]
+    out: list[AnthropicTool] = []
+    for index, t in enumerate(tools):
+        name = _function_name(t, f"tools[{index}]")
+        fn = cast("dict[str, Any]", t["function"])
+        out.append(
+            {
+                "name": name,
+                "description": fn.get("description", ""),
+                "input_schema": fn.get("parameters", {"type": "object", "properties": {}}),
+            }
+        )
+    return out
 
 
 def to_anthropic_tool_choice(tool_choice: Any) -> dict[str, Any] | None:
@@ -263,7 +279,7 @@ def to_anthropic_tool_choice(tool_choice: Any) -> dict[str, Any] | None:
         return {"type": "any"}
     choice = as_dict(tool_choice)
     if choice is not None and choice.get("type") == "function":
-        return {"type": "tool", "name": choice["function"]["name"]}
+        return {"type": "tool", "name": _function_name(choice, "tool_choice")}
     return None
 
 

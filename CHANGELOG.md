@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.21.2
+
+Coverage pass 3. Backward compatible.
+
+- Fix: a malformed tool definition or `tool_choice` (missing `function`, missing or non-string
+  `name`) sent to Anthropic or Vertex Claude crashed with a bare `KeyError`/`TypeError`, which the
+  engine treated as a provider failure and failed over on. It is now `InvalidRequestError`.
+- Test: error/fallback/stream/translation gap tests and Hypothesis tests over Anthropic and
+  OpenAI response shapes and tool definitions.
+
 ## 0.21.1
 
 Types and docs. No behaviour change; fully backward compatible.
