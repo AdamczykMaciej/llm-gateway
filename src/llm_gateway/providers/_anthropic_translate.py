@@ -16,6 +16,7 @@ naturally, or every `tool_choice` variant.
 """
 
 import json
+import re
 from typing import Any, cast
 
 from ..errors import InvalidRequestError, ToolCallTruncatedError
@@ -142,9 +143,45 @@ def _check_shape(messages: list[dict[str, Any]]) -> None:
             raise InvalidRequestError(f"messages[{index}] {problem}.")
 
 
+_VALID_ID = re.compile(r"[a-zA-Z0-9_-]{1,64}")
+_INVALID_ID_CHARS = re.compile(r"[^a-zA-Z0-9_-]")
+
+
+def _anthropic_tool_ids(messages: list[dict[str, Any]]) -> dict[str, str]:
+    """Old id -> id Anthropic accepts, for the ids in `messages` that it would
+    reject. Anthropic wants `[a-zA-Z0-9_-]{1,64}`, but OpenAI-compatible hosts
+    mint ids like `functions.add:0`, which a failover to Claude would otherwise
+    turn into a 400. The mapping is applied to tool calls and their results
+    alike and never maps two ids to one."""
+    ids: list[str] = []
+    for m in messages:
+        if m.get("role") == "tool":
+            ids.append(m["tool_call_id"])
+        calls: list[dict[str, Any]] = m.get("tool_calls") or []
+        ids.extend(tc["id"] for tc in calls)
+    used = {i for i in ids if _VALID_ID.fullmatch(i)}
+    mapping: dict[str, str] = {}
+    for old in dict.fromkeys(ids):
+        if old in used:
+            continue
+        base = _INVALID_ID_CHARS.sub("_", old)[:56] or "call"
+        new, n = base, 1
+        while new in used:
+            n += 1
+            new = f"{base}_{n}"
+        used.add(new)
+        mapping[old] = new
+    return mapping
+
+
+def _mapped(ids: dict[str, str], tool_id: str) -> str:
+    return ids.get(tool_id, tool_id)
+
+
 def to_anthropic_messages(messages: list[dict[str, Any]]) -> tuple[str, list[AnthropicMessage]]:
     """Return (system_prompt, anthropic_messages)."""
     _check_shape(messages)
+    ids = _anthropic_tool_ids(messages)
     system_parts = [
         _system_text(m["content"]) for m in messages if m["role"] == "system" and m.get("content")
     ]
@@ -159,7 +196,7 @@ def to_anthropic_messages(messages: list[dict[str, Any]]) -> tuple[str, list[Ant
         if role == "tool":
             block: AnthropicToolResultBlock = {
                 "type": "tool_result",
-                "tool_use_id": m["tool_call_id"],
+                "tool_use_id": _mapped(ids, m["tool_call_id"]),
                 "content": _tool_result_content(m.get("content")),
             }
             # Consecutive tool results belong in one user turn, mirroring how
@@ -188,7 +225,7 @@ def to_anthropic_messages(messages: list[dict[str, Any]]) -> tuple[str, list[Ant
             for tc in m["tool_calls"]:
                 tool_use: AnthropicToolUseBlock = {
                     "type": "tool_use",
-                    "id": tc["id"],
+                    "id": _mapped(ids, tc["id"]),
                     "name": tc["function"]["name"],
                     "input": _parse_tool_arguments(tc["function"].get("arguments")),
                 }

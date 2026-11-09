@@ -14,7 +14,7 @@ has no such dependency): it catches what providers reject in practice.
 import dataclasses
 import json
 import re
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -270,27 +270,30 @@ def tool_error_message(issue: ToolCallIssue) -> dict:
     return {"role": "tool", "tool_call_id": issue.call_id, "content": f"Error: {issue.message}"}
 
 
-def unique_tool_call_ids(tool_calls: list[ToolCall]) -> list[ToolCall]:
+def unique_tool_call_ids(tool_calls: list[ToolCall], taken: Collection[str] = ()) -> list[ToolCall]:
     """`tool_calls` with every id non-empty and unique within the turn: a host
     that repeats an id or leaves it empty (Gemini's OpenAI endpoint does) would
     otherwise make the tool results impossible to pair and be rejected on the
     next request. Unchanged ids and the original list are kept when all is
-    well; a repaired id is `<id>__2`, `call_<n>`, ...  The caller answers with
-    the ids it sees, so the round trip stays consistent."""
-    seen: set[str] = set()
+    well; a repaired id is `<id>__2`, `call_<n>`, ...  `taken` are the ids
+    already in the conversation: a repaired id never reuses one (a model that
+    leaves every id empty would otherwise answer `call_0` on every turn, and
+    the second turn's history would repeat it). The caller answers with the ids
+    it sees, so the round trip stays consistent."""
+    used = set(taken)
     fixed: list[ToolCall] = []
     changed = False
     for position, call in enumerate(tool_calls):
         new_id = call.id
-        if not new_id or new_id in seen:
+        if not new_id or new_id in used:
             base = new_id or "call"
             n = 1 if not new_id else 2
             new_id = f"{base}_{position}" if not new_id else f"{base}__{n}"
-            while new_id in seen:
+            while new_id in used:
                 n += 1
                 new_id = f"{base}__{n}"
             changed = True
             call = dataclasses.replace(call, id=new_id)
-        seen.add(new_id)
+        used.add(new_id)
         fixed.append(call)
     return fixed if changed else tool_calls

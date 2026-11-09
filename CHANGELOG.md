@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.18.7
+
+Multi-step tool-loop tests with a mid-loop failover across Anthropic, Vertex Claude, OpenAI-style
+and Gemini fakes (`tests/test_tool_loop.py`). No API changes.
+
+- Fix: a model that leaves tool call ids empty or repeated every turn (Gemini's OpenAI endpoint)
+  got the same repaired id (`call_0`) on each turn, so the second request failed pre-flight with
+  "duplicate tool call id". Repaired ids now avoid every id already in `messages`
+  (`unique_tool_call_ids(..., taken=)`).
+- Fix: tool call ids that Anthropic rejects (anything outside `[a-zA-Z0-9_-]{1,64}`, e.g.
+  `functions.add:0` from OpenAI-compatible hosts) are renamed consistently in the tool call and its
+  result when the history is sent to Claude, instead of a 400 after failing over to anthropic or
+  vertex.
+
 ## 0.18.6
 
 Property-based tests for the Anthropic stream, the OpenAI to Anthropic translation and the Vertex
