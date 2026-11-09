@@ -68,6 +68,24 @@ from .residency import residency_report
 from .router import Completion, LLMError, complete, complete_with_usage
 from .streaming import stream_chat
 from .tool_validation import ToolCallIssue, check_tool_calls, tool_error_message
+from .types import (
+    AssistantMessage,
+    ContentPart,
+    FunctionCall,
+    FunctionSpec,
+    ImagePart,
+    ImageUrl,
+    Message,
+    NamedFunction,
+    NamedToolChoice,
+    SystemMessage,
+    TextPart,
+    ToolCallMessagePart,
+    ToolChoice,
+    ToolMessage,
+    ToolSpec,
+    UserMessage,
+)
 from .untrusted import (
     ApprovalDenied,
     UntrustedContent,
@@ -132,4 +150,20 @@ __all__ = [
     "circuit_breaker_status",
     "reset_circuit_breakers",
     "aclose",
+    "AssistantMessage",
+    "ContentPart",
+    "FunctionCall",
+    "FunctionSpec",
+    "ImagePart",
+    "ImageUrl",
+    "Message",
+    "NamedFunction",
+    "NamedToolChoice",
+    "SystemMessage",
+    "TextPart",
+    "ToolCallMessagePart",
+    "ToolChoice",
+    "ToolMessage",
+    "ToolSpec",
+    "UserMessage",
 ]

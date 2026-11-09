@@ -8,7 +8,13 @@ from llm_gateway import (
     AttemptReport,
     Completion,
     GatewayConfig,
+    Message,
+    ToolChoice,
+    ToolSpec,
+    UserMessage,
+    chat,
     complete_with_usage,
+    stream_chat,
 )
 
 
@@ -46,3 +52,48 @@ def hook(report: AttemptReport) -> None:
 
 
 config = GatewayConfig(on_attempt=hook)
+
+
+TOOLS: list[ToolSpec] = [
+    {
+        "type": "function",
+        "function": {
+            "name": "lookup",
+            "description": "Look a person up",
+            "parameters": {"type": "object", "properties": {"name": {"type": "string"}}},
+        },
+    }
+]
+CHOICE: ToolChoice = {"type": "function", "function": {"name": "lookup"}}
+
+
+async def typed_chat() -> None:
+    user: UserMessage = {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "who is this?"},
+            {"type": "image_url", "image_url": {"url": "https://example.com/a.png"}},
+        ],
+    }
+    history: list[Message] = [
+        {"role": "system", "content": "be brief"},
+        user,
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {"id": "c1", "type": "function", "function": {"name": "lookup", "arguments": "{}"}}
+            ],
+        },
+        {"role": "tool", "tool_call_id": "c1", "content": "Ada"},
+    ]
+    result = await chat(messages=history, tools=TOOLS, tool_choice=CHOICE, config=GatewayConfig())
+    print(result.content)
+    async for delta in stream_chat(messages=history, tool_choice="auto"):
+        print(delta.content)
+
+
+async def plain_dicts_still_work() -> None:
+    plain = [{"role": "user", "content": "hi"}]
+    await chat(messages=plain, tools=[{"type": "function", "function": {"name": "x"}}])
+    await chat(messages=[{"role": "user", "content": "hi"}], tool_choice="none")

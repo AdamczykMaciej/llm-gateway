@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, NamedTuple
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from ._validation import config_error
 from .policy import KNOWN_PROVIDERS
 
 if TYPE_CHECKING:
@@ -222,9 +223,11 @@ def validate_price_table(prices: Mapping[str, ModelPrice]) -> dict[str, ModelPri
     for key in prices:
         provider, _, model = key.partition("/")
         if not model or provider not in KNOWN_PROVIDERS:
-            raise ValueError(
-                f"model_prices key {key!r} must be '<provider>/<model>' with provider one of "
-                f"{', '.join(KNOWN_PROVIDERS)}"
+            raise config_error(
+                "model_prices",
+                "has a key that is not '<provider>/<model>' with a known provider",
+                given=key,
+                fix=f"write keys like 'openai/gpt-4o'; providers: {', '.join(KNOWN_PROVIDERS)}",
             )
     return dict(prices)
 

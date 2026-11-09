@@ -12,6 +12,7 @@ from urllib.parse import urlsplit
 from pydantic import AliasChoices, Field, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from ._validation import config_error
 from .policy import (
     ProviderMetadata,
     ProviderPolicy,
@@ -50,13 +51,27 @@ def read_vertex_credentials_file(path: str) -> dict[str, Any]:
         with open(path, encoding="utf-8") as f:
             info = json.load(f)
     except OSError as e:
-        raise ValueError(
-            f"vertex_credentials_file {path!r} can't be read ({type(e).__name__})"
+        raise config_error(
+            "vertex_credentials_file",
+            f"can't be read ({type(e).__name__})",
+            given=path,
+            fix="point it at an existing, readable credential configuration JSON file, "
+            "or leave it unset for Application Default Credentials",
         ) from None
     except ValueError:
-        raise ValueError(f"vertex_credentials_file {path!r} is not valid JSON") from None
+        raise config_error(
+            "vertex_credentials_file",
+            "is not valid JSON",
+            given=path,
+            fix="regenerate it with `gcloud iam workload-identity-pools create-cred-config`",
+        ) from None
     if not isinstance(info, dict):
-        raise ValueError(f"vertex_credentials_file {path!r} must hold a JSON object")
+        raise config_error(
+            "vertex_credentials_file",
+            "must hold a JSON object",
+            given=path,
+            fix="use a credential configuration file, which is a JSON object",
+        )
     kind = info.get("type")
     source = info.get("source_credentials")
     if kind == "service_account" or (
@@ -64,15 +79,20 @@ def read_vertex_credentials_file(path: str) -> dict[str, Any]:
         and isinstance(source, dict)
         and source.get("type") == "service_account"
     ):
-        raise ValueError(
-            "vertex_credentials_file is a service account key, which is not accepted. Use "
-            "Workload Identity Federation (an external_account credential configuration "
-            "from `gcloud iam workload-identity-pools create-cred-config`) or leave it "
-            "unset for Application Default Credentials."
+        raise config_error(
+            "vertex_credentials_file",
+            "is a service account key, which is not accepted",
+            shown=repr(kind),
+            fix="use Workload Identity Federation (an external_account credential "
+            "configuration from `gcloud iam workload-identity-pools create-cred-config`) "
+            "or leave it unset for Application Default Credentials",
         )
     if kind not in VERTEX_CREDENTIAL_TYPES:
-        raise ValueError(
-            f"vertex_credentials_file type must be one of {', '.join(VERTEX_CREDENTIAL_TYPES)}"
+        raise config_error(
+            "vertex_credentials_file",
+            f"type must be one of {', '.join(VERTEX_CREDENTIAL_TYPES)}",
+            shown=repr(kind),
+            fix="use a credential configuration of a supported type",
         )
     return info
 
@@ -132,25 +152,46 @@ def _check_http_url(value: str, name: str, *, https_only: bool = False) -> None:
     the value: it may carry a password. `https_only` is for endpoints that
     receive a bearer token."""
     if https_only and not value.startswith("https://"):
-        raise ValueError(f"{name} must start with https:// (a token is sent to it)")
+        raise config_error(
+            name,
+            "must start with https:// (a token is sent to it)",
+            given=value,
+            fix="use the https:// form of the URL",
+        )
     if not value.startswith(("http://", "https://")):
-        raise ValueError(f"{name} must start with http:// or https://")
+        raise config_error(
+            name,
+            "must start with http:// or https://",
+            given=value,
+            fix="include the scheme, e.g. https://host.example/v1",
+        )
     try:
         parts = urlsplit(value)
         has_userinfo = (
             parts.username is not None or parts.password is not None or "@" in (parts.netloc)
         )
     except ValueError:
-        raise ValueError(f"{name} is not a valid URL") from None
+        raise config_error(
+            name, "is not a valid URL", given=value, fix="write it as https://host[:port]/path"
+        ) from None
     if has_userinfo:
-        raise ValueError(
-            f"{name} must not contain credentials (user:password@); "
-            "put the key in the matching *_api_key setting"
+        raise config_error(
+            name,
+            "must not contain credentials (user:password@)",
+            given=value,
+            fix="remove them and put the key in the matching *_api_key setting",
         )
     if not parts.hostname:
-        raise ValueError(f"{name} has no host")
+        raise config_error(
+            name, "has no host", given=value, fix="include a host, e.g. https://host.example"
+        )
     if _is_metadata_host(parts.hostname):
-        raise ValueError(f"{name} must not point at a link-local or cloud metadata address")
+        raise config_error(
+            name,
+            "must not point at a link-local or cloud metadata address",
+            given=value,
+            fix="use the public hostname of your endpoint, not 169.254.x.x or a metadata name",
+        )
 
 
 class GatewayConfig(BaseSettings):
@@ -480,7 +521,12 @@ class GatewayConfig(BaseSettings):
     def _check_anthropic_thinking(cls, value: str) -> str:
         normalized = value.strip().lower()
         if normalized not in ("", "disabled", "adaptive"):
-            raise ValueError("anthropic_thinking must be one of: '', disabled, adaptive")
+            raise config_error(
+                "anthropic_thinking",
+                "must be one of: '', disabled, adaptive",
+                given=value,
+                fix="set one of those values ('' leaves it to the model default)",
+            )
         return normalized
 
     @field_validator("anthropic_effort")
@@ -488,7 +534,12 @@ class GatewayConfig(BaseSettings):
     def _check_anthropic_effort(cls, value: str) -> str:
         normalized = value.strip().lower()
         if normalized not in ("", "low", "medium", "high", "xhigh", "max"):
-            raise ValueError("anthropic_effort must be one of: '', low, medium, high, xhigh, max")
+            raise config_error(
+                "anthropic_effort",
+                "must be one of: '', low, medium, high, xhigh, max",
+                given=value,
+                fix="set one of those values ('' omits it)",
+            )
         return normalized
 
     @field_validator("azure_auth")
@@ -496,7 +547,12 @@ class GatewayConfig(BaseSettings):
     def _check_azure_auth(cls, value: str) -> str:
         normalized = value.strip().lower()
         if normalized not in AZURE_AUTH_MODES:
-            raise ValueError(f"azure_auth must be one of: {', '.join(AZURE_AUTH_MODES)}")
+            raise config_error(
+                "azure_auth",
+                f"must be one of: {', '.join(AZURE_AUTH_MODES)}",
+                given=value,
+                fix="use 'entra' (default, token auth) or 'api_key' (with azure_api_key)",
+            )
         return normalized
 
     @field_validator("azure_reasoning_effort")
@@ -504,16 +560,38 @@ class GatewayConfig(BaseSettings):
     def _check_azure_reasoning_effort(cls, value: str) -> str:
         normalized = value.strip().lower()
         if normalized not in AZURE_REASONING_EFFORTS:
-            raise ValueError('azure_reasoning_effort must be "" (omit it), low, medium or high')
+            raise config_error(
+                "azure_reasoning_effort",
+                'must be "" (omit it), low, medium or high',
+                given=value,
+                fix="set one of those values",
+            )
         return normalized
 
     @field_validator("azure_data_zone", "azure_region")
     @classmethod
-    def _check_azure_residency_hint(cls, value: str) -> str:
+    def _check_azure_residency_hint(cls, value: str, info: ValidationInfo) -> str:
         normalized = value.strip().lower()
         if normalized and not re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", normalized):
-            raise ValueError("must be a short lowercase code such as 'eu', 'us' or 'swedencentral'")
+            raise config_error(
+                info.field_name or "azure_region",
+                "must be a short lowercase code",
+                given=value,
+                fix="use a code such as 'eu', 'us' or 'swedencentral'",
+            )
         return normalized
+
+    @field_validator("policy_sort", mode="before")
+    @classmethod
+    def _check_policy_sort(cls, value: object) -> object:
+        if value not in ("order", "price"):
+            raise config_error(
+                "policy_sort",
+                "must be 'order' or 'price'",
+                given=value,
+                fix="use 'order' (keep PROVIDER_ORDER) or 'price' (cheapest first)",
+            )
+        return value
 
     @field_validator("require_residency")
     @classmethod
@@ -527,8 +605,11 @@ class GatewayConfig(BaseSettings):
     def _check_azure_max_tokens_param(cls, value: str) -> str:
         normalized = value.strip().lower()
         if normalized not in AZURE_MAX_TOKENS_PARAMS:
-            raise ValueError(
-                f"azure_max_tokens_param must be one of: {', '.join(AZURE_MAX_TOKENS_PARAMS)}"
+            raise config_error(
+                "azure_max_tokens_param",
+                f"must be one of: {', '.join(AZURE_MAX_TOKENS_PARAMS)}",
+                given=value,
+                fix="use 'max_completion_tokens' for reasoning models, else 'max_tokens'",
             )
         return normalized
 
@@ -548,7 +629,12 @@ class GatewayConfig(BaseSettings):
     @classmethod
     def _check_vertex_project_id(cls, value: str) -> str:
         if value and not _GCP_PROJECT_ID.fullmatch(value):
-            raise ValueError("vertex_project_id must be a Google Cloud project id, e.g. my-project")
+            raise config_error(
+                "vertex_project_id",
+                "must be a Google Cloud project id",
+                given=value,
+                fix="use the project id (not the name or number), e.g. my-project",
+            )
         return value
 
     @field_validator("vertex_location")
@@ -556,9 +642,11 @@ class GatewayConfig(BaseSettings):
     def _check_vertex_location(cls, value: str) -> str:
         normalized = value.strip().lower()
         if not _VERTEX_LOCATION.fullmatch(normalized):
-            raise ValueError(
-                "vertex_location must be 'global', a multi-region ('eu', 'us') or a region "
-                "such as 'europe-west1'"
+            raise config_error(
+                "vertex_location",
+                "must be 'global', a multi-region ('eu', 'us') or a region",
+                given=value,
+                fix="use 'global', 'eu', 'us' or a region such as 'europe-west1'",
             )
         return normalized
 
@@ -571,7 +659,12 @@ class GatewayConfig(BaseSettings):
     @classmethod
     def _check_gemini_project_id(cls, value: str) -> str:
         if value and not _GCP_PROJECT_ID.fullmatch(value):
-            raise ValueError("gemini_project_id must be a Google Cloud project id, e.g. my-project")
+            raise config_error(
+                "gemini_project_id",
+                "must be a Google Cloud project id",
+                given=value,
+                fix="use the project id (not the name or number), e.g. my-project",
+            )
         return value
 
     @field_validator("gemini_location")
@@ -579,9 +672,11 @@ class GatewayConfig(BaseSettings):
     def _check_gemini_location(cls, value: str) -> str:
         normalized = value.strip().lower()
         if not _VERTEX_LOCATION.fullmatch(normalized):
-            raise ValueError(
-                "gemini_location must be 'global', a multi-region ('eu', 'us') or a region "
-                "such as 'europe-west4'"
+            raise config_error(
+                "gemini_location",
+                "must be 'global', a multi-region ('eu', 'us') or a region",
+                given=value,
+                fix="use 'global', 'eu', 'us' or a region such as 'europe-west4'",
             )
         return normalized
 
@@ -589,9 +684,11 @@ class GatewayConfig(BaseSettings):
     @classmethod
     def _check_vertex_impersonation(cls, value: str) -> str:
         if value and not _GCP_SERVICE_ACCOUNT.fullmatch(value.lower()):
-            raise ValueError(
-                "vertex_impersonate_service_account must be a service account email "
-                "(...@<project>.iam.gserviceaccount.com)"
+            raise config_error(
+                "vertex_impersonate_service_account",
+                "must be a service account email",
+                given=value,
+                fix="use name@<project>.iam.gserviceaccount.com",
             )
         return value
 
@@ -606,39 +703,58 @@ class GatewayConfig(BaseSettings):
         kind = info.get("type") if info else None
         if self.vertex_azure_app_id_uri:
             if kind != "external_account":
-                raise ValueError(
-                    "vertex_azure_app_id_uri needs vertex_credentials_file to be an "
-                    "external_account credential configuration"
+                raise config_error(
+                    "vertex_azure_app_id_uri",
+                    "needs vertex_credentials_file to be an external_account credential "
+                    "configuration",
+                    given=self.vertex_azure_app_id_uri,
+                    fix="set vertex_credentials_file to an external_account configuration "
+                    "(`gcloud iam workload-identity-pools create-cred-config`), or unset this",
                 )
             if "environment_id" in ((info or {}).get("credential_source") or {}):
-                raise ValueError(
-                    "vertex_azure_app_id_uri can't be used with an AWS credential configuration"
+                raise config_error(
+                    "vertex_azure_app_id_uri",
+                    "can't be used with an AWS credential configuration",
+                    given=self.vertex_azure_app_id_uri,
+                    fix="unset it, or point vertex_credentials_file at an Azure-sourced "
+                    "external_account configuration",
                 )
         if self.vertex_azure_managed_identity_client_id and not self.vertex_azure_app_id_uri:
-            raise ValueError(
-                "vertex_azure_managed_identity_client_id needs vertex_azure_app_id_uri"
+            raise config_error(
+                "vertex_azure_managed_identity_client_id",
+                "needs vertex_azure_app_id_uri",
+                given=self.vertex_azure_managed_identity_client_id,
+                fix="also set vertex_azure_app_id_uri, or unset this",
             )
         impersonate = self.vertex_impersonate_service_account
         if impersonate and info:
             if kind == "impersonated_service_account":
-                raise ValueError(
-                    "vertex_impersonate_service_account can't be combined with an "
-                    "impersonated_service_account credential file, which already impersonates"
+                raise config_error(
+                    "vertex_impersonate_service_account",
+                    "can't be combined with an impersonated_service_account credential file, "
+                    "which already impersonates",
+                    given=impersonate,
+                    fix="unset it, or use a non-impersonating credential file",
                 )
             existing = info.get("service_account_impersonation_url")
             if existing and existing != service_account_impersonation_url(impersonate):
-                raise ValueError(
-                    "vertex_impersonate_service_account differs from the service account "
-                    "in vertex_credentials_file's service_account_impersonation_url"
+                raise config_error(
+                    "vertex_impersonate_service_account",
+                    "differs from the service account in vertex_credentials_file's "
+                    "service_account_impersonation_url",
+                    given=impersonate,
+                    fix="make them the same account, or unset this setting",
                 )
         return self
 
     @property
     def provider_order_list(self) -> list[str]:
+        """`provider_order` as a list of provider ids, blanks dropped."""
         return [p.strip() for p in self.provider_order.split(",") if p.strip()]
 
     @property
     def openrouter_provider_allow_list(self) -> tuple[str, ...]:
+        """`openrouter_provider_allow` as a tuple of upstream provider names."""
         return tuple(p.strip() for p in self.openrouter_provider_allow.split(",") if p.strip())
 
     @property
@@ -664,6 +780,7 @@ class GatewayConfig(BaseSettings):
 
     @property
     def gateway_api_keys_list(self) -> list[str]:
+        """`gateway_api_keys` as a list of keys, blanks dropped."""
         return [k.strip() for k in self.gateway_api_keys.split(",") if k.strip()]
 
     @property
@@ -717,6 +834,13 @@ class GatewayConfig(BaseSettings):
     @model_validator(mode="after")
     def _check_policy(self) -> "GatewayConfig":
         # Fail at startup, not on the first call, for a bad POLICY_* value.
+        # Each setting is checked under its own name first, so the message
+        # says `policy_only`, not the ProviderPolicy field it feeds.
+        if self.policy_residency.strip():
+            normalize_region(self.policy_residency, field_name="policy_residency")
+        if self.policy_only.strip():
+            provider_ids(self.policy_only, field_name="policy_only")
+        provider_ids(self.policy_ignore, field_name="policy_ignore")
         try:
             _ = self.policy
         except ValueError as exc:

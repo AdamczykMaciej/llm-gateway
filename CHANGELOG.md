@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.27.0
+
+API ergonomics. Typing and message text only; no runtime behaviour change.
+
+- New: precise `TypedDict`s, exported from `llm_gateway` (module `llm_gateway.types`): `Message`
+  (`SystemMessage`, `UserMessage`, `AssistantMessage`, `ToolMessage`), content parts (`TextPart`,
+  `ImagePart`, `ContentPart`), `ToolCallMessagePart`, `ToolSpec`, `FunctionSpec`, `ToolChoice`
+  and `NamedToolChoice`. `chat()` / `stream_chat()` now take `Sequence[Message | dict]`,
+  `Sequence[ToolSpec | dict]` and `ToolChoice | dict | str | None`, so plain `list[dict]` still
+  type-checks and nothing is validated or converted at runtime. `tests/typing/consumer.py` is a
+  pyright-checked consumer example.
+- Changed: every `GatewayConfig` validation error now reads `<field> <problem>. Got <value>.
+  Fix: <how>.` Secret-like fields (`*_key`, `*_token`, ...) show `<redacted, N chars>`, URL
+  credentials are never echoed and long values are truncated. `POLICY_*` errors name the
+  `policy_*` field, and `policy_sort` is checked with the same format. Existing wording such as
+  "must be one of" is kept, so matching on it still works.
+- Fixed: docstrings on the public symbols that lacked one (`ToolCall`, `ChatResult`, `Span`,
+  `TokenFormat` and the public methods and properties of `Vault`, `Usage`, `GatewayConfig`,
+  `Privacy`); `Privacy.passthrough`'s docstring sat after code and was not a docstring.
+  `tests/test_public_docstrings.py` enumerates `__all__` and its classes' public members.
+
 ## 0.26.0
 
 Idempotency keys everywhere, plus two more attempt-span attributes. Opt-in and backward
