@@ -503,6 +503,15 @@ async def stream_chat(
                     output_tokens=output_tokens,
                     restart=restarts if restart_marker is not None else 0,
                 )
+                # Consumer stopped reading (close, cancel, disconnect) or the
+                # stream failed: close the provider's generator so its HTTP
+                # response is released and the upstream request stops. Done
+                # before the metering hook, which may be slow or be cancelled
+                # itself, so the upstream request never waits on it.
+                try:
+                    await generator.aclose()
+                except Exception:  # noqa: BLE001 — a failing close must not mask the real exit (e.g. a cancellation)
+                    logger.debug("llm_gateway: closing a provider stream failed", exc_info=True)
                 await report_attempt(
                     on_attempt,
                     config,
@@ -521,14 +530,9 @@ async def stream_chat(
                     error=stream_error,
                     is_fallback=is_fallback,
                     latency_ms=(time.time_ns() - attempt_started_ns) / 1e6,
+                    partial=stream_error is not None,
+                    streamed_chars=total_chars,
                 )
-                # Consumer stopped reading (close, cancel, disconnect) or the
-                # stream failed: close the provider's generator so its HTTP
-                # response is released and the upstream request stops.
-                try:
-                    await generator.aclose()
-                except Exception:  # noqa: BLE001 — a failing close must not mask the real exit (e.g. a cancellation)
-                    logger.debug("llm_gateway: closing a provider stream failed", exc_info=True)
 
             if pending_restart is not None:
                 # Died mid-stream; the loop tries the next provider.

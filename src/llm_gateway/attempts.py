@@ -42,7 +42,14 @@ class AttemptReport:
     stream that failed after its usage chunk), else `None`. `cost_usd` is
     that usage at the price table's rate, `None` without usage or price.
     `is_fallback` is true when the attempt is not the first provider of the
-    chain. `request_id` is the call's correlation id."""
+    chain. `request_id` is the call's correlation id.
+
+    `partial` is true for a stream that was cut short after it started (the
+    caller closed or cancelled it, or it failed mid-stream): `usage` may then
+    be `None` or lag what the provider billed, so a ledger should treat the
+    cost as a lower bound. `streamed_chars` is the text and tool-argument
+    characters forwarded to the caller (0 outside streams); it lets a host
+    estimate the unreported output."""
 
     request_id: str
     attempt: int
@@ -54,6 +61,8 @@ class AttemptReport:
     error_type: str | None = None
     is_fallback: bool = False
     latency_ms: float = field(default=0.0, compare=False)
+    partial: bool = False
+    streamed_chars: int = 0
 
 
 AttemptHook = Callable[[AttemptReport], Awaitable[None] | None]
@@ -72,6 +81,8 @@ async def report_attempt(
     error: BaseException | None = None,
     is_fallback: bool = False,
     latency_ms: float = 0.0,
+    partial: bool = False,
+    streamed_chars: int = 0,
 ) -> None:
     """Call the per-call `hook`, else `config.on_attempt`, once. Never raises
     an `Exception`."""
@@ -102,6 +113,8 @@ async def report_attempt(
                 error_type=type(error).__name__ if error is not None else None,
                 is_fallback=is_fallback,
                 latency_ms=latency_ms,
+                partial=partial,
+                streamed_chars=streamed_chars,
             )
         )
         if inspect.isawaitable(outcome_value):

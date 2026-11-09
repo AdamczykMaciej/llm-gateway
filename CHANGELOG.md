@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.20.0
+
+Streaming cancellation and metering. Additive, backward compatible.
+
+- Fix: when a stream ended early (consumer `aclose()`, task cancellation, client disconnect) the
+  provider stream was closed only after the `on_attempt` hook ran, so a slow hook held the upstream
+  request open and a hook that was itself cancelled left it open. The provider stream is now
+  closed first.
+- New: `AttemptReport.partial` (true for a stream cut short after it started: cancelled, closed
+  early or failed mid-stream; `usage` may be `None` or lag the billed amount, so treat the cost as
+  a lower bound) and `AttemptReport.streamed_chars` (text and tool-argument characters forwarded),
+  so a ledger can mark or estimate unreported output. Both default to `False`/`0`.
+
 ## 0.19.0
 
 Tracing aligned with the OpenTelemetry GenAI semantic conventions (Development status; spec in

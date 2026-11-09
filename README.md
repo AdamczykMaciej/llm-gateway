@@ -571,11 +571,13 @@ plain function or a coroutine function.
 ```python
 from llm_gateway import AttemptReport, GatewayConfig, complete_with_usage
 
+
 async def meter(r: AttemptReport) -> None:
     # r.request_id, r.attempt (from 1), r.provider, r.model,
     # r.outcome ("succeeded" | "failed" | "cancelled"), r.error_type,
     # r.usage (Usage or None), r.cost_usd (price table; None if unknown), r.is_fallback
     await ledger.add(r.request_id, r.provider, r.model, r.cost_usd)
+
 
 config = GatewayConfig(on_attempt=meter)
 ```
@@ -633,7 +635,7 @@ restarts (the OpenAI wire format has no marker).
 parts: list[str] = []
 async for delta in stream_chat(messages=messages, restart_on_failure=True):
     if delta.restart:
-        parts.clear()          # also reset tool-call aggregation and any UI text
+        parts.clear()  # also reset tool-call aggregation and any UI text
         continue
     if delta.content:
         parts.append(delta.content)
