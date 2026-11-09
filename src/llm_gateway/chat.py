@@ -107,6 +107,12 @@ async def chat(
     messages = cap_tool_results(
         messages, resolve_cap(max_tool_result_chars, config.tool_result_max_chars)
     )
+    history_tool_call_ids = {
+        call["id"]
+        for message in messages
+        for call in message.get("tool_calls") or []
+        if isinstance(call.get("id"), str)
+    }
     # Only passed when used, so provider callables written against the older
     # signature keep working.
     extra: dict = {}
@@ -304,7 +310,9 @@ async def chat(
                 result.reasoning_tokens,
             )
             return dataclasses.replace(
-                result, request_id=rid, tool_calls=unique_tool_call_ids(result.tool_calls)
+                result,
+                request_id=rid,
+                tool_calls=unique_tool_call_ids(result.tool_calls, history_tool_call_ids),
             )
 
         if deadline.expired:
