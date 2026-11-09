@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.18.5
+
+Property-based robustness tests (Hypothesis, `tests/test_properties.py`). No API changes.
+
+- Fix: the base-URL metadata guard now reads the host the way HTTP clients do. A host written with
+  ideographic full stops (`http://169。254。169。254/`) or full-width digits reached 169.254.169.254
+  past the link-local check; hosts are NFKC-normalized and the dot look-alikes mapped before the check.
+
 ## 0.18.4
 
 Supply-chain and dependency audit. No API changes.
