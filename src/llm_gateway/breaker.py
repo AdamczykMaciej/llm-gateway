@@ -23,7 +23,7 @@ Only failures that say something about the *provider* count — see
 import threading
 import time
 
-from .errors import is_model_scoped, policy_for
+from .errors import ErrorKind, classify, failure_class, is_model_scoped, policy_for
 
 # Closed -> open (cooldown) -> half-open (one probe at a time) -> closed.
 # `_opened_until` is kept after the cooldown ends: its presence marks the
@@ -42,6 +42,7 @@ _failures: dict[str, int] = {}
 _opened_until: dict[str, float] = {}
 _probe_until: dict[str, float] = {}
 _cooldowns: dict[str, float] = {}
+_last_error: dict[str, tuple[str, float]] = {}  # key -> (failure class, wall-clock time)
 _model_keys: dict[str, None] = {}  # insertion-ordered set of model-scoped keys
 
 
@@ -64,6 +65,7 @@ def _forget(key: str) -> None:
     _opened_until.pop(key, None)
     _probe_until.pop(key, None)
     _cooldowns.pop(key, None)
+    _last_error.pop(key, None)
     _model_keys.pop(key, None)
 
 
@@ -140,17 +142,30 @@ def record_error(
     threshold: int,
     cooldown_seconds: float,
     model: str | None = None,
+    billing_cooldown_seconds: float | None = None,
+    model_missing_cooldown_seconds: float | None = None,
 ) -> bool:
     """Record `error` as a failure only if its classification trips the
     breaker. Returns whether it was counted. With `model`, a model-specific
     error (`errors.is_model_scoped`) is counted against that (provider, model)
-    alone; a model-not-found opens it at once, since it cannot heal by itself."""
+    alone; a model-not-found opens it at once, for `model_missing_cooldown_seconds`
+    (default `cooldown_seconds`), since it cannot heal by itself. A billing
+    error opens the provider for `billing_cooldown_seconds` likewise."""
     scope = is_model_scoped(error) if model else None
+    label = failure_class(error)
+    with _lock:
+        key = _keys(provider, model)[-1] if scope else provider
+        _track(key, provider)
+        _last_error[key] = (label, time.time())
     if scope:
         record_failure(
             provider,
             threshold=1 if scope == "missing" else threshold,
-            cooldown_seconds=cooldown_seconds,
+            cooldown_seconds=(
+                max(model_missing_cooldown_seconds or 0.0, cooldown_seconds)
+                if scope == "missing"
+                else cooldown_seconds
+            ),
             model=model,
         )
         return True
@@ -165,12 +180,48 @@ def record_error(
     record_failure(
         provider,
         threshold=1 if policy.opens_immediately else threshold,
-        cooldown_seconds=cooldown_seconds,
+        cooldown_seconds=(
+            max(billing_cooldown_seconds or 0.0, cooldown_seconds)
+            if classify(error) is ErrorKind.BILLING
+            else cooldown_seconds
+        ),
     )
     if model:
         with _lock:  # a probe on the model key got a provider-level answer
             _probe_until.pop(_keys(provider, model)[-1], None)
     return True
+
+
+def snapshot() -> list[dict[str, object]]:
+    """Per-provider (and per provider+model) breaker state for an ops
+    dashboard or health endpoint. One dict per key that has any state:
+    `provider`, `model` (or `None` for the provider-wide key), `state`
+    (`open`, `half_open` or `closed`), `consecutive_failures`,
+    `open_for_seconds` (remaining cooldown, 0 when not open),
+    `last_error_class` (see `errors.failure_class`) and `last_error_at`
+    (epoch seconds). Healthy keys have no entry. Never contains error text."""
+    now = time.monotonic()
+    with _lock:
+        keys = set(_failures) | set(_opened_until) | set(_last_error)
+        out: list[dict[str, object]] = []
+        for key in sorted(keys):
+            provider, _, model = key.partition(_SEP)
+            state = _state(key, now)
+            last = _last_error.get(key)
+            out.append(
+                {
+                    "provider": provider,
+                    "model": model or None,
+                    "state": {"open": "open", "probe": "half_open", "closed": "closed"}[state]
+                    if key in _opened_until
+                    else "closed",
+                    "consecutive_failures": _failures.get(key, 0),
+                    "open_for_seconds": round(max(_opened_until.get(key, 0.0) - now, 0.0), 3),
+                    "last_error_class": last[0] if last else None,
+                    "last_error_at": last[1] if last else None,
+                }
+            )
+        return out
 
 
 def reset() -> None:
@@ -183,4 +234,5 @@ def reset() -> None:
         _opened_until.clear()
         _probe_until.clear()
         _cooldowns.clear()
+        _last_error.clear()
         _model_keys.clear()

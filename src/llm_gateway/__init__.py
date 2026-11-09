@@ -28,6 +28,7 @@ just point `ChatOpenAI(base_url=...)` at it.
 
 from .attempts import AttemptHook, AttemptReport
 from .breaker import reset as reset_circuit_breakers
+from .breaker import snapshot as circuit_breaker_status
 from .chat import chat
 from .config import GatewayConfig
 from .errors import (
@@ -40,6 +41,7 @@ from .errors import (
     LLMDeadlineExceeded,
     PolicyViolationError,
     ProviderAuthError,
+    ProviderFailure,
     ResidencyViolationError,
     StreamTooLargeError,
     ToolCallTruncatedError,
@@ -68,6 +70,7 @@ from .tool_validation import ToolCallIssue, check_tool_calls, tool_error_message
 
 __all__ = [
     "InvalidRequestError",
+    "ProviderFailure",
     "ProviderPolicy",
     "ProviderMetadata",
     "LongContextTier",
@@ -112,6 +115,7 @@ __all__ = [
     "Span",
     "TokenFormat",
     "Vault",
+    "circuit_breaker_status",
     "reset_circuit_breakers",
     "aclose",
 ]

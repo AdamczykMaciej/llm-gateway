@@ -143,7 +143,11 @@ async def test_malformed_400_does_not_trip_but_falls_over_each_time():
 
 async def test_half_open_recovery_after_the_window():
     failing = AsyncMock(side_effect=_anthropic_error(400, CREDIT))
-    config = _config(provider_order="anthropic,groq", breaker_cooldown_seconds=60.0)
+    config = _config(
+        provider_order="anthropic,groq",
+        breaker_cooldown_seconds=60.0,
+        breaker_billing_cooldown_seconds=0.0,
+    )
     recovered = _ok("anthropic is back")
     with patch("llm_gateway.router.CALLS", {"anthropic": failing, "groq": _ok()}):
         await complete(system="s", prompt="p", config=config)

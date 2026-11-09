@@ -45,10 +45,11 @@ from .errors import (
     FirstTokenTimeoutError,
     GatewayNotConfiguredError,
     LLMError,
+    ProviderFailure,
     StreamTooLargeError,
+    all_failed,
     classify,
     deadline_exceeded,
-    error_detail,
 )
 from .policy import ProviderPolicy
 from .providers import CONFIGURED, DEFAULT_MODEL, STREAM_CALLS
@@ -229,6 +230,7 @@ async def stream_chat(
     deadline = Deadline(config.call_deadline_seconds)
     attempted_any = False
     last_error: Exception | None = None
+    failures: list[ProviderFailure] = []
 
     with call_span(tracer, "llm_gateway.stream_chat") as span:
         span.set_attribute("llm_gateway.fallback", False)
@@ -339,7 +341,12 @@ async def stream_chat(
                 raise
             except Exception as e:  # noqa: BLE001 — pre-flight failure tries the next provider
                 record_provider_failure(
-                    provider, e, config=config, deadline=deadline, model=resolved_model
+                    provider,
+                    e,
+                    config=config,
+                    deadline=deadline,
+                    model=resolved_model,
+                    failures=failures,
                 )
                 last_error = e
                 emit_attempt_span(
@@ -478,7 +485,12 @@ async def stream_chat(
             except Exception as e:  # noqa: BLE001 — a mid-stream failure: counted, then propagated
                 stream_error = e
                 record_provider_failure(
-                    provider, e, config=config, deadline=deadline, model=resolved_model
+                    provider,
+                    e,
+                    config=config,
+                    deadline=deadline,
+                    model=resolved_model,
+                    failures=failures,
                 )
                 if restarts >= max_restarts or deadline.expired or not _restartable(e):
                     raise
@@ -569,7 +581,7 @@ async def stream_chat(
         if deadline.expired:
             span.set_status(StatusCode.ERROR, "call deadline exceeded")
             raise deadline_exceeded(
-                config.call_deadline_seconds, last_error, config
+                config.call_deadline_seconds, last_error, config, failures
             ) from last_error
         span.set_status(
             StatusCode.ERROR,
@@ -593,7 +605,4 @@ async def stream_chat(
                 "OPENAI_API_KEY, AZURE_ENDPOINT and AZURE_MODEL, or VERTEX_PROJECT_ID, "
                 "matching provider_order."
             )
-        raise AllProvidersExhaustedError(
-            "All configured providers failed. Last error: "
-            f"{error_detail(last_error, config)}{plan.failure_note()}"
-        ) from last_error
+        raise all_failed(last_error, config, failures, plan.failure_note()) from last_error

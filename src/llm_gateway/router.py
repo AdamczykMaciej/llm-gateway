@@ -27,9 +27,11 @@ from .errors import (
     InvalidRequestError,
     LLMDeadlineExceeded,
     LLMError,
+    ProviderFailure,
+    all_failed,
     classify,
     deadline_exceeded,
-    error_detail,
+    provider_failure,
 )
 from .policy import ProviderPolicy
 from .pricing import cost_usd, lookup_price
@@ -65,6 +67,7 @@ def record_provider_failure(
     config: GatewayConfig,
     deadline: Deadline,
     model: str | None = None,
+    failures: list[ProviderFailure] | None = None,
 ) -> None:
     """Feed a provider's definitive failure (retries exhausted or not
     applicable) to its circuit breaker, per errors.POLICIES. Shared by all
@@ -72,6 +75,8 @@ def record_provider_failure(
     out is not counted: it says more about earlier providers using up the
     budget than about this one. With `model`, a model-specific failure opens
     only that (provider, model) (see breaker.py)."""
+    if failures is not None:
+        failures.append(provider_failure(provider, model, error, config))
     if deadline.expired and isinstance(error, TimeoutError):
         return
     if classify(error) is ErrorKind.BILLING:
@@ -80,7 +85,7 @@ def record_provider_failure(
             "llm_gateway billing: provider=%s kind=billing billing=True "
             "(out of credit, spend limit or quota); breaker opened for %gs",
             provider,
-            config.breaker_cooldown_seconds,
+            max(config.breaker_billing_cooldown_seconds, config.breaker_cooldown_seconds),
         )
     breaker.record_error(
         provider,
@@ -88,6 +93,8 @@ def record_provider_failure(
         threshold=config.breaker_failure_threshold,
         cooldown_seconds=config.breaker_cooldown_seconds,
         model=model,
+        billing_cooldown_seconds=config.breaker_billing_cooldown_seconds,
+        model_missing_cooldown_seconds=config.breaker_model_missing_cooldown_seconds,
     )
 
 
@@ -410,6 +417,7 @@ async def _complete_once(
     deadline = Deadline(config.call_deadline_seconds)
     attempted_any = False
     last_error: Exception | None = None
+    failures: list[ProviderFailure] = []
 
     with call_span(tracer, "llm_gateway.complete") as span:
         span.set_attribute("llm_gateway.fallback", False)
@@ -503,7 +511,12 @@ async def _complete_once(
                 raise
             except Exception as e:  # noqa: BLE001 — any provider failure (after its retries) tries the next
                 record_provider_failure(
-                    provider, e, config=config, deadline=deadline, model=resolved_model
+                    provider,
+                    e,
+                    config=config,
+                    deadline=deadline,
+                    model=resolved_model,
+                    failures=failures,
                 )
                 last_error = e
                 emit_attempt_span(
@@ -619,7 +632,7 @@ async def _complete_once(
         if deadline.expired:
             span.set_status(StatusCode.ERROR, "call deadline exceeded")
             raise deadline_exceeded(
-                config.call_deadline_seconds, last_error, config
+                config.call_deadline_seconds, last_error, config, failures
             ) from last_error
         span.set_status(
             StatusCode.ERROR,
@@ -639,7 +652,4 @@ async def _complete_once(
                 "OPENAI_API_KEY, AZURE_ENDPOINT and AZURE_MODEL, or VERTEX_PROJECT_ID, "
                 "matching provider_order."
             )
-        raise AllProvidersExhaustedError(
-            "All configured providers failed. Last error: "
-            f"{error_detail(last_error, config)}{plan.failure_note()}"
-        ) from last_error
+        raise all_failed(last_error, config, failures, plan.failure_note()) from last_error
