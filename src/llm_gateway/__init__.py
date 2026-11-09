@@ -68,6 +68,13 @@ from .residency import residency_report
 from .router import Completion, LLMError, complete, complete_with_usage
 from .streaming import stream_chat
 from .tool_validation import ToolCallIssue, check_tool_calls, tool_error_message
+from .untrusted import (
+    ApprovalDenied,
+    UntrustedContent,
+    gate_tool_calls,
+    sanitize_untrusted,
+    wrap_untrusted,
+)
 
 __all__ = [
     "InvalidRequestError",
@@ -94,6 +101,11 @@ __all__ = [
     "ToolCallIssue",
     "check_tool_calls",
     "tool_error_message",
+    "ApprovalDenied",
+    "UntrustedContent",
+    "gate_tool_calls",
+    "sanitize_untrusted",
+    "wrap_untrusted",
     "FirstTokenTimeoutError",
     "StreamTooLargeError",
     "AttemptReport",

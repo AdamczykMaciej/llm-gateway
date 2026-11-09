@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.24.0
+
+Untrusted-content helpers. Opt-in and backward compatible: nothing changes unless you call them.
+
+- New: `wrap_untrusted(text, source=, max_chars=, sanitize=)` fences external text with a fresh
+  random 128-bit fence per call, removes `<<<`/`>>>` look-alikes (so content cannot forge a
+  closing fence), optionally truncates with a marker, and labels it as data.
+- New: `sanitize_untrusted(text)` strips zero-width, bidi-override, soft-hyphen and Unicode tag
+  characters and HTML comments.
+- New: `gate_tool_calls(calls, sensitive=, approve=)` splits model-requested tool calls into
+  allowed and denied. A sensitive tool runs only if the host callback (sync or async) returns
+  `True`; no callback or a raising callback denies (fail closed). `ApprovalDenied.message()`
+  gives the tool message to send back.
+- Docs: README "Untrusted content and prompt injection" states the threat model.
+- Already present, unchanged: `tool_result_max_chars` cap, PII-masked tracing.
+
 ## 0.23.0
 
 Model catalogue correctness, checked against the vendors' docs on 2026-11-09. Backward compatible

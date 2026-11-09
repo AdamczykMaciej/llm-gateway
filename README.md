@@ -2203,7 +2203,8 @@ What the gateway does:
   state to unauthenticated callers; fixed.
 
 What it does *not* do, on purpose:
-- **Prompt injection defense.** There is no technical fix for this at a
+- **Prompt injection defense.** (Helpers exist, see "Untrusted content and
+  prompt injection" below.) There is no technical fix for this at a
   gateway layer — the gateway relays `system`/`prompt` text and has no way
   to distinguish malicious content from legitimate content (true of every
   LLM gateway, not a gap specific to this one). That defense belongs in the
@@ -2213,6 +2214,34 @@ What it does *not* do, on purpose:
   protection, not network-layer DDoS mitigation. That needs Cloud Armor (or
   equivalent) in front of Cloud Run — deliberately not added while this is
   a single-tenant gateway for internal use, not a public-facing product.
+
+### Untrusted content and prompt injection
+
+Opt-in helpers for hosts that pass web pages, emails, job ads or tool results to a model:
+
+```python
+from llm_gateway import wrap_untrusted, gate_tool_calls
+
+page = wrap_untrusted(html_text, source="job-ad", max_chars=20_000)
+prompt = f"Summarise this posting.\n{page}"
+
+result = await chat(messages=[...], tools=tools)
+allowed, denied = await gate_tool_calls(
+    result.tool_calls, sensitive={"send_email", "delete_item"}, approve=ask_the_user
+)
+# run `allowed`; append d.message() for each d in `denied`
+```
+
+- `wrap_untrusted` uses a random per-call fence, removes `<<<`/`>>>` from the content so it cannot
+  close the block, and strips invisible characters and HTML comments (`sanitize_untrusted`,
+  also usable alone; `sanitize=False` disables).
+- `gate_tool_calls` fails closed: a sensitive tool needs `approve(call) is True`.
+- Tool-result size caps already exist (`tool_result_max_chars`); traces are PII-masked.
+
+Threat model. These reduce risk; they do not remove it. A model can still follow instructions
+inside a fence, so never use fencing for a security decision. What is enforced in code is the
+approval gate: model output cannot run a sensitive tool without your callback. Keep tools
+least-privilege, validate arguments (`check_tool_calls`), and treat model output as untrusted too.
 
 ### Streaming
 
