@@ -393,8 +393,16 @@ async def stream_chat(
                     failed_provider=pending_restart[0],
                     failed_error=type(pending_restart[1]).__name__,
                 )
+                failed_error_name = type(pending_restart[1]).__name__
                 pending_restart = midstream_error = None
-                span.add_event("llm_gateway.stream_restart", {"llm_gateway.restart": restarts})
+                span.add_event(
+                    "llm_gateway.stream_restart",
+                    {
+                        "llm_gateway.restart": restarts,
+                        "gen_ai.provider.name": provider,
+                        "error.type": failed_error_name,
+                    },
+                )
             if first_delta is None:
                 emit_attempt_span(
                     tracer,

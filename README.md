@@ -655,7 +655,7 @@ Migrating a hand-rolled retry (MyInterviewer's `stream_complete`): delete the
 chunk's `StreamDelta.request_id`), and is on the call span as
 `llm_gateway.request_id`. Each provider attempt also gets a child span,
 `llm_gateway.attempt`, with `llm_gateway.request_id`, `llm_gateway.attempt`
-(1, 2, ... across the failover chain), `gen_ai.system`,
+(1, 2, ... across the failover chain), `gen_ai.provider.name` (`gen_ai.system` is a deprecated alias),
 `gen_ai.request.model`, `llm_gateway.outcome` (`ok` or the error class, e.g.
 `timeout`, `rate_limited`), `llm_gateway.latency_ms` and the token counts.
 Spans carry ids, classes and counts only: no prompts, replies, error text or
