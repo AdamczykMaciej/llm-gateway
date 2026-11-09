@@ -480,13 +480,28 @@ class StreamDelta:
     failed_error: str | None = None  # exception class name only
 
 
+def _no_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """A repeated key is ambiguous (parsers disagree on which value wins), so a
+    validator and the tool could see different arguments: reject it."""
+    result = dict(pairs)
+    if len(result) != len(pairs):
+        raise ValueError("duplicate key")
+    return result
+
+
+def _no_constant(name: str) -> Any:
+    raise ValueError(f"{name} is not JSON")  # NaN / Infinity / -Infinity
+
+
 def _tool_arguments(raw: str | None) -> dict[str, Any]:
     """A tool call's arguments from the provider's JSON string. Truncated or
     malformed JSON (or anything but an object) is `InvalidOutputError`, so the
     call fails over, instead of an unclassified parse error (`UNKNOWN`) that
     counts against the provider's breaker."""
     try:
-        arguments = json.loads(raw or "{}")
+        arguments = json.loads(
+            raw or "{}", object_pairs_hook=_no_duplicate_keys, parse_constant=_no_constant
+        )
     except (ValueError, RecursionError):
         raise InvalidOutputError("Tool call arguments are not valid JSON.") from None
     if arguments is None:

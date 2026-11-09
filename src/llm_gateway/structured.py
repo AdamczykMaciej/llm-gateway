@@ -220,8 +220,9 @@ class OutputSchema:
         With a pydantic model the reply is fully validated, including the
         constraints `to_strict_schema` removed from the request. With a plain
         dict schema only the top-level type and the `required` keys are
-        checked: the gateway deliberately has no JSON Schema validator
-        dependency, so pass a pydantic model for full validation."""
+        checked first, then the same JSON Schema subset `validate=` uses
+        (type, enum, required, properties, constraints, ...; `pattern` and
+        `format` are not checked). Pass a pydantic model for full validation."""
         try:
             data = _loads_lenient(text)
         except json.JSONDecodeError as e:
@@ -242,6 +243,15 @@ class OutputSchema:
                     paths,
                 ) from None
         self._check_shallow(data)
+        found: list[str] = []
+        _schema_errors(data, self.json_schema, self.json_schema, "", found)
+        if found:
+            unique = tuple(dict.fromkeys(found))
+            raise InvalidOutputError(
+                f"Structured output failed validation ({len(unique)} error(s) at: "
+                f"{', '.join(unique)}).",
+                unique,
+            )
         return data
 
     def _check_shallow(self, data: Any) -> None:
@@ -300,12 +310,55 @@ def _json_equal(a: Any, b: Any) -> bool:
     return a == b
 
 
+def _is_number(value: object) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _constraint_errors(data: Any, schema: dict[str, Any], here: str, out: list[str]) -> None:
+    """Size and range keywords: minimum/maximum (and exclusive), minLength/
+    maxLength, minItems/maxItems/uniqueItems, minProperties/maxProperties.
+    `pattern` and `format` are deliberately not checked (a regex from a
+    schema run on model-written text is a ReDoS surface)."""
+
+    def bound(key: str) -> Any:
+        value = schema.get(key)
+        return value if _is_number(value) else None
+
+    def check(key: str, size: float, *, upper: bool) -> None:
+        limit = bound(key)
+        if limit is not None and (size > limit if upper else size < limit):
+            out.append(here)
+
+    if _is_number(data):
+        check("minimum", data, upper=False)
+        check("maximum", data, upper=True)
+        low, high = bound("exclusiveMinimum"), bound("exclusiveMaximum")
+        if (low is not None and data <= low) or (high is not None and data >= high):
+            out.append(here)
+    elif isinstance(data, str):
+        check("minLength", len(data), upper=False)
+        check("maxLength", len(data), upper=True)
+    elif isinstance(data, list):
+        items = cast("list[Any]", data)
+        check("minItems", len(items), upper=False)
+        check("maxItems", len(items), upper=True)
+        if schema.get("uniqueItems") is True and any(
+            _json_equal(a, b) for i, a in enumerate(items) for b in items[i + 1 :]
+        ):
+            out.append(here)
+    elif isinstance(data, dict):
+        check("minProperties", len(cast("dict[str, Any]", data)), upper=False)
+        check("maxProperties", len(cast("dict[str, Any]", data)), upper=True)
+
+
 def _schema_errors(
     data: Any, schema: Any, root: dict[str, Any], path: str, out: list[str], depth: int = 0
 ) -> None:
     """Append the paths where `data` violates `schema`. A subset of JSON
     Schema: type, enum, const, required, properties, additionalProperties
-    (false), items, anyOf/oneOf and local $ref. Other keywords are ignored."""
+    (false or a schema), items, anyOf/oneOf (exactly one)/allOf/not, size and
+    range limits (see `_constraint_errors`) and local $ref. Other keywords are
+    ignored."""
     schema_map = _dict(schema)
     if len(out) >= _MAX_VALIDATION_ERRORS or schema_map is None or depth > 64:
         return
@@ -329,13 +382,21 @@ def _schema_errors(
     for key in ("anyOf", "oneOf"):
         branches = _list(schema.get(key))
         if branches:
-            attempts: list[list[str]] = []
+            matches = 0
             for branch in branches:
                 found: list[str] = []
                 _schema_errors(data, branch, root, path, found, depth + 1)
-                attempts.append(found)
-            if not any(not found for found in attempts):
+                matches += not found
+            if matches == 0 or (key == "oneOf" and matches > 1):
                 out.append(here)
+    for branch in _list(schema.get("allOf")) or []:
+        _schema_errors(data, branch, root, path, out, depth + 1)
+    if "not" in schema:
+        rejected: list[str] = []
+        _schema_errors(data, schema["not"], root, path, rejected, depth + 1)
+        if not rejected:
+            out.append(here)
+    _constraint_errors(data, schema, here, out)
     data_map = _dict(data)
     data_list = _list(data)
     if data_map is not None:
@@ -349,6 +410,8 @@ def _schema_errors(
                 _schema_errors(value, properties[name], root, child, out, depth + 1)
             elif schema.get("additionalProperties") is False:
                 out.append(child)
+            elif isinstance(schema.get("additionalProperties"), dict):
+                _schema_errors(value, schema["additionalProperties"], root, child, out, depth + 1)
     elif data_list is not None and isinstance(schema.get("items"), dict):
         for index, value in enumerate(data_list):
             child = f"{path}.{index}" if path else str(index)
