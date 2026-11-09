@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.23.0
+
+Model catalogue correctness, checked against the vendors' docs on 2026-11-09. Backward compatible
+except that a model whose announced shutdown date has passed is now skipped (see below).
+
+- New: `llm_gateway/lifecycle.py` records announced retirements (Anthropic, Groq, OpenAI, Gemini on
+  Vertex), each with its source URL and check date. Routing skips a provider whose model is
+  retired, so a fallback chain never reaches it, and raises `ModelRetiredError` (a
+  `PolicyViolationError`) when nothing else remains. An explicit per-call model is checked too.
+  `claude_model_fallback` is not used when retired. One WARNING per model skipped, and one per model
+  retiring within `RETIREMENT_WARNING_DAYS` (default 90). `BLOCK_RETIRED_MODELS=false` restores the
+  old behaviour (for example an enterprise Groq contract that outlives the public shutdown).
+  Sources: platform.claude.com/docs/en/about-claude/model-deprecations,
+  console.groq.com/docs/deprecations, developers.openai.com/api/docs/deprecations,
+  docs.cloud.google.com/vertex-ai/generative-ai/docs/learn/model-versions.
+- Fix: strict structured output now covers every model on Anthropic's list (Opus 4.6/4.7, Sonnet
+  4.5/4.6, Mythos Preview added) and no longer claims retired Opus 4.1
+  (platform.claude.com/docs/en/build-with-claude/structured-outputs).
+- New: `anthropic/claude-fable-5-1` price ($10/$50, cache 12.50/20/0.25;
+  platform.claude.com/docs/en/about-claude/pricing).
+- Fix: Switzerland regions are no longer treated as EU residency for `azure_region`.
+- Still unverified: Azure deployments, Claude on Vertex dates, Mistral ids, OpenAI bare aliases
+  such as `gpt-4o-mini` (the dated snapshot retires 2027-01-14).
+
 ## 0.22.0
 
 Outage resilience. Backward compatible (new attributes, config fields and an endpoint).

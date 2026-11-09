@@ -23,6 +23,7 @@ from anthropic import (
 
 from ..config import GatewayConfig
 from ..errors import InvalidOutputError
+from ..lifecycle import is_retired, retired_reason
 from ..structured import OutputSchema
 from ._anthropic_caching import system_param, system_param_from_messages
 from ._anthropic_translate import (
@@ -203,6 +204,10 @@ def _fallback_model(config: GatewayConfig, requested: str | None, exc: BaseExcep
     if requested or not fallback or fallback == config.claude_model:
         return None
     if not is_model_rejection(exc):
+        return None
+    retired = is_retired("anthropic", fallback) if config.block_retired_models else None
+    if retired is not None:
+        logger.warning("anthropic claude_model_fallback is not used: %s", retired_reason(retired))
         return None
     logger.warning(
         "anthropic model %s rejected the request (status %s); retrying once with %s",

@@ -31,7 +31,13 @@ from opentelemetry import trace
 
 from .capabilities import missing_capabilities, openai_compat_capabilities
 from .config import GatewayConfig
-from .errors import PolicyViolationError, ResidencyViolationError, UnsupportedCapabilityError
+from .errors import (
+    ModelRetiredError,
+    PolicyViolationError,
+    ResidencyViolationError,
+    UnsupportedCapabilityError,
+)
+from .lifecycle import is_retired, retired_reason, warn_if_retiring, warn_retired
 from .policy import ProviderPolicy, call_budget_check, compliance_reasons, metadata_for
 from .pricing import json_chars, lookup_price, message_chars, worst_case_cost_usd
 from .providers import CONFIGURED, DEFAULT_MODEL, RESIDENCY
@@ -41,6 +47,7 @@ logger = logging.getLogger("llm_gateway")
 _POLICY = "policy"
 _RESIDENCY = "residency"
 _CAPABILITY = "capability"
+_RETIRED = "retired"
 _COST = "cost"
 _BUDGET = "budget"
 
@@ -148,6 +155,11 @@ class ChainPlan:
             return ResidencyViolationError(
                 f"No provider satisfies require_residency. Excluded: {detail}.", reasons
             )
+        if kinds == {_RETIRED}:
+            return ModelRetiredError(
+                f"No provider can serve this request: every model is retired. Excluded: {detail}.",
+                reasons,
+            )
         if kinds == {_CAPABILITY}:
             return UnsupportedCapabilityError(
                 f"No provider can serve this request's features. Excluded: {detail}.", reasons
@@ -217,6 +229,12 @@ def plan_chain(
         plan.models[provider] = model
         plan.estimated_costs[provider] = estimate
 
+        entry = is_retired(provider, model)
+        if entry is not None and config.block_retired_models:
+            plan._exclude(provider, _RETIRED, retired_reason(entry))
+            warn_retired(provider, entry)
+        else:
+            warn_if_retiring(provider, model, config.retirement_warning_days)
         if config.require_residency:
             actual = RESIDENCY[provider](config) if provider in RESIDENCY else "unknown"
             if actual != config.require_residency:

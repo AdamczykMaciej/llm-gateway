@@ -348,7 +348,7 @@ async def test_gpt_oss_json_reply_sends_low_reasoning_effort_and_reports_reasoni
 )
 async def test_reasoning_effort_is_sent_only_to_groq_reasoning_models(model, effort, caplog):
     recorder = _Recorder(_reply({"role": "assistant", "content": "ok"}))
-    config = _chain(provider_order="groq", groq_model=model)
+    config = _chain(provider_order="groq", groq_model=model, block_retired_models=False)
     with _with(recorder), caplog.at_level(logging.DEBUG, logger="llm_gateway"):
         await complete(system="s", prompt="p", config=config)
 
