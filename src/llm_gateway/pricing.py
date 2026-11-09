@@ -81,7 +81,7 @@ class ModelPrice(BaseModel):
     batch_multiplier: float | None = Field(default=None, gt=0)
 
 
-_CHECKED = "2026-11-08"
+_CHECKED = "2026-11-09"
 _ANTHROPIC_PRICING = "https://platform.claude.com/docs/en/about-claude/pricing"
 
 

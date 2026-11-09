@@ -83,6 +83,7 @@ import openai
 
 if TYPE_CHECKING:
     from .config import GatewayConfig
+    from .providers.base import Usage
 
 
 class LLMError(Exception):
@@ -162,7 +163,13 @@ class InvalidOutputError(Exception):
 
     `paths` lists where validation failed (dotted, e.g. `items.1.qty`;
     `<root>` for the top level) when the failure came from a schema check,
-    else it is empty. Paths are field names, never values."""
+    else it is empty. Paths are field names, never values.
+
+    `usage` is the token usage the provider billed for the rejected reply
+    when the adapter knew it, else `None`; attempt reports use it so a paid
+    but unusable reply is not metered as free."""
+
+    usage: "Usage | None" = None
 
     def __init__(self, message: str = "", paths: tuple[str, ...] = ()) -> None:
         super().__init__(message)
@@ -223,7 +230,10 @@ class EmptyCompletionError(Exception):
     completion budget before any answer text, which the provider reports as
     `finish_reason="length"` with the tokens counted as reasoning. The message
     carries provider, model, finish reason and reasoning tokens, never content.
+    `usage` is what the provider billed for the reply when known, else `None`.
     """
+
+    usage: "Usage | None" = None
 
     def __init__(
         self,

@@ -99,7 +99,7 @@ def test_every_default_row_documented():
 def test_cli_list(capsys):
     assert main(["--list"]) == 0
     out = capsys.readouterr().out
-    assert "anthropic/claude-opus-5-5" in out and "x5" in out and "2026-11-08" in out
+    assert "anthropic/claude-opus-5-5" in out and "x5" in out and "2026-11-09" in out
     assert format_price_table().startswith("model")
     with pytest.raises(SystemExit):
         main(["--bogus"])

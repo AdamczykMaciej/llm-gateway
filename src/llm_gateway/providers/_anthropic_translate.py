@@ -383,11 +383,13 @@ def from_anthropic_response(resp: Any, model: str) -> ChatResult:
     stop_reason = getattr(resp, "stop_reason", None)
     if tool_calls and normalize_finish_reason(stop_reason) == "length":
         # The budget ran out inside a tool_use block: its input is incomplete.
-        raise ToolCallTruncatedError(
+        truncated = ToolCallTruncatedError(
             "The reply was cut off by max_tokens inside a tool call; "
             "retry with a larger max_tokens.",
             tuple(call.name for call in tool_calls),
         )
+        truncated.usage = usage
+        raise truncated
     finish_reason = normalize_finish_reason(stop_reason)
     if tool_calls:
         finish_reason = "tool_calls"
