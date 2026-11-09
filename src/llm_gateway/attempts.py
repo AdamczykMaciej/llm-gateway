@@ -49,7 +49,8 @@ class AttemptReport:
     be `None` or lag what the provider billed, so a ledger should treat the
     cost as a lower bound. `streamed_chars` is the text and tool-argument
     characters forwarded to the caller (0 outside streams); it lets a host
-    estimate the unreported output."""
+    estimate the unreported output. `idempotency_key` is the caller's key for
+    the logical call (`chat(idempotency_key=)`), else `None`."""
 
     request_id: str
     attempt: int
@@ -63,6 +64,7 @@ class AttemptReport:
     latency_ms: float = field(default=0.0, compare=False)
     partial: bool = False
     streamed_chars: int = 0
+    idempotency_key: str | None = None
 
 
 AttemptHook = Callable[[AttemptReport], Awaitable[None] | None]
@@ -83,6 +85,7 @@ async def report_attempt(
     latency_ms: float = 0.0,
     partial: bool = False,
     streamed_chars: int = 0,
+    idempotency_key: str | None = None,
 ) -> None:
     """Call the per-call `hook`, else `config.on_attempt`, once. Never raises
     an `Exception`."""
@@ -120,6 +123,7 @@ async def report_attempt(
                 latency_ms=latency_ms,
                 partial=partial,
                 streamed_chars=streamed_chars,
+                idempotency_key=idempotency_key,
             )
         )
         if inspect.isawaitable(outcome_value):

@@ -27,6 +27,7 @@ from .errors import (
     all_failed,
     deadline_exceeded,
 )
+from .idempotency import IDEMPOTENCY_HEADER_PROVIDERS, single_flight
 from .policy import ProviderPolicy
 from .providers import CHAT_CALLS, CONFIGURED, DEFAULT_MODEL
 from .providers.base import ChatResult, Usage
@@ -39,6 +40,7 @@ from .tracing import (
     call_span,
     emit_attempt_span,
     get_tracer,
+    resolve_idempotency_key,
     resolve_request_id,
     set_chat_attributes,
 )
@@ -46,7 +48,7 @@ from .tracing import (
 logger = logging.getLogger("llm_gateway")
 
 
-async def chat(
+async def _chat(
     *,
     messages: list[dict],
     tools: list[dict] | None = None,
@@ -62,6 +64,7 @@ async def chat(
     parallel_tool_calls: bool | None = None,
     max_tool_result_chars: int | None = None,
     on_attempt: AttemptHook | None = None,
+    idempotency_key: str | None = None,
 ) -> ChatResult:
     """Return a ChatResult (text and/or tool_calls), trying providers in
     `config.provider_order` — same fallback/circuit-breaker semantics as
@@ -103,6 +106,7 @@ async def chat(
         PrivacyPolicyMissingError: only via `PrivacyLayer(strict=True)`.
     """
     rid = resolve_request_id(request_id)
+    ikey = resolve_idempotency_key(idempotency_key)
     validate_chat_request(messages, tools, tool_choice)
     config = config or GatewayConfig()
     messages = cap_tool_results(
@@ -132,6 +136,8 @@ async def chat(
     with call_span(tracer, "llm_gateway.chat") as span:
         span.set_attribute("llm_gateway.fallback", False)
         span.set_attribute("llm_gateway.request_id", rid)
+        if ikey:
+            span.set_attribute("llm_gateway.idempotency_key", ikey)
         attempt_no = 0
         plan = plan_chain(
             order,
@@ -170,9 +176,14 @@ async def chat(
             attempt_no += 1
             attempt_started_ns = time.time_ns()
 
+            attempt_extra = (
+                {**extra, "idempotency_key": ikey}
+                if ikey and provider in IDEMPOTENCY_HEADER_PROVIDERS
+                else extra
+            )
             try:
                 result = await call_with_retry(
-                    lambda call=call: call(
+                    lambda call=call, attempt_extra=attempt_extra: call(
                         config,
                         messages,
                         tools,
@@ -181,7 +192,7 @@ async def chat(
                         tool_choice=tool_choice,
                         sampling=sampling,
                         response_format=response_format,
-                        **extra,
+                        **attempt_extra,
                     ),
                     attempts=config.retry_attempts,
                     base_delay_seconds=config.retry_base_delay_seconds,
@@ -195,6 +206,7 @@ async def chat(
                 breaker.release_probe(provider, resolved_model)
                 emit_attempt_span(
                     tracer,
+                    idempotency_key=ikey,
                     request_id=rid,
                     attempt=attempt_no,
                     provider=provider,
@@ -205,6 +217,7 @@ async def chat(
                 await report_attempt(
                     on_attempt,
                     config,
+                    idempotency_key=ikey,
                     request_id=rid,
                     attempt=attempt_no,
                     provider=provider,
@@ -228,6 +241,7 @@ async def chat(
                 last_error = e
                 emit_attempt_span(
                     tracer,
+                    idempotency_key=ikey,
                     request_id=rid,
                     attempt=attempt_no,
                     provider=provider,
@@ -238,6 +252,7 @@ async def chat(
                 await report_attempt(
                     on_attempt,
                     config,
+                    idempotency_key=ikey,
                     request_id=rid,
                     attempt=attempt_no,
                     provider=provider,
@@ -265,6 +280,7 @@ async def chat(
             breaker.record_success(provider, resolved_model)
             emit_attempt_span(
                 tracer,
+                idempotency_key=ikey,
                 request_id=rid,
                 attempt=attempt_no,
                 provider=provider,
@@ -276,6 +292,7 @@ async def chat(
             await report_attempt(
                 on_attempt,
                 config,
+                idempotency_key=ikey,
                 request_id=rid,
                 attempt=attempt_no,
                 provider=provider,
@@ -347,3 +364,63 @@ async def chat(
                 "matching provider_order."
             )
         raise all_failed(last_error, config, failures, plan.failure_note()) from last_error
+
+
+async def chat(
+    *,
+    messages: list[dict],
+    tools: list[dict] | None = None,
+    tool_choice: object = None,
+    max_tokens: int = 2000,
+    config: GatewayConfig | None = None,
+    force_provider: str | None = None,
+    model: str | None = None,
+    sampling: dict | None = None,
+    response_format: dict | None = None,
+    policy: ProviderPolicy | None = None,
+    request_id: str | None = None,
+    parallel_tool_calls: bool | None = None,
+    max_tool_result_chars: int | None = None,
+    on_attempt: AttemptHook | None = None,
+    idempotency_key: str | None = None,
+) -> ChatResult:
+    """Tool-calling completion with provider fallback; see `_chat` for the
+    full contract.
+
+    `idempotency_key`: the caller's key for this LOGICAL call (1-128 letters,
+    digits or `. _ : -`; `InvalidRequestError` otherwise). It is put on the
+    call span, every attempt span and every `AttemptReport`, so retries and
+    fallbacks of one call (and a caller's own re-submissions) correlate. It is
+    sent as the `Idempotency-Key` header to OpenAI only; no other provider
+    documents one, so none receives it. Concurrent `chat()` calls in one
+    process with the same key and the same request share ONE provider call and
+    one result (the followers' `on_attempt` never fires); the same key with a
+    different request raises `InvalidRequestError`. Nothing is cached after
+    the call finishes. Without a key, behaviour is unchanged."""
+    impl_kwargs = {
+        "messages": messages,
+        "tools": tools,
+        "tool_choice": tool_choice,
+        "max_tokens": max_tokens,
+        "config": config,
+        "force_provider": force_provider,
+        "model": model,
+        "sampling": sampling,
+        "response_format": response_format,
+        "policy": policy,
+        "request_id": request_id,
+        "parallel_tool_calls": parallel_tool_calls,
+        "max_tool_result_chars": max_tool_result_chars,
+        "on_attempt": on_attempt,
+        "idempotency_key": idempotency_key,
+    }
+    if idempotency_key is None:
+        return await _chat(**impl_kwargs)
+    ikey = resolve_idempotency_key(idempotency_key)
+    assert ikey is not None
+    fingerprint = {
+        k: v
+        for k, v in impl_kwargs.items()
+        if k not in ("config", "policy", "request_id", "on_attempt", "idempotency_key")
+    }
+    return await single_flight(ikey, fingerprint, lambda: _chat(**impl_kwargs))
