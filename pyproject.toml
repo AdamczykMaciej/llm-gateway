@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "llm-gateway"
-version = "0.18.3"
+version = "0.18.4"
 description = "Self-hosted multi-provider LLM gateway (Anthropic, Claude and Gemini on Google Vertex AI, Azure AI Foundry, Hugging Face, Groq, OpenAI, Mistral, OpenRouter, and any OpenAI-compatible host): fallback chain, circuit breaker, PII-masked tracing — as a library or an OpenAI-compatible HTTP service."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -15,15 +15,15 @@ dependencies = [
   "openai>=3.13.0,<4",
   "pydantic>=2.10,<3",
   "pydantic-settings>=2.7,<3",
-  "opentelemetry-sdk>=1.27.0,<2",
-  "opentelemetry-exporter-otlp-proto-http>=1.27.0,<2",
+  "opentelemetry-sdk>=1.45.1,<2",
+  "opentelemetry-exporter-otlp-proto-http>=1.45.1,<2",
 ]
 
 [project.optional-dependencies]
-service = ["fastapi>=0.110,<1.0", "starlette>=0.49.1", "uvicorn[standard]>=0.27,<1.0"]
+service = ["fastapi>=0.133,<1.0", "starlette>=1.3.1,<2", "uvicorn[standard]>=0.27,<1.0"]
 # Microsoft Entra ID auth for the azure provider (azure_auth="entra"). The
 # async credentials need aiohttp as their HTTP transport.
-azure = ["azure-identity>=1.25.3,<2", "aiohttp>=3.14,<4"]
+azure = ["azure-identity>=1.25.3,<2", "aiohttp>=3.14.4,<4"]
 # Claude on Google Vertex AI (the vertex provider): the SDK's Vertex extra
 # (google-auth with its requests transport). google-auth 2.29.0 added the
 # custom subject-token suppliers used for Workload Identity Federation from an
@@ -40,13 +40,18 @@ dev = [
   # Only for starlette's TestClient in tests/test_service.py — the provider
   # SDKs themselves use httpx2 since anthropic 1.0 / openai 3.0.
   "httpx>=0.27,<1.0",
-  "fastapi>=0.110,<1.0",
-  "starlette>=0.49.1",
+  "fastapi>=0.133,<1.0",
+  "starlette>=1.3.1,<2",
   "uvicorn[standard]>=0.27,<1.0",
 ]
 
 [project.scripts]
 llm-gateway = "llm_gateway.service.main:main"
+
+# The sdist ships source, tests and docs only: no infra/ (even SOPS ciphertext),
+# CI workflows, Dockerfile or .env.example.
+[tool.hatch.build.targets.sdist]
+include = ["/src", "/tests", "/README.md", "/CHANGELOG.md", "/MIGRATION.md", "/SECURITY.md", "/CONTRIBUTING.md", "/LICENSE", "/pyproject.toml"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/llm_gateway"]
