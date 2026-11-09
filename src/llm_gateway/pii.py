@@ -21,7 +21,15 @@ _PHONE_RE = re.compile(
 
 
 def mask_pii(text: str | None) -> str | None:
-    """Return text with emails, phone numbers, and ID-like sequences redacted."""
+    """Return text with emails, phone numbers, and ID-like sequences redacted.
+
+    Args:
+        text: the text to mask; `None` and the empty string are returned unchanged.
+
+    Returns:
+        The masked text (`[EMAIL]`, `[PHONE]`, `[CARD]`, `[IBAN]`, `[ID]`).
+        Never raises.
+    """
     if not text:
         return text
 

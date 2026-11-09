@@ -136,7 +136,12 @@ async def stream_chat(
     first_token_timeout_seconds: float | None = None,
     restart_on_failure: bool | None = None,
 ) -> AsyncGenerator[StreamDelta, None]:
-    """Stream a chat completion. `policy` narrows `config.policy` as in
+    """Stream a chat completion.
+
+    Yields `StreamDelta` chunks (text, tool-call fragments, a final chunk with
+    usage and finish reason, and restart markers when `restart_on_failure`).
+
+    `policy` narrows `config.policy` as in
     `complete_with_usage()`; the chain is filtered before the first provider
     is opened, so pre-flight failover never reaches an excluded provider, and
     `PolicyViolationError` is raised before any chunk when none is left.

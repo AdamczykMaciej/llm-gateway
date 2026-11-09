@@ -26,7 +26,7 @@ LangGraph's prebuilt ReAct agent works against it with zero custom code,
 just point `ChatOpenAI(base_url=...)` at it.
 """
 
-from .attempts import AttemptReport
+from .attempts import AttemptHook, AttemptReport
 from .breaker import reset as reset_circuit_breakers
 from .chat import chat
 from .config import GatewayConfig
@@ -92,6 +92,7 @@ __all__ = [
     "FirstTokenTimeoutError",
     "StreamTooLargeError",
     "AttemptReport",
+    "AttemptHook",
     "ToolCallTruncatedError",
     "LLMError",
     "LLMDeadlineExceeded",

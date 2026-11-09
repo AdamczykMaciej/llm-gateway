@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.18.2
+
+Documentation, typing and API audit. No behaviour changes.
+
+- README: a five-minute quick start that runs with a fake provider, and a 0.18 feature guide
+  (failover and policy, streaming restart markers, the `check_tool_calls` loop, structured output,
+  `on_attempt` metering, budgets, the first-token / idle / deadline table, pricing, security notes).
+  Every snippet is executed by `tests/test_readme_snippets.py` against fakes (no network).
+- Error reference table gains a "Fails over?" column.
+- `AttemptHook` is exported from `llm_gateway`. Docstrings added where missing (`OutputPolicy`,
+  `Redactor`) and completed (`mask_pii`, `tool_error_message`, `reset_circuit_breakers`,
+  `stream_chat` yields). `tests/test_public_api.py` pins `__all__`, docstrings, `py.typed` and the
+  backward-compatible call shapes below.
+- No public name was renamed in 0.16.5-0.18.1, so there is nothing to deprecate: the one-argument
+  forms `redact_secrets(text, config)` and `cost_usd(price, usage)` still work unchanged.
+- Typing: standard `pyright` on `src` is clean. Strict mode is not yet: about 1,900 findings, almost
+  all bare `dict`/untyped `[]` inside the provider adapters (`providers/*`, `structured.py`,
+  `router.py`); tracked as follow-up work.
+
+### Upgrading to 0.18 (hosts)
+
+Nothing is required: every change since 0.16.5 is additive and off by default. Adoption steps, in
+the order that usually pays off:
+
+1. Pin `llm-gateway>=0.18.2` and run your tests; no code change should be needed.
+2. Metering: pass `on_attempt=` (or set `GatewayConfig(on_attempt=...)`) and write the ledger from
+   the `AttemptReport`, so failed attempts that were billed are counted, not only the winner.
+3. Streams: set `first_token_timeout_seconds` to fail over from a silent provider, and replace a
+   hand-written "retry the stream on the next provider" loop with `restart_on_failure=True`; on a
+   `delta.restart` marker drop the text, tool-call fragments and usage collected so far.
+4. Agents: after each `chat()` run `check_tool_calls(tools, reply.tool_calls)` and answer bad calls
+   with `tool_error_message(issue)` instead of failing the turn; catch `ToolCallTruncatedError`
+   (raise `max_tokens`) and `StreamTooLargeError` where you stream.
+5. Budgets and prices: use `ProviderPolicy(max_cost_usd=..., budget_check=...)`; override
+   `MODEL_PRICES` for models you negotiate; check the table with `python -m llm_gateway.pricing --list`.
+6. Config: base URLs with embedded credentials or metadata hosts are now rejected at startup, and
+   provider clients no longer follow redirects; fix any such configuration before upgrading.
+
 ## 0.18.1
 
 Tiered price catalog and a re-verified default table. Backward compatible: every new `ModelPrice` field is optional.

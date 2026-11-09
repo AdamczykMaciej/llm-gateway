@@ -53,6 +53,9 @@ class PrivacyPolicyMissingError(RuntimeError):
 
 
 class OutputPolicy(StrEnum):
+    """What a `PrivacyLayer` does with placeholders in the model's reply: `RESTORE`
+    puts the original values back, `STRIP` removes them, `PASSTHROUGH` leaves them."""
+
     RESTORE = "restore"
     STRIP = "strip"
     PASSTHROUGH = "passthrough"
@@ -66,6 +69,8 @@ class Span:
 
 
 class Redactor(Protocol):
+    """Anything with `detect(text) -> spans`: plug in your own personal-data detector."""
+
     def detect(self, text: str) -> Iterable[Span]:
         """Spans of personal data in `text`. May overlap or be unsorted."""
         ...
