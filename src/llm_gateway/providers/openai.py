@@ -116,9 +116,12 @@ async def chat(
     sampling: dict[str, Any] | None = None,
     response_format: dict[str, Any] | None = None,
     parallel_tool_calls: bool | None = None,
+    idempotency_key: str | None = None,
 ) -> ChatResult:
     model = model or default_model(config)
     kwargs: dict[str, Any] = openai_sampling_kwargs(sampling)
+    if idempotency_key:
+        kwargs["extra_headers"] = {"Idempotency-Key": idempotency_key}
     if tools:
         kwargs["tools"] = tools
         if tool_choice is not None:

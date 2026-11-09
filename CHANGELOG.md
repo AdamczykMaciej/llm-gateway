@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.25.0
+
+Idempotency keys. Opt-in and backward compatible: nothing changes without `idempotency_key=`.
+
+- New: `chat(idempotency_key=)` (1-128 chars of letters, digits, `. _ : -`). The key is on the call
+  span, every attempt span (`llm_gateway.idempotency_key`) and every `AttemptReport`, so retries
+  and fallbacks of one logical call correlate with the caller's own id.
+- New: the key is sent as the `Idempotency-Key` header to OpenAI chat only; no other provider
+  receives it.
+- New: concurrent `chat()` calls in one process with the same key and the same request share one
+  provider call and result (followers fire no `on_attempt`). Same key, different request raises
+  `InvalidRequestError`. Nothing is cached after the call ends; one waiter cancelling does not
+  cancel the others.
+- Not done: `stream_chat` and `complete*` take no key yet; Anthropic documents no idempotency header.
+
 ## 0.24.0
 
 Untrusted-content helpers. Opt-in and backward compatible: nothing changes unless you call them.

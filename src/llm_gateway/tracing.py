@@ -207,6 +207,18 @@ def resolve_request_id(request_id: object = None) -> str:
     return request_id
 
 
+def resolve_idempotency_key(key: object = None) -> str | None:
+    """`key` if it is a valid token (same rules as `request_id`), `None` for
+    `None`; `InvalidRequestError` otherwise."""
+    if key is None:
+        return None
+    if not isinstance(key, str) or _REQUEST_ID.fullmatch(key) is None:
+        raise InvalidRequestError(
+            "idempotency_key must be a string of 1-128 letters, digits or . _ : - characters."
+        )
+    return key
+
+
 def outcome_of(error: BaseException | None) -> str:
     """ "ok", "cancelled" (the caller cancelled or closed the stream: not a
     provider failure), or the `ErrorKind` value of the failure (e.g. "timeout")."""
@@ -227,6 +239,7 @@ def emit_attempt_span(
     input_tokens: int = 0,
     output_tokens: int = 0,
     restart: int = 0,
+    idempotency_key: str | None = None,
 ) -> None:
     """Record one provider attempt as a child span of the current call span.
 
@@ -248,6 +261,8 @@ def emit_attempt_span(
             span.set_attribute("error.type", type(error).__name__)
         span.set_attribute("gen_ai.usage.input_tokens", input_tokens)
         span.set_attribute("gen_ai.usage.output_tokens", output_tokens)
+        if idempotency_key:
+            span.set_attribute("llm_gateway.idempotency_key", idempotency_key)
         if restart:
             span.set_attribute("llm_gateway.restart", restart)
         now = time.time_ns()
