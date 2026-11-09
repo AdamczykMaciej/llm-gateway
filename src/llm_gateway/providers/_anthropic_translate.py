@@ -109,8 +109,42 @@ def _system_text(content: str | list[dict[str, Any]]) -> str:
     return "\n".join(str(p.get("text", "")) for p in parts if p and p.get("type") == "text")
 
 
+_ROLES = ("system", "user", "assistant", "tool")
+
+
+def _check_shape(messages: list[dict[str, Any]]) -> None:
+    """Reject structurally broken history (caller data) with a typed error
+    naming the message index only, never a KeyError/TypeError from deep inside
+    the translation."""
+    for index, raw in enumerate(messages):
+        m = as_dict(raw)
+        problem = None
+        if m is None or m.get("role") not in _ROLES:
+            problem = "has no valid role"
+        elif m["role"] == "tool" and not isinstance(m.get("tool_call_id"), str):
+            problem = "is a tool message without a tool_call_id"
+        elif (
+            m["role"] == "system" and m.get("content") and not isinstance(m["content"], (str, list))
+        ):
+            problem = "has system content that is neither text nor a list of parts"
+        elif m["role"] == "assistant" and m.get("tool_calls"):
+            calls = m["tool_calls"]
+            if not isinstance(calls, list) or not all(
+                (call := as_dict(c)) is not None
+                and isinstance(call.get("id"), str)
+                and (fn := as_dict(call.get("function"))) is not None
+                and isinstance(fn.get("name"), str)
+                and isinstance(fn.get("arguments", ""), (str, type(None)))
+                for c in cast("list[Any]", calls)
+            ):
+                problem = "has a malformed tool call"
+        if problem:
+            raise InvalidRequestError(f"messages[{index}] {problem}.")
+
+
 def to_anthropic_messages(messages: list[dict[str, Any]]) -> tuple[str, list[AnthropicMessage]]:
     """Return (system_prompt, anthropic_messages)."""
+    _check_shape(messages)
     system_parts = [
         _system_text(m["content"]) for m in messages if m["role"] == "system" and m.get("content")
     ]
@@ -156,7 +190,7 @@ def to_anthropic_messages(messages: list[dict[str, Any]]) -> tuple[str, list[Ant
                     "type": "tool_use",
                     "id": tc["id"],
                     "name": tc["function"]["name"],
-                    "input": _parse_tool_arguments(tc["function"]["arguments"]),
+                    "input": _parse_tool_arguments(tc["function"].get("arguments")),
                 }
                 content.append(tool_use)
             anthropic_messages.append({"role": "assistant", "content": content})

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.18.6
+
+Property-based tests for the Anthropic stream, the OpenAI to Anthropic translation and the Vertex
+Claude path (`tests/test_properties_anthropic.py`). No API changes.
+
+- Fix: structurally broken message history (no role, a tool message without `tool_call_id`, a
+  malformed tool call, non-text system content, a non-dict message) raised `KeyError`/`TypeError`
+  from inside `to_anthropic_messages()` for the anthropic and vertex providers; it now raises
+  `InvalidRequestError` naming the message index.
+
 ## 0.18.5
 
 Property-based robustness tests (Hypothesis, `tests/test_properties.py`). No API changes.
