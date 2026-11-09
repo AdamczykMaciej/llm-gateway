@@ -17,6 +17,7 @@ locally like every other provider.
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import aclosing
 from dataclasses import dataclass, field
+from typing import Any, cast
 
 from openai import AsyncOpenAI, DefaultAsyncHttpx2Client
 
@@ -54,7 +55,7 @@ class OpenAICompatSpec:
     headers: Callable[[GatewayConfig], dict[str, str]] = field(default=lambda config: {})
     # Extra JSON body fields on every chat request (e.g. OpenRouter's
     # `provider` routing preference). Sent through the SDK's `extra_body`.
-    extra_body: Callable[[GatewayConfig], dict] = field(default=lambda config: {})
+    extra_body: Callable[[GatewayConfig], dict[str, Any]] = field(default=lambda config: {})
     # Whether the host enforces `response_format={"type": "json_schema"}`; a
     # callable so an operator-configured host can say so via a setting.
     strict_json_schema: Callable[[GatewayConfig], bool] = field(default=lambda config: True)
@@ -68,7 +69,7 @@ class OpenAICompatSpec:
     # and the host counts as configured whenever `also_configured` says so.
     token_provider: Callable[[GatewayConfig], Callable[[], Awaitable[str]]] | None = None
     # Extra values that make two clients differ (e.g. the credential source).
-    client_key: Callable[[GatewayConfig], tuple] = field(default=lambda config: ())
+    client_key: Callable[[GatewayConfig], tuple[Any, ...]] = field(default=lambda config: ())
     # Whether the host documents the `parallel_tool_calls` request field. Off
     # unless the spec says so: an unknown host may reject an unknown field.
     parallel_tool_calls: bool = False
@@ -80,7 +81,7 @@ class OpenAICompatProvider:
 
     def __init__(self, spec: OpenAICompatSpec) -> None:
         self.spec = spec
-        self._clients: dict[tuple, AsyncOpenAI] = {}
+        self._clients: dict[tuple[Any, ...], AsyncOpenAI] = {}
         # The thin provider module sets this to its own `_client` name so the
         # tests can patch `module._client` exactly as they do for groq/openai.
         self.client_factory: Callable[[GatewayConfig], AsyncOpenAI] = self._client
@@ -132,7 +133,7 @@ class OpenAICompatProvider:
 
     def _structured_request(
         self, config: GatewayConfig, system: str, output_schema: OutputSchema
-    ) -> tuple[str, dict]:
+    ) -> tuple[str, dict[str, Any]]:
         """(system prompt, extra create() kwargs) for a structured-output call."""
         if self.spec.strict_json_schema(config):
             return system, {"response_format": output_schema.openai_response_format()}
@@ -140,7 +141,7 @@ class OpenAICompatProvider:
         system = "\n\n".join(part for part in (system, output_schema.instructions()) if part)
         return system, {"response_format": {"type": "json_object"}}
 
-    def _extra(self, config: GatewayConfig) -> dict:
+    def _extra(self, config: GatewayConfig) -> dict[str, Any]:
         body = self.spec.extra_body(config)
         return {"extra_body": body} if body else {}
 
@@ -158,31 +159,34 @@ class OpenAICompatProvider:
         # `cache_system` needs nothing here: hosts that cache prompts do so
         # automatically and report hits as usage.prompt_tokens_details.
         model = model or self.default_model(config)
-        kwargs: dict = self._extra(config)
+        kwargs: dict[str, Any] = self._extra(config)
         if output_schema is not None:
             system, structured = self._structured_request(config, system, output_schema)
             kwargs.update(structured)
-        resp = await self._sdk(config).chat.completions.create(
-            model=model,
-            max_tokens=max_tokens,
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": prompt},
-            ],
-            **kwargs,
+        resp = cast(
+            "Any",
+            await self._sdk(config).chat.completions.create(
+                model=model,
+                max_tokens=max_tokens,
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": prompt},
+                ],
+                **kwargs,
+            ),
         )
         return provider_result_from_openai_style(resp, model, provider=self.spec.provider)
 
     def _chat_kwargs(
         self,
         config: GatewayConfig,
-        tools: list[dict] | None,
+        tools: list[dict[str, Any]] | None,
         tool_choice: object,
-        sampling: dict | None,
-        response_format: dict | None,
+        sampling: dict[str, Any] | None,
+        response_format: dict[str, Any] | None,
         parallel_tool_calls: bool | None = None,
-    ) -> dict:
-        kwargs: dict = {**openai_sampling_kwargs(sampling), **self._extra(config)}
+    ) -> dict[str, Any]:
+        kwargs: dict[str, Any] = {**openai_sampling_kwargs(sampling), **self._extra(config)}
         if tools:
             kwargs["tools"] = tools
             if tool_choice is not None:
@@ -196,23 +200,26 @@ class OpenAICompatProvider:
     async def chat(
         self,
         config: GatewayConfig,
-        messages: list[dict],
-        tools: list[dict] | None,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None,
         max_tokens: int,
         *,
         model: str | None = None,
         tool_choice: object = None,
-        sampling: dict | None = None,
-        response_format: dict | None = None,
+        sampling: dict[str, Any] | None = None,
+        response_format: dict[str, Any] | None = None,
         parallel_tool_calls: bool | None = None,
     ) -> ChatResult:
         model = model or self.default_model(config)
-        resp = await self._sdk(config).chat.completions.create(
-            model=model,
-            max_tokens=max_tokens,
-            messages=sdk_messages(messages),
-            **self._chat_kwargs(
-                config, tools, tool_choice, sampling, response_format, parallel_tool_calls
+        resp = cast(
+            "Any",
+            await self._sdk(config).chat.completions.create(
+                model=model,
+                max_tokens=max_tokens,
+                messages=sdk_messages(messages),
+                **self._chat_kwargs(
+                    config, tools, tool_choice, sampling, response_format, parallel_tool_calls
+                ),
             ),
         )
         return parse_openai_style_response(resp, model, provider=self.spec.provider)
@@ -220,14 +227,14 @@ class OpenAICompatProvider:
     async def _stream_chat(
         self,
         config: GatewayConfig,
-        messages: list[dict],
-        tools: list[dict] | None,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None,
         max_tokens: int,
         *,
         model: str | None = None,
         tool_choice: object = None,
-        sampling: dict | None = None,
-        response_format: dict | None = None,
+        sampling: dict[str, Any] | None = None,
+        response_format: dict[str, Any] | None = None,
         parallel_tool_calls: bool | None = None,
     ) -> AsyncGenerator[StreamDelta]:
         model = model or self.default_model(config)
@@ -249,14 +256,14 @@ class OpenAICompatProvider:
     async def stream_chat(
         self,
         config: GatewayConfig,
-        messages: list[dict],
-        tools: list[dict] | None,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None,
         max_tokens: int,
         *,
         model: str | None = None,
         tool_choice: object = None,
-        sampling: dict | None = None,
-        response_format: dict | None = None,
+        sampling: dict[str, Any] | None = None,
+        response_format: dict[str, Any] | None = None,
         parallel_tool_calls: bool | None = None,
         cache_system: bool = False,
     ) -> AsyncGenerator[StreamDelta]:

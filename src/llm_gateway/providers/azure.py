@@ -25,7 +25,7 @@ failure is an ordinary openai SDK error, classified like OpenAI's own.
 import logging
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import aclosing
-from typing import Any
+from typing import Any, cast
 
 import httpx2
 from openai import AsyncOpenAI, DefaultAsyncHttpx2Client
@@ -62,7 +62,7 @@ PROVIDER = "azure"
 # OpenAI User role at runtime).
 TOKEN_SCOPE = "https://ai.azure.com/.default"
 
-_clients: dict[tuple, AsyncOpenAI] = {}
+_clients: dict[tuple[Any, ...], AsyncOpenAI] = {}
 # Entra credential + token provider per managed-identity client id ("" means
 # DefaultAzureCredential), shared by every client that uses that identity.
 _credentials: dict[str, tuple[Any, Callable[[], Awaitable[str]]]] = {}
@@ -90,7 +90,7 @@ def default_model(config: GatewayConfig) -> str:
     return config.azure_model.strip()
 
 
-def reasoning_kwargs(config: GatewayConfig) -> dict:
+def reasoning_kwargs(config: GatewayConfig) -> dict[str, Any]:
     """`{"reasoning_effort": ...}` unless `azure_reasoning_effort` is ""."""
     effort = config.azure_reasoning_effort
     return {"reasoning_effort": effort} if effort else {}
@@ -131,7 +131,7 @@ def _load_identity() -> tuple[Any, type[Exception]]:
 def _credential(config: GatewayConfig, identity: Any) -> Any:
     """A user-assigned managed identity when its client id is set, else the
     DefaultAzureCredential chain."""
-    kwargs: dict = {} if config.ssl_verify else {"connection_verify": False}
+    kwargs: dict[str, Any] = {} if config.ssl_verify else {"connection_verify": False}
     client_id = config.azure_managed_identity_client_id.strip()
     if client_id:
         return identity.ManagedIdentityCredential(client_id=client_id, **kwargs)
@@ -204,18 +204,18 @@ async def aclose() -> None:
 
 def _request_kwargs(
     config: GatewayConfig,
-    tools: list[dict] | None,
+    tools: list[dict[str, Any]] | None,
     tool_choice: object,
-    sampling: dict | None,
-    response_format: dict | None,
+    sampling: dict[str, Any] | None,
+    response_format: dict[str, Any] | None,
     parallel_tool_calls: bool | None = None,
-) -> dict:
+) -> dict[str, Any]:
     sampling_kwargs = openai_sampling_kwargs(sampling)
     if config.azure_reasoning_effort:
         # A deployment sent `reasoning_effort` is a reasoning model, which
         # rejects non-default sampling with a 400.
         sampling_kwargs = drop_keys(sampling_kwargs, REASONING_REJECTED_SAMPLING)
-    kwargs: dict = {**sampling_kwargs, **reasoning_kwargs(config)}
+    kwargs: dict[str, Any] = {**sampling_kwargs, **reasoning_kwargs(config)}
     if tools:
         kwargs["tools"] = tools
         if tool_choice is not None:
@@ -227,7 +227,7 @@ def _request_kwargs(
     return kwargs
 
 
-def token_budget_kwargs(config: GatewayConfig, max_tokens: int) -> dict:
+def token_budget_kwargs(config: GatewayConfig, max_tokens: int) -> dict[str, Any]:
     """The token budget under `GatewayConfig.azure_max_tokens_param`.
 
     The default, `max_completion_tokens`, suits reasoning deployments: gpt-oss
@@ -252,56 +252,62 @@ async def call(
     # `cache_system` needs nothing here: Azure caches long prompt prefixes
     # automatically and reports hits as usage.prompt_tokens_details.cached_tokens.
     model = model or default_model(config)
-    kwargs: dict = reasoning_kwargs(config)
+    kwargs: dict[str, Any] = reasoning_kwargs(config)
     if output_schema is not None:
         kwargs["response_format"] = output_schema.openai_response_format()
-    resp = await _client(config).chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": prompt},
-        ],
-        **token_budget_kwargs(config, max_tokens),
-        **kwargs,
+    resp = cast(
+        "Any",
+        await _client(config).chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": prompt},
+            ],
+            **token_budget_kwargs(config, max_tokens),
+            **kwargs,
+        ),
     )
     return provider_result_from_openai_style(resp, model, provider=PROVIDER)
 
 
 async def chat(
     config: GatewayConfig,
-    messages: list[dict],
-    tools: list[dict] | None,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None,
     max_tokens: int,
     *,
     model: str | None = None,
     tool_choice: object = None,
-    sampling: dict | None = None,
-    response_format: dict | None = None,
+    sampling: dict[str, Any] | None = None,
+    response_format: dict[str, Any] | None = None,
     parallel_tool_calls: bool | None = None,
 ) -> ChatResult:
     model = model or default_model(config)
     kwargs = _request_kwargs(
         config, tools, tool_choice, sampling, response_format, parallel_tool_calls
     )
-    resp = await _client(config).chat.completions.create(
-        model=model,
-        messages=sdk_messages(messages),
-        **token_budget_kwargs(config, max_tokens),
-        **kwargs,
+    resp = cast(
+        "Any",
+        await _client(config).chat.completions.create(
+            model=model,
+            messages=sdk_messages(messages),
+            **token_budget_kwargs(config, max_tokens),
+            **kwargs,
+        ),
     )
     return parse_openai_style_response(resp, model, provider=PROVIDER)
 
 
 async def _stream_chat(
     config: GatewayConfig,
-    messages: list[dict],
-    tools: list[dict] | None,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None,
     max_tokens: int,
     *,
     model: str | None = None,
     tool_choice: object = None,
-    sampling: dict | None = None,
-    response_format: dict | None = None,
+    sampling: dict[str, Any] | None = None,
+    response_format: dict[str, Any] | None = None,
     parallel_tool_calls: bool | None = None,
 ) -> AsyncGenerator[StreamDelta]:
     model = model or default_model(config)
@@ -324,14 +330,14 @@ async def _stream_chat(
 
 async def stream_chat(
     config: GatewayConfig,
-    messages: list[dict],
-    tools: list[dict] | None,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None,
     max_tokens: int,
     *,
     model: str | None = None,
     tool_choice: object = None,
-    sampling: dict | None = None,
-    response_format: dict | None = None,
+    sampling: dict[str, Any] | None = None,
+    response_format: dict[str, Any] | None = None,
     parallel_tool_calls: bool | None = None,
     cache_system: bool = False,
 ) -> AsyncGenerator[StreamDelta]:

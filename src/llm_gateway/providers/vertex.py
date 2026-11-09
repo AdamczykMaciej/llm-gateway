@@ -1,3 +1,6 @@
+# google-auth ships no type information, so values read from it are Unknown.
+# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false
+# pyright: reportUnknownArgumentType=false
 """Anthropic Claude on Google Cloud Vertex AI (Agent Platform).
 
 The same model family as the `anthropic` provider, billed through Google
@@ -49,7 +52,7 @@ import asyncio
 import logging
 from collections.abc import AsyncGenerator
 from contextlib import aclosing
-from typing import Any
+from typing import Any, cast
 
 from ..config import (
     GatewayConfig,
@@ -61,6 +64,7 @@ from ..errors import InvalidRequestError, ProviderAuthError
 from ..residency import vertex_location_residency
 from ..structured import OutputSchema
 from . import anthropic as anthropic_messages
+from ._wire import as_dict
 from .base import (
     ChatResult,
     ProviderResult,
@@ -79,10 +83,10 @@ logger = logging.getLogger("llm_gateway")
 PROVIDER = "vertex"
 CLOUD_PLATFORM_SCOPE = "https://www.googleapis.com/auth/cloud-platform"
 
-_clients: dict[tuple, Any] = {}
+_clients: dict[tuple[Any, ...], Any] = {}
 # Auth settings -> (google credentials, azure-identity credential or None).
 # Shared by every client that uses the same credentials.
-_credentials: dict[tuple, tuple[Any, Any]] = {}
+_credentials: dict[tuple[Any, ...], tuple[Any, Any]] = {}
 _missing_extra_logged: set[str] = set()
 
 
@@ -96,7 +100,7 @@ def base_url(location: str) -> str:
     return f"https://{location}-aiplatform.googleapis.com/v1"
 
 
-def check_images_are_base64(messages: list[dict]) -> None:
+def check_images_are_base64(messages: list[dict[str, Any]]) -> None:
     """Vertex AI accepts only base64 image sources for Claude, not URLs. Raise
     `InvalidRequestError` here, before any network call, instead of letting
     Vertex answer a 400 (names the message index only)."""
@@ -104,11 +108,13 @@ def check_images_are_base64(messages: list[dict]) -> None:
         content = message.get("content")
         if not isinstance(content, list):
             continue
-        for part in content:
-            if not isinstance(part, dict) or part.get("type") != "image_url":
+        for raw_part in cast("list[Any]", content):
+            part = as_dict(raw_part)
+            if part is None or part.get("type") != "image_url":
                 continue
             image = part.get("image_url")
-            url = image.get("url") if isinstance(image, dict) else image
+            image_dict = as_dict(image)
+            url = image_dict.get("url") if image_dict is not None else image
             if isinstance(url, str) and not url.startswith("data:"):
                 raise InvalidRequestError(
                     f"messages[{index}]: Claude on Vertex AI takes base64 images only; "
@@ -192,7 +198,7 @@ def _azure_subject_token_supplier(config: GatewayConfig) -> tuple[Any, Any]:
 _AWS_SUBJECT_TOKEN_TYPE = "urn:ietf:params:aws:token-type:aws4_request"
 
 
-def _credentials_from_info(info: dict, **kwargs: Any) -> Any:
+def _credentials_from_info(info: dict[str, Any], **kwargs: Any) -> Any:
     """Credentials for a parsed credential configuration, with the loader for
     its type. Unlike `google.auth.load_credentials_from_dict()` (deprecated
     upstream), this never resolves a project id, which for external_account
@@ -248,10 +254,13 @@ def load_credentials(config: GatewayConfig) -> tuple[Any, Any]:
     it fetches no token: the SDK refreshes on the first request."""
     try:
         import google.auth
-        import google.auth.transport.requests  # noqa: F401 (the SDK refreshes with it)
+        import google.auth.transport.requests  # noqa: F401  # pyright: ignore[reportUnusedImport] (the SDK refreshes with it)
         from google.auth import exceptions as google_exceptions
         from google.auth import impersonated_credentials
-        from google.oauth2 import gdch_credentials, service_account  # noqa: F401 (_key_based)
+        from google.oauth2 import (  # noqa: F401 (_key_based)
+            gdch_credentials,  # pyright: ignore[reportUnusedImport]
+            service_account,  # pyright: ignore[reportUnusedImport]
+        )
     except ImportError as e:
         raise _missing_extra(e, extra="vertex", library="google-auth") from None
 
@@ -297,7 +306,7 @@ def load_credentials(config: GatewayConfig) -> tuple[Any, Any]:
     return credentials, closeable
 
 
-def _auth_key(config: GatewayConfig) -> tuple:
+def _auth_key(config: GatewayConfig) -> tuple[Any, ...]:
     return (
         config.vertex_credentials_file,
         config.vertex_impersonate_service_account,
@@ -319,7 +328,7 @@ async def _google_credentials(config: GatewayConfig) -> Any:
 
 def _load_sdk() -> tuple[Any, Any]:
     try:
-        import google.auth  # noqa: F401
+        import google.auth  # noqa: F401  # pyright: ignore[reportUnusedImport]
         from anthropic import (
             AsyncAnthropicVertex,  # pyright: ignore[reportPrivateImportUsage]  # lazy export the stubs omit
             DefaultAsyncHttpxClient,
@@ -398,14 +407,14 @@ async def call(
 
 async def chat(
     config: GatewayConfig,
-    messages: list[dict],
-    tools: list[dict] | None,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None,
     max_tokens: int,
     *,
     model: str | None = None,
     tool_choice: object = None,
-    sampling: dict | None = None,
-    response_format: dict | None = None,
+    sampling: dict[str, Any] | None = None,
+    response_format: dict[str, Any] | None = None,
     parallel_tool_calls: bool | None = None,
 ) -> ChatResult:
     check_images_are_base64(messages)
@@ -431,14 +440,14 @@ async def chat(
 
 async def _stream_chat(
     config: GatewayConfig,
-    messages: list[dict],
-    tools: list[dict] | None,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None,
     max_tokens: int,
     *,
     model: str | None = None,
     tool_choice: object = None,
-    sampling: dict | None = None,
-    response_format: dict | None = None,
+    sampling: dict[str, Any] | None = None,
+    response_format: dict[str, Any] | None = None,
     parallel_tool_calls: bool | None = None,
     cache_system: bool = False,
 ) -> AsyncGenerator[StreamDelta]:
@@ -469,14 +478,14 @@ async def _stream_chat(
 
 async def stream_chat(
     config: GatewayConfig,
-    messages: list[dict],
-    tools: list[dict] | None,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None,
     max_tokens: int,
     *,
     model: str | None = None,
     tool_choice: object = None,
-    sampling: dict | None = None,
-    response_format: dict | None = None,
+    sampling: dict[str, Any] | None = None,
+    response_format: dict[str, Any] | None = None,
     parallel_tool_calls: bool | None = None,
     cache_system: bool = False,
 ) -> AsyncGenerator[StreamDelta]:

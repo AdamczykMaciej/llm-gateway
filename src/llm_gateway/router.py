@@ -8,6 +8,7 @@ import asyncio
 import dataclasses
 import logging
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -32,7 +33,7 @@ from .errors import (
 from .policy import ProviderPolicy
 from .pricing import cost_usd, lookup_price
 from .providers import CALLS, CONFIGURED, DEFAULT_MODEL
-from .providers.base import Usage
+from .providers.base import ProviderResult, Usage
 from .retry import Deadline, call_with_retry
 from .routing import RequestProfile, plan_chain, record_cost
 from .structured import OutputSchema, OutputValidator
@@ -172,12 +173,12 @@ async def complete_with_usage(
     config: GatewayConfig | None = None,
     force_provider: str | None = None,
     model: str | None = None,
-    output_schema: dict | type[BaseModel] | None = None,
+    output_schema: dict[str, Any] | type[BaseModel] | None = None,
     schema_name: str | None = None,
     cache_system: bool = False,
     policy: ProviderPolicy | None = None,
     request_id: str | None = None,
-    validate: dict | type[BaseModel] | None = None,
+    validate: dict[str, Any] | type[BaseModel] | None = None,
     repair_attempts: int = 0,
     on_attempt: AttemptHook | None = None,
 ) -> Completion:
@@ -244,13 +245,13 @@ async def complete_with_usage(
     rid = resolve_request_id(request_id)
     if (
         isinstance(repair_attempts, bool)
-        or not isinstance(repair_attempts, int)
+        or not isinstance(repair_attempts, int)  # pyright: ignore[reportUnnecessaryIsInstance]
         or repair_attempts < 0
     ):
         raise InvalidRequestError("repair_attempts must be a non-negative integer.")
     validator = OutputValidator.from_spec(validate) if validate is not None else None
     config = config or GatewayConfig()
-    options = {
+    options: dict[str, Any] = {
         "system": system,
         "max_tokens": max_tokens,
         "config": config,
@@ -274,9 +275,13 @@ async def complete_with_usage(
             if repairs_left <= 0:
                 raise
             repairs_left -= 1
+            repair_options: dict[str, Any] = {
+                **options,
+                "force_provider": completion.provider,
+                "model": completion.model,
+            }
             repaired = await _complete_once(
-                prompt=_repair_prompt(prompt, completion.text, error),
-                **{**options, "force_provider": completion.provider, "model": completion.model},
+                prompt=_repair_prompt(prompt, completion.text, error), **repair_options
             )
             completion = _merge_attempts(completion, repaired)
             continue
@@ -317,7 +322,7 @@ async def _complete_once(
     config: GatewayConfig,
     force_provider: str | None,
     model: str | None,
-    output_schema: dict | type[BaseModel] | None,
+    output_schema: dict[str, Any] | type[BaseModel] | None,
     schema_name: str | None,
     cache_system: bool,
     policy: ProviderPolicy | None,
@@ -331,7 +336,7 @@ async def _complete_once(
     model_override = model if force_provider else None
     # Only passed when used, so provider callables written against the 0.3
     # positional signature keep working.
-    extra: dict = {}
+    extra: dict[str, Any] = {}
     if schema is not None:
         extra["output_schema"] = schema
     if cache_system:
@@ -385,7 +390,10 @@ async def _complete_once(
 
             billed: list[Usage] = []
 
-            async def attempt(call=call, billed=billed):
+            async def attempt(
+                call: Callable[..., Awaitable[ProviderResult]] = call,
+                billed: list[Usage] = billed,
+            ) -> tuple[ProviderResult, Any]:
                 result = await call(config, system, prompt, max_tokens, model_override, **extra)
                 # Paid for even if the reply then fails schema validation.
                 billed[:] = [result.usage]

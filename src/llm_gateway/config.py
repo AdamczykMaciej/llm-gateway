@@ -41,7 +41,7 @@ VERTEX_CREDENTIAL_TYPES = (
 )
 
 
-def read_vertex_credentials_file(path: str) -> dict:
+def read_vertex_credentials_file(path: str) -> dict[str, Any]:
     """The parsed credential configuration at `path`. Raises `ValueError`
     for an unreadable file, invalid JSON, a service-account key or another
     unsupported type. Messages never include the file's content."""

@@ -1,3 +1,4 @@
+# pyright: reportPrivateUsage=false
 """OpenRouter (https://openrouter.ai/api/v1), an OpenAI-compatible broker.
 
 OpenRouter is a US company that forwards each request to one of many
@@ -15,6 +16,8 @@ output is requested in JSON mode with the schema in the system prompt and
 validated locally.
 """
 
+from typing import Any
+
 from openai import AsyncOpenAI
 
 from ..config import GatewayConfig
@@ -24,7 +27,7 @@ BASE_URL = "https://openrouter.ai/api/v1"
 
 
 def _headers(config: GatewayConfig) -> dict[str, str]:
-    headers = {}
+    headers: dict[str, str] = {}
     if config.openrouter_app_url:
         headers["HTTP-Referer"] = config.openrouter_app_url
     if config.openrouter_app_name:
@@ -32,7 +35,7 @@ def _headers(config: GatewayConfig) -> dict[str, str]:
     return headers
 
 
-def _extra_body(config: GatewayConfig) -> dict:
+def _extra_body(config: GatewayConfig) -> dict[str, Any]:
     allow = config.openrouter_provider_allow_list
     if not allow:
         return {}

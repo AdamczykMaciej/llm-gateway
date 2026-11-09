@@ -1,3 +1,4 @@
+# pyright: reportPrivateUsage=false
 """Google Gemini on Vertex AI, through Vertex's OpenAI-compatible endpoint.
 
 Requests go to

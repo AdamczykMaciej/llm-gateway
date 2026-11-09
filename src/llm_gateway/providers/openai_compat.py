@@ -1,3 +1,4 @@
+# pyright: reportPrivateUsage=false
 """A generic OpenAI-compatible host chosen by the operator: DeepSeek,
 Together, Fireworks, a self-hosted vLLM, and so on.
 
