@@ -481,11 +481,13 @@ async def chat(
         if k
         not in (
             "config",
-            "policy",
             "request_id",
             "on_attempt",
             "idempotency_key",
             "deadline_seconds",
         )
     }
+    # The policy decides which providers may see the data: a result produced
+    # under one must not be shared with a caller who asked for another.
+    fingerprint["config_policy"] = config.policy if config is not None else None
     return await single_flight(ikey, fingerprint, lambda: _chat(**impl_kwargs))

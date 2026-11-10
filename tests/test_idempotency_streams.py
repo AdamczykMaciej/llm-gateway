@@ -189,6 +189,36 @@ async def test_concurrent_complete_shares_one_call_and_conflicts():
     assert call.await_count == 2  # one shared call, then a later call (nothing cached)
 
 
+async def test_complete_same_key_with_a_different_policy_is_not_shared():
+    from llm_gateway import ProviderPolicy
+
+    gate = asyncio.Event()
+
+    async def slow(*a, **k):
+        await gate.wait()
+        return _PR
+
+    with patch("llm_gateway.router.CALLS", {"openai": AsyncMock(side_effect=slow)}):
+        first = asyncio.create_task(
+            complete_with_usage(system="s", prompt="p", config=_cfg(), idempotency_key="pol")
+        )
+        await asyncio.sleep(0.01)
+        second = asyncio.create_task(
+            complete_with_usage(
+                system="s",
+                prompt="p",
+                config=_cfg(),
+                idempotency_key="pol",
+                policy=ProviderPolicy(residency="eu"),
+            )
+        )
+        await asyncio.sleep(0.01)
+        gate.set()
+        assert (await first).text == "hello"
+        with pytest.raises(InvalidRequestError):
+            await second
+
+
 async def test_same_key_on_chat_and_complete_do_not_collide():
     gate = asyncio.Event()
 

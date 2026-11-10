@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.42.5
+
+Agentic pass 9. Probed with fakes and found sound, no change: tool-call translation across
+providers (parallel calls, ids kept and matched, results grouped per Anthropic turn), invalid
+JSON / schema-violating / undeclared tool calls (typed `ToolCallIssue` or `ToolCallInvalidError`,
+never a crash, values never echoed), streamed tool-call fragments (split JSON, interleaved
+indexes, same-index hosts), structured output (nullable types, enums, nested arrays, bounded and
+accounted repair, truncation), message-history pairing validation and system placement. Tracing
+records only a tool-call count and no content; the gateway does not execute tools, so it emits no
+`execute_tool` spans. `idempotency_key` is in-flight de-duplication only, by design: there is no
+result cache, so no TTL.
+
+- Fix: `chat()` and `complete_with_usage()` with an `idempotency_key` treated two concurrent calls
+  that differed only in `policy` (or the config's policy) as the same request and handed the
+  second caller the first one's result, which may have come from a provider the second policy
+  forbids. The policy is now part of the request fingerprint, so such a pair raises
+  `InvalidRequestError` like any other mismatch.
+
 ## 0.42.4
 
 Accounting pass 8. Probed with fakes and found sound, no change: a stream cut after its usage chunk
