@@ -357,7 +357,10 @@ model you route to that the built-in table lacks.
 - **Redirects are off** on every provider client: a redirect cannot carry your key to another host.
 - **Base URLs are guarded**: `openai_compat_base_url`, `huggingface_base_url` and the
   Azure endpoint must be http(s) with a host and no `user:password@`; cloud-metadata
-  hosts are rejected. The validation message never repeats the URL.
+  hosts are rejected. The validation message never repeats the URL. Since 0.31.0 they must also
+  be `https://` and not localhost or a private/loopback IP; set `allow_insecure_base_urls=True`
+  (`ALLOW_INSECURE_BASE_URLS=true`) for a local model server. Vertex model ids are checked
+  before they go into the URL path.
 - **Redaction**: provider error text is scrubbed (`redact_secrets`) and bounded before it
   reaches an exception, a span or an HTTP response. `AttemptReport` carries an error
   *class name* only. Spans and logs never hold prompts or replies.
