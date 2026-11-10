@@ -230,3 +230,47 @@ def test_switzerland_is_not_an_eu_region():
     assert not {r for r in AZURE_EU_REGIONS if r.startswith("switzerland")}
     assert azure_residency(data_zone="", region="switzerlandnorth", endpoint="") == "unknown"
     assert azure_residency(data_zone="", region="swedencentral", endpoint="") == "eu"
+
+
+@pytest.mark.parametrize(
+    ("provider", "model", "retired"),
+    [
+        ("anthropic", "claude-2.1", "2025-07-21"),
+        ("groq", "meta-llama/llama-guard-4-12b", "2026-03-05"),
+        ("groq", "llama3-70b-8192", "2025-08-30"),
+        ("openai", "gpt-4.1-nano", "2026-10-23"),
+        ("openai", "o4-mini", "2026-10-23"),
+        ("openai", "gpt-3.5-turbo", "2026-10-23"),
+        ("gemini", "google/gemini-1.5-pro-002", "2025-09-24"),
+    ],
+)
+def test_catalogue_0_39_retired_additions(provider, model, retired):
+    entry = is_retired(provider, model, today=TODAY)
+    assert entry is not None
+    assert entry.retires.isoformat() == retired
+
+
+def test_defaults_are_not_retired():
+    cfg = GatewayConfig(_env_file=None)
+    for provider, model in [
+        ("anthropic", cfg.claude_model),
+        ("groq", cfg.groq_model),
+        ("openai", cfg.openai_model),
+        ("gemini", cfg.gemini_model),
+    ]:
+        assert is_retired(provider, model, today=TODAY) is None
+
+
+def test_0_39_default_prices():
+    fable = lookup_price("anthropic", "claude-fable-5-2")
+    assert (fable.input_per_mtok, fable.output_per_mtok, fable.cached_input_per_mtok) == (
+        8,
+        40,
+        0.2,
+    )
+    luna = lookup_price("openai", "gpt-6-luna")
+    assert (luna.input_per_mtok, luna.output_per_mtok, luna.cached_input_per_mtok) == (
+        0.1,
+        0.5,
+        0.01,
+    )
