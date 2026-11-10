@@ -147,6 +147,26 @@ def _is_metadata_host(host: str) -> bool:
     )
 
 
+def _is_local_host(host: str) -> bool:
+    """localhost or a loopback, private, unspecified or unique-local IP literal
+    (the hosts a gateway could reach that its callers cannot)."""
+    host = unicodedata.normalize("NFKC", host).translate(_DOT_LOOKALIKES).lower().rstrip(".")
+    if host == "localhost" or host.endswith(".localhost"):
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        if not _NUMERIC_HOST.fullmatch(host):
+            return False
+        try:
+            ip = ipaddress.IPv4Address(socket.inet_aton(host))
+        except (OSError, ValueError):
+            return False
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    return ip.is_loopback or ip.is_private or ip.is_unspecified
+
+
 def _check_http_url(value: str, name: str, *, https_only: bool = False) -> None:
     """An http(s) URL without embedded credentials. The message never repeats
     the value: it may carry a password. `https_only` is for endpoints that
@@ -516,6 +536,13 @@ class GatewayConfig(BaseSettings):
     # Set to false only behind a corporate SSL-inspection proxy.
     ssl_verify: bool = True
 
+    # Base URLs (`openai_compat_base_url`, `huggingface_base_url`,
+    # `azure_endpoint`) must be https:// and must not name localhost or a
+    # loopback/private/unspecified IP literal: a bearer token goes there, and
+    # such a host would make the gateway a proxy into its own network. Set true
+    # for local development (a model server on http://localhost:11434/v1).
+    allow_insecure_base_urls: bool = False
+
     @field_validator("anthropic_thinking")
     @classmethod
     def _check_anthropic_thinking(cls, value: str) -> str:
@@ -818,6 +845,31 @@ class GatewayConfig(BaseSettings):
         value = value.strip()
         _check_http_url(value, "huggingface_base_url", https_only=True)
         return value.rstrip("/")
+
+    @model_validator(mode="after")
+    def _check_base_url_safety(self) -> "GatewayConfig":
+        if self.allow_insecure_base_urls:
+            return self
+        for name in ("openai_compat_base_url", "huggingface_base_url", "azure_endpoint"):
+            value: str = getattr(self, name)
+            if not value:
+                continue
+            if not value.startswith("https://"):
+                raise config_error(
+                    name,
+                    "must start with https:// (a token is sent to it)",
+                    given=value,
+                    fix="use https://, or set allow_insecure_base_urls=True for local development",
+                )
+            if _is_local_host(urlsplit(value).hostname or ""):
+                raise config_error(
+                    name,
+                    "must not point at localhost or a loopback/private address",
+                    given=value,
+                    fix="use the public hostname, or set allow_insecure_base_urls=True "
+                    "(ALLOW_INSECURE_BASE_URLS=true) for a local server",
+                )
+        return self
 
     @field_validator("provider_metadata")
     @classmethod

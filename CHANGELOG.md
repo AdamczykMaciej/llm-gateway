@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.31.0
+
+Base URL and model-id hardening. **Behaviour change** (safe defaults, one opt-out).
+
+- Changed: `openai_compat_base_url`, `huggingface_base_url` and `azure_endpoint` must now be
+  `https://` and must not name `localhost` or a loopback, private, unspecified or unique-local IP
+  literal. Set `allow_insecure_base_urls=True` (`ALLOW_INSECURE_BASE_URLS=true`) for local
+  development, e.g. `http://localhost:11434/v1`. Metadata/link-local hosts stay refused either way.
+- Fixed: the vertex provider wrote the model id (config or per call) into the request URL path
+  unchecked; ids with `..`, `/`, `?`, `#`, `%` or whitespace now raise `InvalidRequestError`.
+- Known limit: non-streamed response bodies and SSE lines have no size cap yet.
+
 ## 0.30.0
 
 Pre-call cost estimates now cover the Claude model fallback. Additive; the shape of

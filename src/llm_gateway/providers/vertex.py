@@ -50,6 +50,7 @@ INVALID_REQUEST.
 
 import asyncio
 import logging
+import re
 from collections.abc import AsyncGenerator
 from contextlib import aclosing
 from typing import Any, cast
@@ -98,6 +99,21 @@ def base_url(location: str) -> str:
     if location in ("us", "eu"):
         return f"https://aiplatform.{location}.rep.googleapis.com/v1"
     return f"https://{location}-aiplatform.googleapis.com/v1"
+
+
+_MODEL_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._@:+-]{0,199}")
+
+
+def _model_id(config: GatewayConfig, model: str | None) -> str:
+    """The model id for a call, checked because the SDK writes it into the URL
+    path: `../`, `?`, `#`, `%`, `/` or whitespace would redirect the request
+    to another endpoint under the gateway's credentials."""
+    chosen = model or default_model(config)
+    if ".." in chosen or not _MODEL_ID.fullmatch(chosen):
+        raise InvalidRequestError(
+            "Invalid model id for vertex: use letters, digits and . _ @ : + - only."
+        )
+    return chosen
 
 
 def check_images_are_base64(messages: list[dict[str, Any]]) -> None:
@@ -392,7 +408,7 @@ async def call(
         return await anthropic_messages.messages_call(
             lambda: _client(config),
             provider=PROVIDER,
-            model=model or default_model(config),
+            model=_model_id(config, model),
             system=system,
             prompt=prompt,
             max_tokens=max_tokens,
@@ -423,7 +439,7 @@ async def chat(
         return await anthropic_messages.messages_chat(
             lambda: _client(config),
             provider=PROVIDER,
-            model=model or default_model(config),
+            model=_model_id(config, model),
             messages=messages,
             tools=tools,
             max_tokens=max_tokens,
@@ -454,7 +470,7 @@ async def _stream_chat(
     check_images_are_base64(messages)
     deltas = anthropic_messages.messages_stream(
         lambda: _client(config),
-        model=model or default_model(config),
+        model=_model_id(config, model),
         messages=messages,
         tools=tools,
         max_tokens=max_tokens,
@@ -503,7 +519,7 @@ async def stream_chat(
         cache_system=cache_system,
         parallel_tool_calls=parallel_tool_calls,
     )
-    guarded = guard_empty_stream(deltas, provider=PROVIDER, model=model or default_model(config))
+    guarded = guard_empty_stream(deltas, provider=PROVIDER, model=_model_id(config, model))
     async with aclosing(guarded):
         async for delta in guarded:
             yield delta

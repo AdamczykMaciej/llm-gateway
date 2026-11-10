@@ -99,7 +99,8 @@ def test_metadata_hosts_are_rejected(field, url):
     ],
 )
 def test_ordinary_hosts_are_still_accepted(url):
-    assert GatewayConfig(openai_compat_base_url=url).openai_compat_base_url == url
+    cfg = GatewayConfig(openai_compat_base_url=url, allow_insecure_base_urls=True)
+    assert cfg.openai_compat_base_url == url
 
 
 # ── bounded error text ───────────────────────────────────────────────────────
