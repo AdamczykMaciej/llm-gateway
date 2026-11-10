@@ -46,9 +46,11 @@ from .errors import (
     ErrorKind,
     FirstTokenTimeoutError,
     GatewayNotConfiguredError,
+    InvalidOutputError,
     LLMError,
     ProviderFailure,
     StreamTooLargeError,
+    ToolCallInvalidError,
     all_failed,
     classify,
     deadline_exceeded,
@@ -56,12 +58,17 @@ from .errors import (
 from .idempotency import IDEMPOTENCY_HEADER_PROVIDERS, stream_slot
 from .policy import ProviderPolicy
 from .providers import CONFIGURED, DEFAULT_MODEL, STREAM_CALLS
-from .providers.base import StreamDelta, Usage
+from .providers.base import StreamDelta, ToolCall, Usage, _tool_arguments
 from .retry import Deadline, call_with_retry, resolve_deadline_seconds
 from .router import record_provider_failure
 from .routing import RequestProfile, plan_chain
 from .tool_results import cap_tool_results, resolve_cap
-from .tool_validation import validate_chat_request
+from .tool_validation import (
+    ToolCallIssue,
+    enforce_tool_calls,
+    resolve_validate_mode,
+    validate_chat_request,
+)
 from .tracing import (
     call_span,
     emit_attempt_span,
@@ -101,6 +108,44 @@ def _check_stream_size(
             limit=overall,
         )
     return total
+
+
+class _StreamedToolCalls:
+    """Reassembles the fragments of a stream into whole tool calls, for
+    `validate_tool_calls`. Holds the same text the size caps already bound."""
+
+    def __init__(self) -> None:
+        self._parts: dict[int, list] = {}  # index -> [id, name, [argument pieces]]
+
+    def add(self, delta: StreamDelta) -> None:
+        for fragment in delta.tool_call_deltas or ():
+            part = self._parts.setdefault(fragment.get("index", 0), ["", "", []])
+            function = fragment.get("function") or {}
+            part[0] = fragment.get("id") or part[0]
+            part[1] = function.get("name") or part[1]
+            arguments = function.get("arguments")
+            if arguments:
+                part[2].append(arguments)
+
+    def check(self) -> tuple[list[ToolCall], list[ToolCallIssue]]:
+        """The calls with parseable arguments, and one issue (no values) per
+        call whose arguments are not a JSON object."""
+        calls: list[ToolCall] = []
+        issues: list[ToolCallIssue] = []
+        for _, (call_id, name, pieces) in sorted(self._parts.items()):
+            try:
+                calls.append(ToolCall(call_id, name, _tool_arguments("".join(pieces))))
+            except InvalidOutputError:
+                issues.append(
+                    ToolCallIssue(
+                        call_id,
+                        name,
+                        "arguments_not_json",
+                        (),
+                        f"The arguments for '{name}' are not a valid JSON object.",
+                    )
+                )
+        return calls, issues
 
 
 # Failure kinds that must never restart a stream: the next provider would be
@@ -144,6 +189,7 @@ async def stream_chat(
     restart_on_failure: bool | None = None,
     idempotency_key: str | None = None,
     deadline_seconds: float | None = None,
+    validate_tool_calls: str | None = None,
 ) -> AsyncGenerator[StreamDelta, None]:
     """Stream a chat completion.
 
@@ -210,6 +256,19 @@ async def stream_chat(
         The key is free again once the first stream ends. Without a key,
         behaviour is unchanged.
 
+    `validate_tool_calls`: "off" (default, `None`), "warn" or "error", as in
+        `chat()` (unknown tool, arguments vs the tool's schema, arguments that
+        are not a JSON object), applied once the streamed fragments are
+        complete, i.e. when the provider's stream ends. "warn" streams
+        everything as usual and logs names and paths (never values). "error"
+        withholds tool-call fragments (and everything after the first one)
+        until the check passes, then yields them in order; text before the
+        first fragment streams immediately. On failure it fails over to the
+        next provider only if nothing was yielded yet (no text, no restart
+        marker); otherwise `ToolCallInvalidError` is raised to the consumer
+        without failover, after the text already delivered. Without `tools`
+        nothing is checked. Any other value is `InvalidRequestError`.
+
     Raises:
         InvalidRequestError: malformed request (see `chat()`), before any chunk;
             or `idempotency_key` already in use by an open stream.
@@ -222,6 +281,7 @@ async def stream_chat(
             consumer.
     """
     ikey = resolve_idempotency_key(idempotency_key)
+    resolve_validate_mode(validate_tool_calls)
     impl = _stream_chat(
         messages=cast("list[dict]", messages),
         tools=cast("list[dict] | None", tools),
@@ -242,6 +302,7 @@ async def stream_chat(
         restart_on_failure=restart_on_failure,
         idempotency_key=ikey,
         deadline_seconds=deadline_seconds,
+        validate_tool_calls=validate_tool_calls,
     )
     async with aclosing(impl) as chunks:
         if ikey is None:
@@ -274,10 +335,12 @@ async def _stream_chat(
     restart_on_failure: bool | None = None,
     idempotency_key: str | None = None,
     deadline_seconds: float | None = None,
+    validate_tool_calls: str | None = None,
 ) -> AsyncGenerator[StreamDelta, None]:
     """The body of `stream_chat()`; see there for the contract."""
     rid = resolve_request_id(request_id)
     validate_chat_request(messages, tools, tool_choice)
+    validate_mode = resolve_validate_mode(validate_tool_calls) if tools else "off"
     config = config or GatewayConfig()
     messages = cap_tool_results(
         messages, resolve_cap(max_tool_result_chars, config.tool_result_max_chars)
@@ -543,6 +606,11 @@ async def _stream_chat(
             tool_call_count = 0
             total_chars = 0
             argument_chars: dict[int, int] = {}
+            streamed_calls = _StreamedToolCalls()
+            held: list[StreamDelta] = []  # withheld until the calls are checked
+            holding = False
+            yielded_any = restart_marker is not None
+            invalid_before_output = False
             try:
                 if restart_marker is not None:
                     yield restart_marker
@@ -564,7 +632,14 @@ async def _stream_chat(
                         delta = dataclasses.replace(delta, provider=provider, request_id=rid)
                     if delta.finish_reason:
                         finish_reason = delta.finish_reason
-                    yield delta
+                    if validate_mode != "off":
+                        streamed_calls.add(delta)
+                    if validate_mode == "error" and (holding or delta.tool_call_deltas):
+                        holding = True
+                        held.append(delta)
+                    else:
+                        yielded_any = True
+                        yield delta
                     try:
                         async with asyncio.timeout(deadline.remaining()):
                             delta = await generator.__anext__()
@@ -576,6 +651,26 @@ async def _stream_chat(
                         await generator.aclose()
                         span.set_status(StatusCode.ERROR, "call deadline exceeded")
                         raise deadline_exceeded(deadline.seconds or 0.0, e) from e
+                if validate_mode != "off":
+                    calls, parse_issues = streamed_calls.check()
+                    enforce_tool_calls(tools, calls, validate_mode, extra_issues=parse_issues)
+                for held_delta in held:
+                    yield held_delta
+            except ToolCallInvalidError as e:
+                stream_error = e
+                record_provider_failure(
+                    provider,
+                    e,
+                    config=config,
+                    deadline=deadline,
+                    model=resolved_model,
+                    failures=failures,
+                )
+                if yielded_any:
+                    raise
+                # Nothing reached the consumer: the next provider can answer.
+                invalid_before_output = True
+                last_error = e
             except LLMError as e:
                 stream_error = e
                 raise
@@ -649,6 +744,10 @@ async def _stream_chat(
                     partial=stream_error is not None,
                     streamed_chars=total_chars,
                 )
+
+            if invalid_before_output:
+                span.set_attribute("llm_gateway.tool_call_validation_failed", True)
+                continue
 
             if pending_restart is not None:
                 # Died mid-stream; the loop tries the next provider.
