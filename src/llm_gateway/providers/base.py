@@ -14,10 +14,11 @@ Providers own their own client caching internally.
 
 import asyncio
 import dataclasses
+import inspect
 import json
 import logging
 from collections.abc import AsyncGenerator, Iterable
-from contextlib import aclosing
+from contextlib import aclosing, asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any, TypeVar, cast
 
@@ -754,6 +755,22 @@ async def _strip_think_stream(deltas: AsyncGenerator[StreamDelta]) -> AsyncGener
         held = stripper.flush()
         if held:
             yield StreamDelta(content=held)
+
+
+@asynccontextmanager
+async def release_sdk_stream(stream: Any) -> AsyncGenerator[Any]:
+    """Release an SDK stream's HTTP response when the block exits. The OpenAI
+    SDK's stream frees its connection only once exhausted or closed, so a
+    consumer that stops early would otherwise leave it open until garbage
+    collection."""
+    try:
+        yield stream
+    finally:
+        closer = getattr(stream, "close", None) or getattr(stream, "aclose", None)
+        if closer is not None:
+            result = closer()
+            if inspect.isawaitable(result):
+                await result
 
 
 async def guard_empty_stream(

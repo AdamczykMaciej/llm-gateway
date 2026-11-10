@@ -20,6 +20,7 @@ from .base import (
     parse_openai_style_chunk,
     parse_openai_style_response,
     provider_result_from_openai_style,
+    release_sdk_stream,
     remember_client,
     sdk_client_cache_key,
     sdk_client_options,
@@ -178,8 +179,11 @@ async def _stream_chat(
         **stream_request_options(config),
     )
     tool_indexes = ToolIndexNormalizer()
-    async for chunk in stream:
-        yield tool_indexes.apply(parse_openai_style_chunk(chunk, model))
+    # `async with`: the SDK stream only releases its HTTP response when it is
+    # exhausted or closed, so a consumer that stops early must close it here.
+    async with release_sdk_stream(stream):
+        async for chunk in stream:
+            yield tool_indexes.apply(parse_openai_style_chunk(chunk, model))
 
 
 async def stream_chat(
