@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.42.1
+
+Tests only; no behaviour change. Coverage 98.60% to 98.82% (floor raised to 98.8). New
+`tests/test_coverage_gaps_5.py` covers the non-streaming `chat()` / `complete_with_usage()`
+admission branches (policy and budget denial, lost breaker admission, unregistered provider),
+tool-definition validation edges (reserved name, non-JSON extras, size cap), structured-output
+limits (non-array reply, recursion, cyclic `$ref`), best-effort scrubbing of SDK errors that carry
+HTTP objects, and the request body cap. No bug was exposed.
+
 ## 0.42.0
 
 Error-taxonomy audit (`classify`, retry/breaker policy) against the providers' current error docs, read
