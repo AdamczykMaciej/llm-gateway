@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.29.0
+
+Per-call end-to-end deadline. Additive; the default keeps today's behaviour.
+
+- New: `deadline_seconds=` on `complete()`, `complete_with_usage()`, `chat()` and `stream_chat()`
+  sets one total time budget for that call, replacing `config.call_deadline_seconds`. It bounds
+  attempts, backoff and `Retry-After` waits, failover and streams already under way; the time
+  left caps each attempt's timeout. Non-positive, non-finite or non-numeric values raise
+  `InvalidRequestError`. It is not part of the idempotency fingerprint.
+- Fixed: `repair_attempts` calls each started a fresh deadline, so a call could run several times
+  past its budget. They now share the first call's budget.
+- Fixed: the `LLMDeadlineExceeded` message reports the budget actually in force.
+
 ## 0.28.0
 
 Correct pre-call cost estimates. Additive; no behaviour change to existing calls.

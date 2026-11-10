@@ -13,12 +13,13 @@ general-purpose retry library.
 """
 
 import asyncio
+import math
 import random
 import time
 from collections.abc import Awaitable, Callable
 from typing import TypeVar
 
-from .errors import is_retryable, retry_after_seconds
+from .errors import InvalidRequestError, is_retryable, retry_after_seconds
 
 T = TypeVar("T")
 
@@ -33,12 +34,31 @@ def _jitter(delay: float) -> float:
     return delay * random.uniform(0.5, 1.0)
 
 
+def resolve_deadline_seconds(per_call: float | None, configured: float) -> float:
+    """The call's budget: the per-call `deadline_seconds=` when given (it must
+    be a positive, finite number, else `InvalidRequestError`), otherwise
+    `config.call_deadline_seconds`."""
+    if per_call is None:
+        return configured
+    if (
+        isinstance(per_call, bool)
+        or not isinstance(per_call, (int, float))  # pyright: ignore[reportUnnecessaryIsInstance]
+        or not math.isfinite(per_call)
+        or per_call <= 0
+    ):
+        raise InvalidRequestError(
+            f"deadline_seconds must be a positive number of seconds. Got {per_call!r}."
+        )
+    return float(per_call)
+
+
 class Deadline:
     """Wall-clock budget for one gateway call, shared by every attempt and
     failover within it. `seconds` of 0/negative/None means unbounded."""
 
     def __init__(self, seconds: float | None) -> None:
         bound = _bounded(seconds)
+        self.seconds = bound
         self._expires_at = time.monotonic() + bound if bound is not None else None
 
     def remaining(self) -> float | None:

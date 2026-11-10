@@ -38,7 +38,7 @@ from .policy import ProviderPolicy
 from .pricing import cost_usd, lookup_price
 from .providers import CALLS, CONFIGURED, DEFAULT_MODEL
 from .providers.base import ProviderResult, Usage
-from .retry import Deadline, call_with_retry
+from .retry import Deadline, call_with_retry, resolve_deadline_seconds
 from .routing import RequestProfile, plan_chain, record_cost
 from .structured import OutputSchema, OutputValidator
 from .tracing import (
@@ -149,6 +149,7 @@ async def complete(
     request_id: str | None = None,
     on_attempt: AttemptHook | None = None,
     idempotency_key: str | None = None,
+    deadline_seconds: float | None = None,
 ) -> str:
     """Return a text completion, trying providers in `config.provider_order`.
 
@@ -164,7 +165,8 @@ async def complete(
     the serving provider, token usage, or structured output.
 
     Raises `LLMError` when no provider succeeds, its subclass
-    `LLMDeadlineExceeded` when `config.call_deadline_seconds` runs out first,
+    `LLMDeadlineExceeded` when `config.call_deadline_seconds` (or the per-call
+    `deadline_seconds=`) runs out first,
     or its subclass `PolicyViolationError` when no provider satisfies the
     routing policy (see `complete_with_usage`). Also raises
     `GatewayNotConfiguredError` / `AllProvidersExhaustedError` (subclasses of
@@ -182,6 +184,7 @@ async def complete(
         request_id=request_id,
         on_attempt=on_attempt,
         idempotency_key=idempotency_key,
+        deadline_seconds=deadline_seconds,
     )
     return completion.text
 
@@ -204,6 +207,7 @@ async def complete_with_usage(
     repair_attempts: int = 0,
     on_attempt: AttemptHook | None = None,
     idempotency_key: str | None = None,
+    deadline_seconds: float | None = None,
 ) -> Completion[_M]: ...
 @overload
 async def complete_with_usage(
@@ -223,6 +227,7 @@ async def complete_with_usage(
     repair_attempts: int = 0,
     on_attempt: AttemptHook | None = None,
     idempotency_key: str | None = None,
+    deadline_seconds: float | None = None,
 ) -> Completion[_M]: ...
 @overload
 async def complete_with_usage(
@@ -242,6 +247,7 @@ async def complete_with_usage(
     repair_attempts: int = 0,
     on_attempt: AttemptHook | None = None,
     idempotency_key: str | None = None,
+    deadline_seconds: float | None = None,
 ) -> Completion[Any]: ...
 async def complete_with_usage(
     *,
@@ -260,6 +266,7 @@ async def complete_with_usage(
     repair_attempts: int = 0,
     on_attempt: AttemptHook | None = None,
     idempotency_key: str | None = None,
+    deadline_seconds: float | None = None,
 ) -> Completion[Any]:
     """`complete()`, returning a `Completion` instead of a string.
 
@@ -320,6 +327,14 @@ async def complete_with_usage(
     raised when none is left (routing.py). This applies to `force_provider`
     too.
 
+    `deadline_seconds`: one total time budget for this call, replacing
+    `config.call_deadline_seconds` (positive number; `InvalidRequestError`
+    otherwise). It covers every attempt, backoff sleep (a `Retry-After` longer
+    than the time left is not waited for), failover and `repair_attempts` call
+    together; the time left caps each attempt's timeout. When it runs out the
+    call raises `LLMDeadlineExceeded`, which is not counted against a provider's
+    circuit breaker. `None` (default) uses the config value.
+
     Raises:
         InvalidRequestError: bad `request_id`, `repair_attempts`, `validate`
             spec; nothing was sent.
@@ -349,13 +364,22 @@ async def complete_with_usage(
         "repair_attempts": repair_attempts,
         "on_attempt": on_attempt,
         "idempotency_key": ikey,
+        "deadline_seconds": deadline_seconds,
     }
     if ikey is None:
         return await _complete_with_usage(**call_kwargs)
     fingerprint = {
         k: v
         for k, v in call_kwargs.items()
-        if k not in ("config", "policy", "request_id", "on_attempt", "idempotency_key")
+        if k
+        not in (
+            "config",
+            "policy",
+            "request_id",
+            "on_attempt",
+            "idempotency_key",
+            "deadline_seconds",
+        )
     }
     return await single_flight(
         ikey, fingerprint, lambda: _complete_with_usage(**call_kwargs), scope="complete"
@@ -379,6 +403,7 @@ async def _complete_with_usage(
     repair_attempts: int,
     on_attempt: AttemptHook | None,
     idempotency_key: str | None,
+    deadline_seconds: float | None = None,
 ) -> Completion[Any]:
     rid = resolve_request_id(request_id)
     if (
@@ -389,6 +414,8 @@ async def _complete_with_usage(
         raise InvalidRequestError("repair_attempts must be a non-negative integer.")
     validator = OutputValidator.from_spec(validate) if validate is not None else None
     config = config or GatewayConfig()
+    # One budget for the first call and every repair call together.
+    deadline = Deadline(resolve_deadline_seconds(deadline_seconds, config.call_deadline_seconds))
     options: dict[str, Any] = {
         "system": system,
         "max_tokens": max_tokens,
@@ -402,6 +429,7 @@ async def _complete_with_usage(
         "request_id": rid,
         "on_attempt": on_attempt,
         "idempotency_key": idempotency_key,
+        "deadline": deadline,
     }
     completion = await _complete_once(prompt=prompt, **options)
     if validator is None:
@@ -472,6 +500,7 @@ async def _complete_once(
     on_attempt: AttemptHook | None = None,
     idempotency_key: str | None = None,
     forward_key: bool = True,
+    deadline: Deadline | None = None,
 ) -> Completion:
     schema = (
         OutputSchema.from_spec(output_schema, schema_name) if output_schema is not None else None
@@ -489,7 +518,7 @@ async def _complete_once(
 
     tracer = get_tracer()
     start = time.monotonic() * 1000
-    deadline = Deadline(config.call_deadline_seconds)
+    deadline = deadline or Deadline(config.call_deadline_seconds)
     attempted_any = False
     last_error: Exception | None = None
     failures: list[ProviderFailure] = []
@@ -731,7 +760,7 @@ async def _complete_once(
         if deadline.expired:
             span.set_status(StatusCode.ERROR, "call deadline exceeded")
             raise deadline_exceeded(
-                config.call_deadline_seconds, last_error, config, failures
+                deadline.seconds or 0.0, last_error, config, failures
             ) from last_error
         span.set_status(
             StatusCode.ERROR,

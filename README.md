@@ -256,6 +256,19 @@ else:
 Before the first chunk the smallest of first-token, idle and the remaining deadline
 applies; after it, only idle and the deadline.
 
+A single call can set its own total budget with `deadline_seconds=` on `complete()`,
+`complete_with_usage()`, `chat()` and `stream_chat()`; it replaces `call_deadline_seconds`
+for that call (`None`, the default, keeps the config value; a non-positive or non-finite
+value raises `InvalidRequestError`). The remaining time caps each attempt's timeout, a
+backoff or `Retry-After` wait that does not fit is skipped, no fallback starts once the
+budget is spent, and `repair_attempts` calls draw from the same budget. Running out raises
+`LLMDeadlineExceeded` (an `LLMError`), which is not counted against any provider's circuit
+breaker:
+
+```python
+await complete(system="...", prompt="...", deadline_seconds=8)
+```
+
 <!-- runnable: timeouts -->
 ```python
 from llm_gateway import GatewayConfig, stream_chat
