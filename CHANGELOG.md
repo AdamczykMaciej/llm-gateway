@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.42.4
+
+Accounting pass 8. Probed with fakes and found sound, no change: a stream cut after its usage chunk
+is reported once on its own failed attempt (`partial=True`) and the restart's usage on its own
+attempt, never merged or doubled; usage from the final chunk only, early close and cancellation
+(the attempt keeps whatever usage had arrived); Anthropic cache read/write added to
+`input_tokens` once, OpenAI `cached_tokens` kept as a subset (no double count), reasoning tokens
+already inside output; price lookup is exact-key, so `-mini`, dated or unknown ids never fall back
+to another model's price (unknown gives `None`, not 0); prices are USD per 1M tokens throughout.
+Limitation, unchanged: an Anthropic stream cut before its final event reports no usage (it is
+only emitted at the end), so `partial` costs are a lower bound. No prices touched or re-verified.
+
+- Fix: a negative token count from a provider (a buggy host or proxy) was kept, so usage could be
+  negative and `cost_usd` could subtract. Counts are now clamped at 0 on parse and in `cost_usd`.
+- Fix: the cost summed over structured-output repair attempts carried float drift
+  (`0.1 + 0.2 = 0.30000000000000004`); it is now rounded to 10 places like a single cost.
+
 ## 0.42.3
 
 Reliability pass 7. Probed with fakes and found sound, no change: cancellation mid-call, during a
