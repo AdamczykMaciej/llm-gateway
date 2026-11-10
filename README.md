@@ -347,7 +347,9 @@ anything `config.policy` or the per-call `policy` excludes. Pass the same `polic
 `provider`/`model` and `chat` flag as the real call. `routable_models(config, ...)`
 lists the pairs. A `CostEstimate` has `models`, `max_cost_usd` (`None` if any
 routable model is unpriced or nothing is routable), `unpriced`, `excluded`,
-`complete` and `priced_max_cost_usd` (a lower bound). Set `MODEL_PRICES` for any
+`complete` and `priced_max_cost_usd` (a lower bound). Since 0.30.0 the anthropic
+`claude_model_fallback` (the one-shot retry model) is listed after the primary, so the
+reserve covers it; an unpriced fallback makes `max_cost_usd` `None`. Set `MODEL_PRICES` for any
 model you route to that the built-in table lacks.
 
 ### Security notes
