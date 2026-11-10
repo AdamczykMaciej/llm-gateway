@@ -94,6 +94,7 @@ from .untrusted import (
     UntrustedContent,
     gate_tool_calls,
     sanitize_untrusted,
+    tool_result_message,
     wrap_untrusted,
 )
 
@@ -130,6 +131,7 @@ __all__ = [
     "UntrustedContent",
     "gate_tool_calls",
     "sanitize_untrusted",
+    "tool_result_message",
     "wrap_untrusted",
     "FirstTokenTimeoutError",
     "ResponseTooLargeError",
