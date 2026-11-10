@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.42.3
+
+Reliability pass 7. Probed with fakes and found sound, no change: cancellation mid-call, during a
+backoff sleep and mid-stream (`CancelledError` re-raised, provider stream closed, half-open probe
+released, no failover or breaker count); an outer `wait_for` timeout around a stream; no retry,
+backoff or fallback past the call deadline; no silent provider switch after streamed tokens
+(mid-stream restart stays opt-in and emits a restart marker); half-open admits exactly one probe
+under 32 racing threads (one lock); malformed `Retry-After` values ignored.
+
+- Fix: `Retry-After` in HTTP-date form (RFC 9110, the other legal form) was ignored, so the
+  provider's requested wait was lost. It is now honoured, capped at 60 s like the seconds form; a
+  date already past counts as 0.
+
 ## 0.42.2
 
 Security pass 6. Dependency audit (`pip-audit`, all extras): only `pip` itself (PYSEC-2026-3721,
