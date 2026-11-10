@@ -591,6 +591,21 @@ Each provider is asked through its native mechanism:
 | Groq      | the same strict `json_schema` on `openai/gpt-oss-20b` / `openai/gpt-oss-120b`, the models [Groq documents][groq-so] with strict support. Every other model, such as `llama-3.1-8b-instant`, gets JSON mode (`{"type": "json_object"}`) with the schema spelled out in the system prompt. |
 | Azure     | the same strict `json_schema` as OpenAI, for every deployment (Azure lists structured outputs for `gpt-oss-120b`). |
 
+| Vertex (Claude) | the same `output_config` as Anthropic, only with `VERTEX_STRUCTURED_OUTPUTS=true`; otherwise routing skips it for `output_schema` calls. |
+| Mistral, Gemini | strict `json_schema` through the OpenAI-compatible endpoint. |
+| OpenRouter, Hugging Face | JSON mode (`json_object`) with the schema in the system prompt; the reply is validated locally. |
+| `openai_compat` | strict `json_schema` if `OPENAI_COMPAT_STRICT_JSON_SCHEMA`, else JSON mode as above. |
+
+Whatever the provider, the reply is parsed and validated by the gateway before
+it is returned. A code fence, a sentence around the JSON and a leading BOM are
+tolerated; a reply cut off by `max_tokens` raises `OutputTruncatedError` (an
+`InvalidOutputError`); nesting beyond the validator's limit is an error. A
+pydantic model coerces `"3"` to `3` (pydantic's lax mode), a dict schema rejects
+it. A failed `validate=` check raises `InvalidOutputError` with the failing
+`paths` (never values); `repair_attempts` re-asks with the invalid reply (at
+most 8000 characters) and the failing paths, inside the call's deadline and
+attempt budget.
+
 [ant-so]: https://platform.claude.com/docs/en/build-with-claude/structured-outputs
 [groq-so]: https://console.groq.com/docs/structured-outputs
 
@@ -2105,6 +2120,7 @@ you finally see.
 | `InvalidOutputError` | A provider answered with unusable output (refusal, invalid JSON, schema failure). Fails over; surfaces only inside `LLMError` | no | yes | rarely; a different prompt or schema |
 | `ToolCallInvalidError` | `chat(validate_tool_calls="error")` and the reply named a tool the request never offered, failed the tool's JSON Schema, or exceeded `stream_max_tool_arguments_chars` (subclass of `InvalidOutputError`; `issues` hold call id, tool, kind, paths, never values; fails over) | no | yes | rarely; the model usually corrects itself with `tool_error_message` |
 | `ToolCallTruncatedError` | The reply hit `max_tokens` inside a tool call (subclass of `InvalidOutputError`; fails over the same way) | no | yes | yes, with a larger `max_tokens` |
+| `OutputTruncatedError` | A structured-output reply hit `max_tokens` and is not complete JSON (subclass of `InvalidOutputError`; fails over; never repaired by a paid retry) | no | yes | yes, with a larger `max_tokens` |
 | `StreamTooLargeError` | A streamed reply passed `stream_max_tool_arguments_chars` or `stream_max_total_chars` (subclass of `InvalidOutputError`; fails over the same way) | no | yes (not by mid-stream restart) | no |
 | `ResponseTooLargeError` | An HTTP response passed `max_response_body_bytes`, `max_sse_event_bytes` or `max_stream_bytes` (subclass of `StreamTooLargeError`; classified invalid output, no breaker count, fails over) | no | yes (not by mid-stream restart) | no |
 | `FirstTokenTimeoutError` | A streaming attempt sent no first chunk within `first_token_timeout_seconds` (subclass of the builtin `TimeoutError`: a provider timeout, fails over before anything is yielded) | no | yes | yes |

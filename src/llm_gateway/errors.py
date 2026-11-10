@@ -211,6 +211,18 @@ class ToolCallTruncatedError(InvalidOutputError):
         self.tool_names = tool_names
 
 
+class OutputTruncatedError(InvalidOutputError):
+    """A structured-output reply hit the token budget (`finish_reason`
+    "length" / "max_tokens") and is not complete JSON. It is never repaired by
+    guessing at an embedded fragment. A subclass of `InvalidOutputError`, so
+    the engine fails over exactly as before; catch it to retry with a larger
+    `max_tokens`. No output is included."""
+
+    def __init__(self, message: str = "", stop_reason: str = "length") -> None:
+        super().__init__(message, ("<root>",))
+        self.finish_reason = stop_reason
+
+
 class ToolCallInvalidError(InvalidOutputError):
     """With `chat(validate_tool_calls="error")`: the model named a tool the
     caller never offered, or its arguments fail the tool's JSON Schema (or are

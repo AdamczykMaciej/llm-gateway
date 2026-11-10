@@ -27,7 +27,7 @@ from typing import Any, cast
 
 from pydantic import BaseModel, ValidationError
 
-from .errors import InvalidOutputError
+from .errors import InvalidOutputError, OutputTruncatedError
 
 # Keywords that Anthropic structured outputs and OpenAI strict mode reject.
 # They are removed only from the schema *sent to the provider*: a pydantic
@@ -136,17 +136,33 @@ _ANY_FENCE = re.compile(r"```(?:json)?[ \t]*\n?(.*?)```", re.DOTALL | re.IGNOREC
 _MAX_EMBEDDED_CANDIDATES = 5
 
 
-def _loads_lenient(text: str) -> Any:
+# Provider stop reasons that mean the reply was cut off by a token limit.
+_TRUNCATED_STOP_REASONS = frozenset(
+    {"length", "max_tokens", "model_context_window_exceeded", "max_output_tokens"}
+)
+
+
+def is_truncated(stop_reason: str | None) -> bool:
+    return str(stop_reason or "").lower() in _TRUNCATED_STOP_REASONS
+
+
+def _loads_lenient(text: str, *, truncated: bool = False) -> Any:
     """`json.loads` of the reply, tolerating what JSON mode without
     constrained decoding adds around the value: a code fence, a sentence
     before it, or a closing remark after it. The strict parse always runs
     first; only when it fails is the first fenced block, then the first JSON
     object/array embedded in the text, tried. Raises the strict parse's
-    `JSONDecodeError` when nothing usable is found."""
+    `JSONDecodeError` when nothing usable is found. A leading BOM is ignored.
+    When the reply was `truncated` by a token limit only the strict parse runs:
+    a complete object embedded in a cut-off reply is a fragment, not the
+    answer."""
+    text = text.lstrip("\ufeff")
     try:
         return json.loads(_unfence(text))
     except json.JSONDecodeError as error:
         strict_error = error
+    if truncated:
+        raise strict_error
     for fenced in _ANY_FENCE.findall(text)[:1]:
         try:
             return json.loads(fenced)
@@ -160,6 +176,27 @@ def _loads_lenient(text: str) -> Any:
         except json.JSONDecodeError:
             continue
     raise strict_error
+
+
+def _load_or_raise(text: str, stop_reason: str | None, paths: tuple[str, ...]) -> Any:
+    """`_loads_lenient`, with every failure as a typed `InvalidOutputError`
+    carrying `paths` and never the text."""
+    truncated = is_truncated(stop_reason)
+    try:
+        return _loads_lenient(text, truncated=truncated)
+    except json.JSONDecodeError as e:
+        if truncated:
+            raise OutputTruncatedError(
+                f"Structured output was cut off by the token limit (stop_reason={stop_reason}); "
+                "it is not complete JSON.",
+                str(stop_reason),
+            ) from None
+        raise InvalidOutputError(
+            f"Structured output is not valid JSON ({e.msg} at position {e.pos}).", paths
+        ) from None
+    except RecursionError:
+        # Hostile model output nested past the parser's recursion limit.
+        raise InvalidOutputError("Structured output is nested too deeply.", paths) from None
 
 
 def _pydantic_paths(error: ValidationError) -> tuple[str, ...]:
@@ -214,8 +251,10 @@ class OutputSchema:
             "conforms to this JSON Schema:\n" + json.dumps(self.json_schema, separators=(",", ":"))
         )
 
-    def parse(self, text: str) -> Any:
-        """Parse and validate a reply, raising `InvalidOutputError`.
+    def parse(self, text: str, stop_reason: str | None = None) -> Any:
+        """Parse and validate a reply, raising `InvalidOutputError`
+        (`OutputTruncatedError` when `stop_reason` says the reply hit a token
+        limit and is not complete JSON).
 
         With a pydantic model the reply is fully validated, including the
         constraints `to_strict_schema` removed from the request. With a plain
@@ -223,18 +262,14 @@ class OutputSchema:
         checked first, then the same JSON Schema subset `validate=` uses
         (type, enum, required, properties, constraints, ...; `pattern` and
         `format` are not checked). Pass a pydantic model for full validation."""
-        try:
-            data = _loads_lenient(text)
-        except json.JSONDecodeError as e:
-            raise InvalidOutputError(
-                f"Structured output is not valid JSON ({e.msg} at position {e.pos})."
-            ) from None
-        except RecursionError:
-            # Hostile model output nested past the parser's recursion limit.
-            raise InvalidOutputError("Structured output is nested too deeply.") from None
+        data = _load_or_raise(text, stop_reason, ("<root>",))
         if self.model is not None:
             try:
                 return self.model.model_validate(data)
+            except RecursionError:
+                raise InvalidOutputError(
+                    "Structured output is nested too deeply.", ("<root>",)
+                ) from None
             except ValidationError as e:
                 paths = _pydantic_paths(e)
                 raise InvalidOutputError(
@@ -258,19 +293,21 @@ class OutputSchema:
         type_ = self.json_schema.get("type")
         if type_ == "object":
             if not isinstance(data, dict):
-                raise InvalidOutputError("Structured output is not a JSON object.")
+                raise InvalidOutputError("Structured output is not a JSON object.", ("<root>",))
             missing = [key for key in self.json_schema.get("required", []) if key not in data]
             if missing:
                 raise InvalidOutputError(
-                    f"Structured output is missing required key(s): {', '.join(missing)}."
+                    f"Structured output is missing required key(s): {', '.join(missing)}.",
+                    tuple(missing),
                 )
         elif type_ == "array" and not isinstance(data, list):
-            raise InvalidOutputError("Structured output is not a JSON array.")
+            raise InvalidOutputError("Structured output is not a JSON array.", ("<root>",))
 
 
 # ── Opt-in output validation: complete_with_usage(validate=...) ─────────────
 
 _MAX_VALIDATION_ERRORS = 20
+_MAX_SCHEMA_DEPTH = 64
 _JSON_TYPE_CHECKS: dict[str, Callable[[object], bool]] = {
     "object": lambda v: isinstance(v, dict),
     "array": lambda v: isinstance(v, list),
@@ -360,7 +397,11 @@ def _schema_errors(
     range limits (see `_constraint_errors`) and local $ref. Other keywords are
     ignored."""
     schema_map = _dict(schema)
-    if len(out) >= _MAX_VALIDATION_ERRORS or schema_map is None or depth > 64:
+    if len(out) >= _MAX_VALIDATION_ERRORS or schema_map is None:
+        return
+    if depth > _MAX_SCHEMA_DEPTH:
+        # Deeper than the validator looks: not checked, so not accepted.
+        out.append(path or "<root>")
         return
     schema = schema_map
     here = path or "<root>"
@@ -431,22 +472,13 @@ class OutputValidator:
             return cls(spec)
         raise TypeError("validate must be a pydantic BaseModel subclass or a JSON Schema dict")
 
-    def check(self, text: str) -> Any:
+    def check(self, text: str, stop_reason: str | None = None) -> Any:
         """The typed result (model instance, or parsed JSON for a dict
         schema), else `InvalidOutputError` carrying the failing paths."""
         schema = OutputSchema.from_spec(self.spec)
         if schema.model is not None:
-            return schema.parse(text)
-        try:
-            data = _loads_lenient(text)
-        except json.JSONDecodeError as e:
-            raise InvalidOutputError(
-                f"Structured output is not valid JSON ({e.msg} at position {e.pos}).", ("<root>",)
-            ) from None
-        except RecursionError:
-            raise InvalidOutputError(
-                "Structured output is nested too deeply.", ("<root>",)
-            ) from None
+            return schema.parse(text, stop_reason)
+        data = _load_or_raise(text, stop_reason, ("<root>",))
         assert isinstance(self.spec, dict)  # a model spec returned above
         paths: list[str] = []
         _schema_errors(data, self.spec, self.spec, "", paths)

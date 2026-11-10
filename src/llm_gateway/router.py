@@ -27,6 +27,7 @@ from .errors import (
     InvalidRequestError,
     LLMDeadlineExceeded,
     LLMError,
+    OutputTruncatedError,
     ProviderFailure,
     all_failed,
     classify,
@@ -478,9 +479,14 @@ async def _complete_with_usage(
     repairs_left = repair_attempts
     while True:
         try:
-            parsed = validator.check(completion.text)
+            parsed = validator.check(completion.text, completion.stop_reason)
         except InvalidOutputError as error:
-            if repairs_left <= 0 or deadline.attempts_exhausted:
+            if (
+                repairs_left <= 0
+                or deadline.attempts_exhausted
+                # A cut-off reply would be cut off again at the same budget.
+                or isinstance(error, OutputTruncatedError)
+            ):
                 raise
             repairs_left -= 1
             repair_options: dict[str, Any] = {
@@ -499,7 +505,12 @@ async def _complete_with_usage(
         return dataclasses.replace(completion, parsed=parsed)
 
 
+_MAX_REPAIR_REPLY_CHARS = 8000
+
+
 def _repair_prompt(prompt: str, reply: str, error: InvalidOutputError) -> str:
+    if len(reply) > _MAX_REPAIR_REPLY_CHARS:
+        reply = reply[:_MAX_REPAIR_REPLY_CHARS] + "\n[... truncated]"
     where = ", ".join(error.paths) if error.paths else "the reply as a whole"
     return (
         f"{prompt}\n\nYour previous reply failed validation at: {where}.\n"
@@ -634,7 +645,9 @@ async def _complete_once(
                 billed[:] = [result.usage]
                 # Inside the attempt, so invalid structured output is a
                 # failure of this provider and the chain moves on.
-                parsed = schema.parse(result.text) if schema is not None else None
+                parsed = (
+                    schema.parse(result.text, result.stop_reason) if schema is not None else None
+                )
                 return result, parsed
 
             try:
