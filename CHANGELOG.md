@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.42.6
+
+API ergonomics pass. Probed and found sound, no change: `__all__` (unique, resolvable, documented,
+no private names), `py.typed` in the wheel, fully annotated public functions, overloads of
+`complete_with_usage` (typed `Completion[Model]` for `output_schema=` / `validate=`), README
+quickstart and every fenced block executed against fakes, every error class in the README
+taxonomy with when it is raised and whether it is retryable, `__version__`-style strings (the HTTP
+service reads the installed package version). No deprecated public names exist, so there is
+nothing to warn about. Provider names stay `str`: the set is open (any OpenAI-compatible host).
+
+- Types: new `FailureClass` `Literal` (exported) for the closed set of `failure_class()` labels;
+  `failure_class()` and `ProviderFailure.kind` are typed with it, `FAILURE_CLASSES` is derived from
+  it, and `ResponseTooLargeError.kind` is `Literal["body", "sse_event", "stream"]`. Runtime values
+  are unchanged.
+- Docs: the README classification table lists `POLICY_VIOLATION`; this changelog gains the missing
+  0.35.2 entry. `tests/test_ergonomics_pass_10.py` fails if a version from 0.29.0 to the current
+  one has no changelog entry.
+
+## 0.35.2
+
+Version bump only; no code or documentation change (0.35.3 carries the exception-chain scrubbing).
+
 ## 0.42.5
 
 Agentic pass 9. Probed with fakes and found sound, no change: tool-call translation across

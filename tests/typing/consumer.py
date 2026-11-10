@@ -7,8 +7,10 @@ from pydantic import BaseModel
 from llm_gateway import (
     AttemptReport,
     Completion,
+    FailureClass,
     GatewayConfig,
     Message,
+    ProviderFailure,
     ToolChoice,
     ToolSpec,
     UserMessage,
@@ -97,3 +99,9 @@ async def plain_dicts_still_work() -> None:
     plain = [{"role": "user", "content": "hi"}]
     await chat(messages=plain, tools=[{"type": "function", "function": {"name": "x"}}])
     await chat(messages=[{"role": "user", "content": "hi"}], tool_choice="none")
+
+
+def failure_kind(failure: ProviderFailure) -> None:
+    assert_type(failure.kind, FailureClass)
+    label: FailureClass = "billing"
+    print(label, failure.kind)

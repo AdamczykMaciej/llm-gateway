@@ -79,7 +79,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from enum import StrEnum
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal, get_args
 
 import anthropic
 import openai
@@ -274,7 +274,12 @@ class ResponseTooLargeError(StreamTooLargeError):
     the cap in bytes. The message never carries response content.
     """
 
-    def __init__(self, message: str = "", limit: int = 0, kind: str = "body") -> None:
+    def __init__(
+        self,
+        message: str = "",
+        limit: int = 0,
+        kind: Literal["body", "sse_event", "stream"] = "body",
+    ) -> None:
         super().__init__(message, limit=limit)
         self.kind = kind
 
@@ -649,7 +654,23 @@ def is_model_scoped(exc: BaseException) -> str | None:
     return None
 
 
-_FAILURE_CLASSES: dict[ErrorKind, str] = {
+FailureClass = Literal[
+    "network",
+    "timeout",
+    "rate_limited",
+    "auth",
+    "billing",
+    "invalid_request",
+    "invalid_output",
+    "empty_response",
+    "unknown",
+    "policy_violation",
+    "model_retired",
+    "overloaded",
+]
+"""The closed set of `failure_class()` labels (also `ProviderFailure.kind`)."""
+
+_FAILURE_CLASSES: dict[ErrorKind, FailureClass] = {
     ErrorKind.TRANSIENT: "network",
     ErrorKind.TIMEOUT: "timeout",
     ErrorKind.RATE_LIMITED: "rate_limited",
@@ -661,10 +682,10 @@ _FAILURE_CLASSES: dict[ErrorKind, str] = {
     ErrorKind.UNKNOWN: "unknown",
     ErrorKind.POLICY_VIOLATION: "policy_violation",
 }
-FAILURE_CLASSES = frozenset(_FAILURE_CLASSES.values()) | {"model_retired", "overloaded"}
+FAILURE_CLASSES: frozenset[str] = frozenset(get_args(FailureClass))
 
 
-def failure_class(exc: BaseException) -> str:
+def failure_class(exc: BaseException) -> FailureClass:
     """A stable, alertable label for why a provider failed: `billing`
     (out of credit, spend limit, quota), `rate_limited`, `auth`,
     `model_retired` (the model or deployment no longer exists: needs a config
@@ -688,7 +709,7 @@ class ProviderFailure:
 
     provider: str
     model: str | None
-    kind: str
+    kind: FailureClass
     """One of `FAILURE_CLASSES` (see `failure_class`)."""
     status_code: int | None
     detail: str
