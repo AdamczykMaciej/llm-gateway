@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.34.0
+
+Opt-in validation of the tool calls a model returns. Additive; the default changes nothing.
+
+- New: `chat(validate_tool_calls="off"|"warn"|"error")`. Each reply's tool calls go through
+  `check_tool_calls` inside the attempt (unknown tool, arguments vs the tool's JSON Schema,
+  arguments over `stream_max_tool_arguments_chars`). `warn` logs names and paths only; `error`
+  raises the new `ToolCallInvalidError` (an `InvalidOutputError`, with `issues`), so the engine
+  fails over. Default off: strict checking could break callers whose tools have schemas the
+  model does not follow. Any other value is `InvalidRequestError`.
+- Audit, no change needed: pre-flight checks (0.14), truncated tool calls (0.16), duplicate/empty
+  ids (`unique_tool_call_ids`), tool-result pairing and malformed-JSON handling are consistent.
+  Not done: an automatic repair retry (a failover or the `tool_error_message` loop does this);
+  `stream_chat` does not validate (callers assemble fragments).
+
 ## 0.33.0
 
 Cost accounting audit: unknown usage is no longer priced as free.

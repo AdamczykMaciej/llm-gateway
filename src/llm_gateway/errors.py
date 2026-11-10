@@ -77,7 +77,7 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import anthropic
 import openai
@@ -209,6 +209,20 @@ class ToolCallTruncatedError(InvalidOutputError):
         super().__init__(message)
         self.finish_reason = "length"
         self.tool_names = tool_names
+
+
+class ToolCallInvalidError(InvalidOutputError):
+    """With `chat(validate_tool_calls="error")`: the model named a tool the
+    caller never offered, or its arguments fail the tool's JSON Schema (or are
+    larger than `stream_max_tool_arguments_chars`). A subclass of
+    `InvalidOutputError`, so the engine fails over to the next provider and an
+    exhausted chain chains from it. `issues` are `ToolCallIssue`s (call id, tool
+    name, kind, failing argument paths; never values)."""
+
+    def __init__(self, message: str = "", issues: tuple[Any, ...] = ()) -> None:
+        paths = tuple(dict.fromkeys(p for issue in issues for p in issue.paths))
+        super().__init__(message, paths)
+        self.issues = issues
 
 
 class FirstTokenTimeoutError(TimeoutError):
