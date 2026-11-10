@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.32.0
+
+Bounded response reading. Additive; the defaults never affect normal LLM replies.
+
+- New: `max_response_body_bytes` (32 MiB), `max_sse_event_bytes` (8 MiB) and `max_stream_bytes`
+  (128 MiB) on `GatewayConfig` (env `MAX_RESPONSE_BODY_BYTES`, ...; 0 disables). A response-event
+  guard on every SDK client counts decoded bytes (compression bombs included), refuses an
+  oversized Content-Length before reading, closes the connection at once and raises the new
+  `ResponseTooLargeError` (`kind`, `limit`). It subclasses `StreamTooLargeError`, so it is an
+  `InvalidOutputError`: failover, no same-provider retry and no circuit-breaker count (the
+  provider answered; size says nothing about availability). `classify` looks through the SDK's
+  connection-error wrapper.
+- Covers openai, azure, groq, openai_compat, huggingface, mistral, openrouter, gemini, anthropic
+  and vertex. Not covered: credential fetches by `google-auth` / `azure-identity`. A decoder step
+  can expand one wire chunk (~64 KiB, ~1000x for gzip) past a cap before it is checked. With
+  `sdk_max_retries > 0` the SDK may re-request after an oversized reply.
+- Changed: the three limits are part of the SDK client cache key.
+
 ## 0.31.0
 
 Base URL and model-id hardening. **Behaviour change** (safe defaults, one opt-out).

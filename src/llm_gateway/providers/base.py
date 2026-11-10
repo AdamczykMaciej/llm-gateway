@@ -27,6 +27,7 @@ from openai.types.chat import ChatCompletionMessageParam
 
 from ..config import GatewayConfig
 from ..errors import EmptyCompletionError, InvalidOutputError, ToolCallTruncatedError
+from ._limits import response_guard
 from ._wire import ToolCallDelta, ToolCallDeltaFunction
 
 logger = logging.getLogger("llm_gateway")
@@ -76,12 +77,17 @@ def _sdk_timeout(seconds: float) -> Timeout | None:
     return Timeout(seconds, connect=min(CONNECT_TIMEOUT_SECONDS, seconds))
 
 
-def sdk_http_client(factory: Any, config: GatewayConfig) -> Any:
+def sdk_http_client(factory: Any, config: GatewayConfig, **client_kwargs: Any) -> Any:
     """The SDK's own httpx2 client factory, with redirects off. The SDKs
     follow redirects by default, and httpx only strips `Authorization` across
     origins, so a hostile or compromised endpoint could bounce the request
-    (with `x-api-key` / `api-key` headers) to another host. Honors ssl_verify."""
-    kwargs: dict[str, Any] = {"follow_redirects": False}
+    (with `x-api-key` / `api-key` headers) to another host. Honors ssl_verify.
+    Every response also passes through `response_guard`'s size caps."""
+    kwargs: dict[str, Any] = {
+        "follow_redirects": False,
+        "event_hooks": {"response": [response_guard(config)]},
+        **client_kwargs,
+    }
     if not config.ssl_verify:
         kwargs["verify"] = False
     return factory(**kwargs)
@@ -160,6 +166,9 @@ def sdk_client_cache_key(api_key: str, config: GatewayConfig) -> tuple[Any, ...]
         config.ssl_verify,
         config.request_timeout_seconds,
         config.sdk_max_retries,
+        config.max_response_body_bytes,
+        config.max_sse_event_bytes,
+        config.max_stream_bytes,
     )
 
 
