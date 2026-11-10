@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.30.0
+
+Pre-call cost estimates now cover the Claude model fallback. Additive; the shape of
+`RoutableModel` / `CostEstimate` is unchanged.
+
+- Fixed: `routable_models()` / `estimate_max_cost()` ignored `claude_model_fallback`, which the
+  anthropic provider retries once with on a model rejection (`complete`, `chat` and `stream_chat`).
+  A budget reserved for a cheap primary with a dearer fallback was too low. The fallback is now an
+  extra `RoutableModel` right after the anthropic primary, when anthropic is routable, the fallback
+  differs from `claude_model`, is not retired (with `block_retired_models`) and no explicit `model`
+  is passed. An unpriced fallback makes `max_cost_usd` `None`, never 0.
+- Fixed: `ProviderPolicy.max_cost_usd` and `sort="price"` priced anthropic by the primary model
+  only; they now use the larger of primary and fallback (an unpriced fallback counts as unpriced).
+
 ## 0.29.0
 
 Per-call end-to-end deadline. Additive; the default keeps today's behaviour.

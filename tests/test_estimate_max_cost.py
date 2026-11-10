@@ -118,3 +118,59 @@ def test_negative_tokens_rejected():
 def test_exported():
     for name in ("CostEstimate", "RoutableModel", "estimate_max_cost", "routable_models"):
         assert name in llm_gateway.__all__
+
+
+# 0.30.0: the one-shot claude_model_fallback is a routable model too.
+def _fb(**kw) -> GatewayConfig:
+    base = {
+        "groq_api_key": "",
+        "provider_order": "anthropic",
+        "claude_model": "cheap",
+        "claude_model_fallback": "dear",
+        "model_prices": {
+            "anthropic/cheap": ModelPrice(input_per_mtok=1, output_per_mtok=2),
+            "anthropic/dear": ModelPrice(input_per_mtok=10, output_per_mtok=20),
+        },
+    }
+    base.update(kw)
+    return _cfg(**base)
+
+
+def test_fallback_model_is_routable_after_primary():
+    got = routable_models(_fb())
+    assert [(m.provider, m.model) for m in got] == [("anthropic", "cheap"), ("anthropic", "dear")]
+
+
+def test_max_cost_covers_dearer_fallback():
+    est = estimate_max_cost(_fb(), input_tokens=1_000_000, max_output_tokens=1_000_000)
+    assert est.max_cost_usd == pytest.approx(30.0)
+
+
+def test_unpriced_fallback_makes_max_cost_none():
+    prices = {"anthropic/cheap": ModelPrice(input_per_mtok=1, output_per_mtok=2)}
+    est = estimate_max_cost(_fb(model_prices=prices), input_tokens=10, max_output_tokens=10)
+    assert est.max_cost_usd is None
+    assert est.unpriced == ("anthropic/dear",)
+
+
+def test_fallback_skipped_when_same_unset_or_explicit_model_but_kept_for_chat():
+    assert len(routable_models(_fb(claude_model_fallback="cheap"))) == 1
+    assert len(routable_models(_fb(claude_model_fallback=""))) == 1
+    assert len(routable_models(_fb(), provider="anthropic", model="x")) == 1  # explicit model
+    assert len(routable_models(_fb(), chat=True)) == 2  # chat() retries with it too
+
+
+def test_fallback_skipped_when_anthropic_not_routable():
+    assert routable_models(_fb(anthropic_api_key="")) == ()
+
+
+def test_policy_max_cost_considers_fallback():
+    # primary alone is 3.0 (<= cap), the dearer fallback is 30.0 (> cap)
+    est = estimate_max_cost(
+        _fb(),
+        input_tokens=1_000_000,
+        max_output_tokens=1_000_000,
+        policy=ProviderPolicy(max_cost_usd=5.0),
+    )
+    assert est.models == ()
+    assert "anthropic" in est.excluded

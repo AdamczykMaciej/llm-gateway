@@ -107,6 +107,15 @@ def _plan(
             price, input_chars=profile.input_chars, max_output_tokens=max_output_tokens
         )
         models.append(RoutableModel(p, name, cost))
+        fallback = plan.fallback_models.get(p)
+        if fallback:
+            fb_price = lookup_price(
+                p, fallback, config.model_prices, vertex_location=config.vertex_location
+            )
+            fb_cost = worst_case_cost_usd(
+                fb_price, input_chars=profile.input_chars, max_output_tokens=max_output_tokens
+            )
+            models.append(RoutableModel(p, fallback, fb_cost))
     return tuple(models), plan.exclusion_reasons()
 
 
@@ -123,6 +132,9 @@ def routable_models(
     credentials, retired models (when `block_retired_models`) and whatever
     `config.policy` / `policy` exclude. `model` overrides the model only when
     `provider` is given, as for `complete(force_provider=..., model=...)`.
+    The anthropic provider's one-shot `claude_model_fallback` is listed right
+    after its primary model (when it differs, is not retired and no explicit
+    `model` is given), as a call may be served by it.
     `chat=True` uses the `chat()` provider registry. Costs are for a zero-size
     call; use `estimate_max_cost` for real numbers."""
     return _plan(

@@ -120,6 +120,10 @@ class ChainPlan:
     """The chain the engine may try, in order."""
     models: dict[str, str] = field(default_factory=dict)
     estimated_costs: dict[str, float | None] = field(default_factory=dict)
+    """Worst case per provider; for a provider with a fallback model, the larger of
+    the two (None when either is unpriced)."""
+    fallback_models: dict[str, str] = field(default_factory=dict)
+    """Provider -> one-shot fallback model a call may also be served by."""
     exclusions: dict[str, list[tuple[str, str]]] = field(default_factory=dict)
     denied: list[str] = field(default_factory=list)
     """Providers the budget hook denied during the call."""
@@ -193,6 +197,20 @@ def _available(provider: str, config: GatewayConfig, registry: Mapping[str, Any]
     return configured(config) if configured else True
 
 
+def _fallback_for(provider: str, config: GatewayConfig, model_override: str | None) -> str | None:
+    """The model the provider may retry once with, or None. Mirrors
+    `providers.anthropic._fallback_model`: only for the configured default
+    model, and never for a retired fallback."""
+    if provider != "anthropic" or model_override:
+        return None
+    fallback = config.claude_model_fallback
+    if not fallback or fallback == config.claude_model:
+        return None
+    if config.block_retired_models and is_retired(provider, fallback) is not None:
+        return None
+    return fallback
+
+
 def plan_chain(
     order: list[str],
     *,
@@ -226,6 +244,22 @@ def plan_chain(
             input_chars=profile.input_chars,
             max_output_tokens=profile.max_output_tokens,
         )
+        fallback = _fallback_for(provider, config, model_override)
+        if fallback:
+            fallback_estimate = worst_case_cost_usd(
+                lookup_price(
+                    provider, fallback, config.model_prices, vertex_location=config.vertex_location
+                ),
+                input_chars=profile.input_chars,
+                max_output_tokens=profile.max_output_tokens,
+            )
+            plan.fallback_models[provider] = fallback
+            # An unpriced model is never counted as 0.
+            estimate = (
+                None
+                if estimate is None or fallback_estimate is None
+                else max(estimate, fallback_estimate)
+            )
         plan.models[provider] = model
         plan.estimated_costs[provider] = estimate
 
