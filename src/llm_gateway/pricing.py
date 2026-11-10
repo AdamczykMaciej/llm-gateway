@@ -347,14 +347,14 @@ def cost_usd(
     if price is None or (usage.input_tokens <= 0 and usage.output_tokens <= 0):
         return None
     r = _rates(price, usage.input_tokens, batch)
-    writes = usage.cache_creation_input_tokens
+    writes = max(usage.cache_creation_input_tokens, 0)
     long_writes = min(max(cache_write_1h_tokens, 0), writes)
     total = (
         usage.uncached_input_tokens * r.input
-        + usage.cache_read_input_tokens * r.cached
+        + max(usage.cache_read_input_tokens, 0) * r.cached
         + (writes - long_writes) * r.write
         + long_writes * r.write_1h
-        + usage.output_tokens * r.output
+        + max(usage.output_tokens, 0) * r.output
     )
     return round(total / 1_000_000, 10)
 

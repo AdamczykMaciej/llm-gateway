@@ -237,8 +237,8 @@ _E = TypeVar("_E", "InvalidOutputError", "EmptyCompletionError")
 
 def as_int(value: object) -> int:
     """An SDK usage field as an int: None (field absent) and anything
-    non-integer count as 0."""
-    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+    non-integer count as 0, and so does a negative count (never a credit)."""
+    return max(value, 0) if isinstance(value, int) and not isinstance(value, bool) else 0
 
 
 def usage_from_openai_style(usage: Any) -> Usage:

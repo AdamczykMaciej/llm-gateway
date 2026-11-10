@@ -529,7 +529,7 @@ def _merge_attempts(first: Completion, latest: Completion) -> Completion:
         a.reasoning_tokens + b.reasoning_tokens,
     )
     cost = (
-        first.cost_usd + latest.cost_usd
+        round(first.cost_usd + latest.cost_usd, 10)
         if first.cost_usd is not None and latest.cost_usd is not None
         else None
     )
