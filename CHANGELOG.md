@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.35.3
+
+Security: SDK error attributes are scrubbed, not just their text.
+
+- `errors.scrub_exception_chain` (run by every `AllProvidersExhaustedError` /
+  `LLMDeadlineExceeded` the gateway builds) now also scrubs the chained SDK error's `body`,
+  `param`, `code`, `response` and `request` (openai, anthropic, httpx/httpx2 `HTTPStatusError`,
+  and any exception with string/dict/list or `httpx`-style attributes). Error trackers such as
+  Sentry serialise these, and they carried request headers (`Authorization`, `x-api-key`,
+  `api-key`), URLs with `?key=` and echoed bodies.
+- Exception types are unchanged. Still available on `__cause__`: `status_code`,
+  `response.status_code`, response headers (`Retry-After`), request method and host, and the
+  shape of `body` (error `type` / `code`). Credential headers read `[REDACTED]`, credentials in
+  URLs and body text are redacted, and the request body (the prompt) is dropped.
+- Not covered: exceptions the gateway never chains (raised to your own code directly) and
+  secrets you copy out of frame locals yourself.
+
 ## 0.35.1
 
 Documentation accuracy. No behaviour change in `src` (docstrings only).
