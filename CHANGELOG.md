@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.39.0
+
+Model catalogue freshness (audit against the vendors' pages, read 2026-11-10). Existing entries,
+default models and default prices were re-checked and are unchanged; additions only.
+
+- Retired-model block list, Anthropic
+  (https://platform.claude.com/docs/en/about-claude/model-deprecations): `claude-3-sonnet-20240229`,
+  `claude-2.1`, `claude-2.0` (retired 2025-07-21).
+- Groq (https://console.groq.com/docs/deprecations): `meta-llama/llama-guard-4-12b` (2026-03-05),
+  `moonshotai/kimi-k2-instruct` (2025-10-10), `gemma2-9b-it` (2025-10-08),
+  `deepseek-r1-distill-llama-70b` (2025-10-02), `llama3-70b-8192` and `llama3-8b-8192` (2025-08-30),
+  `mistral-saba-24b` (2025-07-30), `qwen-qwq-32b` (2025-07-14).
+- OpenAI (https://developers.openai.com/api/docs/deprecations), all 2026-10-23: the `gpt-4.1-nano`
+  alias (only the dated id was listed), `gpt-4`, `gpt-4-0613`, `gpt-4-turbo`,
+  `gpt-4-turbo-2024-04-09`, `o1`, `o1-2024-12-17`, `o3-mini`, `o3-mini-2025-01-31`,
+  `gpt-3.5-turbo`, `gpt-3.5-turbo-0125`, `o4-mini`, `o4-mini-2025-04-16`.
+- Gemini (https://docs.cloud.google.com/vertex-ai/generative-ai/docs/learn/model-versions):
+  `gemini-1.5-pro-001/002` and `gemini-1.5-flash-001/002` (retired).
+- New default prices: `anthropic/claude-fable-5-2` ($8 in / $40 out, cache 10 / 16 / 0.20;
+  https://platform.claude.com/docs/en/about-claude/pricing) and `openai/gpt-6-luna` ($0.10 / $0.50,
+  cached $0.01, batch half; https://developers.openai.com/api/docs/pricing).
+- Not verifiable: the Vertex pricing page did not render its tables, so the Vertex Claude Haiku 4.5
+  price stays marked unverified. Defaults checked and still live: `claude-haiku-4-5-20251001` (docs say
+  not retiring sooner than 2026-10-15; still Active), `gpt-4o-mini` (listed on the pricing page; only
+  its dated snapshot retires 2027-01-14, so the alias is not blocked), `gemini-3.5-flash`,
+  `openai/gpt-oss-120b`.
+
 ## 0.38.0
 
 Prompt-injection boundary hardening (audit of `untrusted.py`), backward compatible.
