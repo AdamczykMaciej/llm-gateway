@@ -3,6 +3,7 @@ front of the same chat()/stream_chat() engines the library exposes
 in-process."""
 
 import asyncio
+import importlib.metadata
 import logging
 import time
 import uuid
@@ -47,6 +48,14 @@ _OPENAI_ERROR_TYPES = {
 }
 
 logger = logging.getLogger("llm_gateway")
+
+
+def _package_version() -> str:
+    try:
+        return importlib.metadata.version("llm-gateway")
+    except importlib.metadata.PackageNotFoundError:  # pragma: no cover - source checkout
+        return "0+unknown"
+
 
 # Deltas buffered between the upstream stream and the client socket. Small on
 # purpose: when the client is slow the producer blocks here, which stops
@@ -218,7 +227,7 @@ def create_app(config: GatewayConfig | None = None) -> FastAPI:
             "llm_gateway service: GATEWAY_API_KEYS is not set, so every caller is "
             "accepted; set it before exposing the service"
         )
-    app = FastAPI(title="llm-gateway", version="0.9.0", lifespan=lifespan, **docs_kwargs)
+    app = FastAPI(title="llm-gateway", version=_package_version(), lifespan=lifespan, **docs_kwargs)
     if config.max_request_bytes > 0:
         app.add_middleware(BodyLimitMiddleware, max_bytes=config.max_request_bytes)
     rate_limit_dep = enforce_rate_limit(config)
