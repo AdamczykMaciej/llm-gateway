@@ -33,7 +33,7 @@ from .idempotency import IDEMPOTENCY_HEADER_PROVIDERS, single_flight
 from .policy import ProviderPolicy
 from .providers import CHAT_CALLS, CONFIGURED, DEFAULT_MODEL
 from .providers.base import ChatResult, Usage
-from .retry import Deadline, call_with_retry
+from .retry import Deadline, call_with_retry, resolve_deadline_seconds
 from .router import record_provider_failure
 from .routing import RequestProfile, plan_chain
 from .tool_results import cap_tool_results, resolve_cap
@@ -69,6 +69,7 @@ async def _chat(
     max_tool_result_chars: int | None = None,
     on_attempt: AttemptHook | None = None,
     idempotency_key: str | None = None,
+    deadline_seconds: float | None = None,
 ) -> ChatResult:
     """Return a ChatResult (text and/or tool_calls), trying providers in
     `config.provider_order` — same fallback/circuit-breaker semantics as
@@ -132,7 +133,7 @@ async def _chat(
 
     tracer = get_tracer()
     start = time.monotonic() * 1000
-    deadline = Deadline(config.call_deadline_seconds)
+    deadline = Deadline(resolve_deadline_seconds(deadline_seconds, config.call_deadline_seconds))
     attempted_any = False
     last_error: Exception | None = None
     failures: list[ProviderFailure] = []
@@ -355,7 +356,7 @@ async def _chat(
         if deadline.expired:
             span.set_status(StatusCode.ERROR, "call deadline exceeded")
             raise deadline_exceeded(
-                config.call_deadline_seconds, last_error, config, failures
+                deadline.seconds or 0.0, last_error, config, failures
             ) from last_error
         span.set_status(
             StatusCode.ERROR,
@@ -395,9 +396,15 @@ async def chat(
     max_tool_result_chars: int | None = None,
     on_attempt: AttemptHook | None = None,
     idempotency_key: str | None = None,
+    deadline_seconds: float | None = None,
 ) -> ChatResult:
     """Tool-calling completion with provider fallback; see `_chat` for the
     full contract.
+
+    `deadline_seconds`: one total time budget for this call, replacing
+    `config.call_deadline_seconds` (positive; `InvalidRequestError` otherwise):
+    attempts, backoff, `Retry-After` waits and failovers all draw from it, and
+    `LLMDeadlineExceeded` is raised when it runs out. `None` uses the config.
 
     `idempotency_key`: the caller's key for this LOGICAL call (1-128 letters,
     digits or `. _ : -`; `InvalidRequestError` otherwise). It is put on the
@@ -425,6 +432,7 @@ async def chat(
         "max_tool_result_chars": max_tool_result_chars,
         "on_attempt": on_attempt,
         "idempotency_key": idempotency_key,
+        "deadline_seconds": deadline_seconds,
     }
     if idempotency_key is None:
         return await _chat(**impl_kwargs)
@@ -433,6 +441,14 @@ async def chat(
     fingerprint = {
         k: v
         for k, v in impl_kwargs.items()
-        if k not in ("config", "policy", "request_id", "on_attempt", "idempotency_key")
+        if k
+        not in (
+            "config",
+            "policy",
+            "request_id",
+            "on_attempt",
+            "idempotency_key",
+            "deadline_seconds",
+        )
     }
     return await single_flight(ikey, fingerprint, lambda: _chat(**impl_kwargs))

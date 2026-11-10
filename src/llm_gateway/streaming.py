@@ -57,7 +57,7 @@ from .idempotency import IDEMPOTENCY_HEADER_PROVIDERS, stream_slot
 from .policy import ProviderPolicy
 from .providers import CONFIGURED, DEFAULT_MODEL, STREAM_CALLS
 from .providers.base import StreamDelta, Usage
-from .retry import Deadline, call_with_retry
+from .retry import Deadline, call_with_retry, resolve_deadline_seconds
 from .router import record_provider_failure
 from .routing import RequestProfile, plan_chain
 from .tool_results import cap_tool_results, resolve_cap
@@ -143,6 +143,7 @@ async def stream_chat(
     first_token_timeout_seconds: float | None = None,
     restart_on_failure: bool | None = None,
     idempotency_key: str | None = None,
+    deadline_seconds: float | None = None,
 ) -> AsyncGenerator[StreamDelta, None]:
     """Stream a chat completion.
 
@@ -179,6 +180,11 @@ async def stream_chat(
     cap: the smallest of the three applies, so a value above the idle bound
     changes nothing. After the first chunk only the idle bound (the
     SDK's read timeout) and the deadline apply.
+
+    `deadline_seconds`: one total time budget for the whole stream, replacing
+    `config.call_deadline_seconds` (positive; `InvalidRequestError` otherwise).
+    It bounds attempts, backoff, failovers, restarts and a stream already
+    under way, which then ends with `LLMDeadlineExceeded`. `None` uses the config.
 
     `restart_on_failure` (default: `config.stream_restart_on_failure`, off):
     when a provider fails after chunks were yielded (transport error, idle
@@ -235,6 +241,7 @@ async def stream_chat(
         first_token_timeout_seconds=first_token_timeout_seconds,
         restart_on_failure=restart_on_failure,
         idempotency_key=ikey,
+        deadline_seconds=deadline_seconds,
     )
     async with aclosing(impl) as chunks:
         if ikey is None:
@@ -266,6 +273,7 @@ async def _stream_chat(
     first_token_timeout_seconds: float | None = None,
     restart_on_failure: bool | None = None,
     idempotency_key: str | None = None,
+    deadline_seconds: float | None = None,
 ) -> AsyncGenerator[StreamDelta, None]:
     """The body of `stream_chat()`; see there for the contract."""
     rid = resolve_request_id(request_id)
@@ -300,7 +308,7 @@ async def _stream_chat(
 
     tracer = get_tracer()
     start = time.monotonic() * 1000
-    deadline = Deadline(config.call_deadline_seconds)
+    deadline = Deadline(resolve_deadline_seconds(deadline_seconds, config.call_deadline_seconds))
     attempted_any = False
     last_error: Exception | None = None
     failures: list[ProviderFailure] = []
@@ -567,7 +575,7 @@ async def _stream_chat(
                             raise
                         await generator.aclose()
                         span.set_status(StatusCode.ERROR, "call deadline exceeded")
-                        raise deadline_exceeded(config.call_deadline_seconds, e) from e
+                        raise deadline_exceeded(deadline.seconds or 0.0, e) from e
             except LLMError as e:
                 stream_error = e
                 raise
@@ -677,7 +685,7 @@ async def _stream_chat(
         if deadline.expired:
             span.set_status(StatusCode.ERROR, "call deadline exceeded")
             raise deadline_exceeded(
-                config.call_deadline_seconds, last_error, config, failures
+                deadline.seconds or 0.0, last_error, config, failures
             ) from last_error
         span.set_status(
             StatusCode.ERROR,
