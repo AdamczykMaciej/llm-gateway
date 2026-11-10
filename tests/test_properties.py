@@ -480,7 +480,7 @@ def test_cost_is_nonnegative_and_monotonic_across_tier_boundaries(
         assert at is not None and over is not None and at <= over + 1e-9
 
 
-@given(key=st.sampled_from(sorted(DEFAULT_PRICES)), n=st.integers(0, 1_000_000))
+@given(key=st.sampled_from(sorted(DEFAULT_PRICES)), n=st.integers(1, 1_000_000))
 @PROFILE
 def test_builtin_prices_monotonic_in_input_tokens(key: str, n: int):
     price = DEFAULT_PRICES[key]

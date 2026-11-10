@@ -319,11 +319,13 @@ def cost_usd(
     cache_write_1h_tokens: int = 0,
 ) -> float | None:
     """Cost of a served call from its actual usage, or `None` when the model
-    has no price (never a guessed 0). The long-context tier is chosen by this
+    has no price or the provider reported no usage (never a guessed 0: a
+    served call always has input tokens, so all-zero usage means "unknown").
+    The long-context tier is chosen by this
     request's `usage.input_tokens`. `batch=True` applies `batch_multiplier`;
     `cache_write_1h_tokens` is the part of the cache writes made with the
     1-hour TTL (the rest are 5-minute writes)."""
-    if price is None:
+    if price is None or (usage.input_tokens <= 0 and usage.output_tokens <= 0):
         return None
     r = _rates(price, usage.input_tokens, batch)
     writes = usage.cache_creation_input_tokens
