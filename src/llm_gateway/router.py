@@ -413,13 +413,14 @@ async def complete_with_usage(
         if k
         not in (
             "config",
-            "policy",
             "request_id",
             "on_attempt",
             "idempotency_key",
             "deadline_seconds",
         )
     }
+    # Which providers may see the data differs by policy: never share a result across policies.
+    fingerprint["config_policy"] = config.policy if config is not None else None
     return await single_flight(
         ikey, fingerprint, lambda: _complete_with_usage(**call_kwargs), scope="complete"
     )

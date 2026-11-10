@@ -149,3 +149,33 @@ async def test_failure_shared_then_retryable():
             await chat(messages=_MSGS, config=_cfg(), idempotency_key="r")
         out = await chat(messages=_MSGS, config=_cfg(), idempotency_key="r")
     assert out.content == "hello"
+
+
+async def test_same_key_with_a_different_policy_is_not_shared():
+    """A policy decides which provider may see the data, so a result produced
+    under one policy must not be handed to a caller who asked for another."""
+    from llm_gateway import ProviderPolicy
+
+    gate = asyncio.Event()
+
+    async def slow(*_a, **_k):
+        await gate.wait()
+        return _OK
+
+    calls = {"openai": AsyncMock(side_effect=slow)}
+    with patch("llm_gateway.chat.CHAT_CALLS", calls):
+        first = asyncio.ensure_future(chat(messages=_MSGS, config=_cfg(), idempotency_key="p-1"))
+        await asyncio.sleep(0)
+        second = asyncio.ensure_future(
+            chat(
+                messages=_MSGS,
+                config=_cfg(),
+                idempotency_key="p-1",
+                policy=ProviderPolicy(residency="eu"),
+            )
+        )
+        await asyncio.sleep(0)
+        gate.set()
+        with pytest.raises(InvalidRequestError):
+            await second
+        assert (await first).content == "hello"
