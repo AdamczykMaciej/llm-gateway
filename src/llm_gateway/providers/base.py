@@ -354,7 +354,7 @@ class _ThinkStripper:
             if out:
                 self._state = "pass"
             return out
-        return ""
+        return ""  # pragma: no cover - "pass" returned at the top
 
     def flush(self) -> str:
         """Held-back text that turned out not to be a think block."""
