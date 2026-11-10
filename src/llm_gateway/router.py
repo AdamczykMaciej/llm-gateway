@@ -116,7 +116,8 @@ class Completion(Generic[_T]):
     provider's own value ("end_turn", "stop", "max_tokens", ...). `parsed` is
     set only when `output_schema` was given: the validated pydantic instance,
     or the parsed JSON for a dict schema. `cost_usd` is the cost of `usage`
-    at the model's price (pricing.py), or `None` when the model has no price;
+    at the model's price (pricing.py), or `None` when the model has no price
+    or the provider reported no usage (`usage_reported` is False);
     it is derived data, so it is excluded from equality. `request_id` is the
     call's correlation id (the caller's `request_id`, or a generated one): it
     is on every span of the call, so a result can be matched to its traces. It
@@ -134,6 +135,12 @@ class Completion(Generic[_T]):
     parsed: _T | None = None
     cost_usd: float | None = field(default=None, compare=False)
     request_id: str | None = field(default=None, compare=False)
+
+    @property
+    def usage_reported(self) -> bool:
+        """False when the provider reported no token counts: `usage` is then
+        all zeros and `cost_usd` is `None`, not 0."""
+        return self.usage.input_tokens > 0 or self.usage.output_tokens > 0
 
 
 async def complete(

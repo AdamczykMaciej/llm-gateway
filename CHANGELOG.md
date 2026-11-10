@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.33.0
+
+Cost accounting audit: unknown usage is no longer priced as free.
+
+- Fixed: a reply with no usage block (some `openai_compat` / `huggingface` hosts, or any host that
+  omits it) gave `Usage()` all zeros and `Completion.cost_usd == 0.0`, and a 0.0 `AttemptReport.cost_usd`,
+  so a ledger under-reported spend. `cost_usd()` now returns `None` when a call reports neither input nor
+  output tokens. New `Completion.usage_reported` is False in that case.
+- Audit, no change needed: Anthropic cache reads/writes are added back into `input_tokens` and priced
+  separately (docs: platform.claude.com prompt-caching); OpenAI-style `cached_tokens` stay inside
+  `prompt_tokens`; reasoning tokens are a subset of output; stream usage is taken from the last usage
+  chunk once per attempt and each failed attempt is reported on its own; cost uses the serving model.
+  Not verified: whether Gemini's OpenAI endpoint counts thinking tokens in `completion_tokens`.
+
 ## 0.32.0
 
 Bounded response reading. Additive; the defaults never affect normal LLM replies.
