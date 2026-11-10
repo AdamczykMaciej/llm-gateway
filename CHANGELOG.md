@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.42.7
+
+Second coverage pass (98.85% to 99.82%, floor unchanged at 98.8 because 99.8 would leave under
+0.05 headroom). Tests only, no behaviour change and no bug found; the branches now covered are the
+risky ones: privacy-layer default entry points, stream tail flush and closer-less streams; Azure
+Entra credential and token failures; adaptive thinking; the Anthropic streaming model fallback
+(retried once before the first chunk, never after); tool-id remapping collisions; retired fallback
+models; service shutdown grace and guarded streaming responses; rate-limit window ageing; the
+single-flight cancel-with-last-waiter rule; numeric host forms in the SSRF checks; scrubbing of SDK
+requests without cached content.
+
+- Internal: one provably unreachable defensive return in the think-tag stripper is marked
+  `# pragma: no cover` with its reason.
+
 ## 0.42.6
 
 API ergonomics pass. Probed and found sound, no change: `__all__` (unique, resolvable, documented,
