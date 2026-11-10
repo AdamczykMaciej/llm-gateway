@@ -31,6 +31,7 @@ from .errors import (
     all_failed,
     classify,
     deadline_exceeded,
+    is_retryable,
     provider_failure,
 )
 from .idempotency import IDEMPOTENCY_HEADER_PROVIDERS, single_flight
@@ -99,6 +100,36 @@ def record_provider_failure(
         billing_cooldown_seconds=config.breaker_billing_cooldown_seconds,
         model_missing_cooldown_seconds=config.breaker_model_missing_cooldown_seconds,
     )
+
+
+def retry_hooks(
+    provider: str, model: str | None, *, config: GatewayConfig, force_provider: str | None
+) -> dict[str, Any]:
+    """`call_with_retry` kwargs shared by the three engines: stop retrying a
+    provider other callers have just tripped the breaker on (a forced provider
+    bypasses the breaker, so it keeps retrying), and, with
+    `breaker_count_retries`, count each retried failure toward the breaker."""
+
+    def should_retry(error: Exception) -> bool:
+        return is_retryable(error) and (
+            bool(force_provider) or not breaker.tripped(provider, model)
+        )
+
+    def count(error: Exception) -> None:
+        breaker.record_error(
+            provider,
+            error,
+            threshold=config.breaker_failure_threshold,
+            cooldown_seconds=config.breaker_cooldown_seconds,
+            model=model,
+            billing_cooldown_seconds=config.breaker_billing_cooldown_seconds,
+            model_missing_cooldown_seconds=config.breaker_model_missing_cooldown_seconds,
+        )
+
+    return {
+        "should_retry": should_retry,
+        "on_retry_failure": count if config.breaker_count_retries and not force_provider else None,
+    }
 
 
 _T = TypeVar("_T", default=Any)
@@ -422,7 +453,10 @@ async def _complete_with_usage(
     validator = OutputValidator.from_spec(validate) if validate is not None else None
     config = config or GatewayConfig()
     # One budget for the first call and every repair call together.
-    deadline = Deadline(resolve_deadline_seconds(deadline_seconds, config.call_deadline_seconds))
+    deadline = Deadline(
+        resolve_deadline_seconds(deadline_seconds, config.call_deadline_seconds),
+        config.max_attempts_per_call,
+    )
     options: dict[str, Any] = {
         "system": system,
         "max_tokens": max_tokens,
@@ -446,7 +480,7 @@ async def _complete_with_usage(
         try:
             parsed = validator.check(completion.text)
         except InvalidOutputError as error:
-            if repairs_left <= 0:
+            if repairs_left <= 0 or deadline.attempts_exhausted:
                 raise
             repairs_left -= 1
             repair_options: dict[str, Any] = {
@@ -525,7 +559,7 @@ async def _complete_once(
 
     tracer = get_tracer()
     start = time.monotonic() * 1000
-    deadline = deadline or Deadline(config.call_deadline_seconds)
+    deadline = deadline or Deadline(config.call_deadline_seconds, config.max_attempts_per_call)
     attempted_any = False
     last_error: Exception | None = None
     failures: list[ProviderFailure] = []
@@ -561,7 +595,7 @@ async def _complete_once(
             resolved_model = model_override or DEFAULT_MODEL[provider](config)
             if not force_provider and breaker.is_open(provider, resolved_model):
                 continue
-            if deadline.expired:
+            if deadline.expired or deadline.attempts_exhausted:
                 break
             if not await plan.allows(provider, span):
                 continue
@@ -607,6 +641,9 @@ async def _complete_once(
                 result, parsed = await call_with_retry(
                     attempt,
                     attempts=config.retry_attempts,
+                    **retry_hooks(
+                        provider, resolved_model, config=config, force_provider=force_provider
+                    ),
                     base_delay_seconds=config.retry_base_delay_seconds,
                     attempt_timeout_seconds=config.request_timeout_seconds,
                     deadline=deadline,

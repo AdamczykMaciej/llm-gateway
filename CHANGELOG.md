@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.37.0
+
+Retry amplification under an outage: a per-call request cap and a faster breaker. Defaults unchanged
+except where noted.
+
+- Worst case per call was `(1 + repair_attempts) x providers x retry_attempts` requests (9 with the
+  defaults and three providers, 54 with `repair_attempts=5`); SDK-level retries were already 0.
+  New `max_attempts_per_call` (`MAX_ATTEMPTS_PER_CALL`, default 0 = no cap) bounds every request of
+  one call, including repair calls.
+- New `breaker_count_retries` (`BREAKER_COUNT_RETRIES`, default false): retried failures count toward
+  the breaker, so N concurrent callers stop after about `breaker_failure_threshold` requests per provider.
+- Always on: a call mid-retry stops retrying a provider whose breaker other callers just opened
+  (a half-open probe is unaffected; `force_provider` still retries).
+- Behaviour change: a provider's `Retry-After` is now jittered upwards by up to 10% (never below the
+  requested wait) so callers do not return in the same instant.
+- New `breaker.tripped()`; `call_with_retry(on_retry_failure=)`.
+
 ## 0.36.0
 
 Observability: more OpenTelemetry GenAI attributes, nothing removed or renamed.

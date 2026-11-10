@@ -2201,6 +2201,8 @@ elsewhere:
 | `BREAKER_BILLING_COOLDOWN_SECONDS` | `300` | Cooldown after a billing/balance failure (a retry cannot fix it). `0` = use `BREAKER_COOLDOWN_SECONDS` |
 | `BREAKER_MODEL_MISSING_COOLDOWN_SECONDS` | `1800` | Cooldown for one model after "model not found" or a retired model. `0` = use `BREAKER_COOLDOWN_SECONDS` |
 | `RETRY_ATTEMPTS` | `2` | Total attempts on one provider for transient errors before failing over. `1` disables retries. |
+| `MAX_ATTEMPTS_PER_CALL` | `0` | Hard cap on provider requests for one logical call, across every retry, failover and `repair_attempts` call. `0` = no cap. |
+| `BREAKER_COUNT_RETRIES` | `false` | `true`: every retried failure also counts toward `BREAKER_FAILURE_THRESHOLD`, so concurrent callers open the breaker sooner and stop retrying a provider others just tripped. |
 | `RETRY_BASE_DELAY_SECONDS` | `0.2` | Delay before a retry; doubles each attempt. |
 | `REQUEST_TIMEOUT_SECONDS` | `45` | Per-attempt timeout for non-streaming calls. `0` falls back to the SDK default (600 s). |
 | `STREAM_IDLE_TIMEOUT_SECONDS` | `30` | Streaming: max wait for the stream to start and between chunks. `0` falls back to the SDK default. |

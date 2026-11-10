@@ -193,7 +193,8 @@ async def test_retry_after_header_is_honored_when_longer_than_backoff():
     call = AsyncMock(side_effect=[_status_error_with_headers(503, {"retry-after": "7"}), "ok"])
     with patch("llm_gateway.retry.asyncio.sleep", AsyncMock()) as sleep:
         await call_with_retry(call, attempts=2, base_delay_seconds=0.1)
-    sleep.assert_awaited_once_with(7.0)
+    sleep.assert_awaited_once()
+    assert 7.0 <= sleep.await_args.args[0] <= 7.71
 
 
 async def test_retry_after_longer_than_deadline_gives_up_instead_of_sleeping():

@@ -85,6 +85,14 @@ def is_open(provider: str, model: str | None = None) -> bool:
     return any(_state(k, now) == "open" for k in _keys(provider, model))
 
 
+def tripped(provider: str, model: str | None = None) -> bool:
+    """True while a cooldown is running (not for a half-open probe lease): a
+    call that is mid-retry should stop hammering a provider other callers have
+    just opened the breaker on."""
+    now = time.monotonic()
+    return any(now < _opened_until.get(k, 0.0) for k in _keys(provider, model))
+
+
 def state(provider: str, model: str | None = None) -> str:
     """Pure read for diagnostics: 'open', 'probe' (half-open, the next caller
     is the probe) or 'closed'; the most restrictive of the provider's and the
