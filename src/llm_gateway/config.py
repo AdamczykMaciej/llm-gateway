@@ -229,24 +229,27 @@ class GatewayConfig(BaseSettings):
     )
 
     # ── Provider credentials ─────────────────────────────────────────────
-    anthropic_api_key: str = Field(default="", repr=False)
-    groq_api_key: str = Field(default="", repr=False)
-    openai_api_key: str = Field(default="", repr=False)
+    anthropic_api_key: str = Field(default="", repr=False, exclude=True)
+    groq_api_key: str = Field(default="", repr=False, exclude=True)
+    openai_api_key: str = Field(default="", repr=False, exclude=True)
     # Only used when azure_auth == "api_key".
-    azure_api_key: str = Field(default="", repr=False)
+    azure_api_key: str = Field(default="", repr=False, exclude=True)
     # OpenAI-compatible hosts (providers/openai_compatible.py).
-    mistral_api_key: str = Field(default="", repr=False)
-    openrouter_api_key: str = Field(default="", repr=False)
+    mistral_api_key: str = Field(default="", repr=False, exclude=True)
+    openrouter_api_key: str = Field(default="", repr=False, exclude=True)
     # The generic escape hatch: any host speaking the Chat Completions API.
     # Registered as provider id "openai_compat" once base_url and key are set;
     # a local server that needs no key takes any non-empty value.
-    openai_compat_api_key: str = Field(default="", repr=False)
+    openai_compat_api_key: str = Field(default="", repr=False, exclude=True)
     openai_compat_base_url: str = ""
     # Hugging Face (providers/huggingface.py): a token for the Inference
     # Providers router or for a dedicated Inference Endpoint. Read from
     # HUGGINGFACE_API_KEY or HF_TOKEN.
     huggingface_api_key: str = Field(
-        default="", repr=False, validation_alias=AliasChoices("huggingface_api_key", "hf_token")
+        default="",
+        repr=False,
+        exclude=True,
+        validation_alias=AliasChoices("huggingface_api_key", "hf_token"),
     )
 
     # ── Provider models ──────────────────────────────────────────────────
@@ -478,14 +481,14 @@ class GatewayConfig(BaseSettings):
     # Prompts are never traced unless this is explicitly enabled, and even
     # then they're PII-masked first (see pii.mask_pii). Off by default.
     trace_include_prompts: bool = False
-    otel_exporter_otlp_endpoint: str = Field(default="", repr=False)
+    otel_exporter_otlp_endpoint: str = Field(default="", repr=False, exclude=True)
     # Comma-separated key=value pairs; usually carries a token, so never in repr.
-    otel_exporter_otlp_headers: str = Field(default="", repr=False)
+    otel_exporter_otlp_headers: str = Field(default="", repr=False, exclude=True)
 
     # ── HTTP service (llm_gateway.service) ──────────────────────────────
     # Comma-separated bearer keys accepted by the HTTP service. Irrelevant
     # when only the library is used in-process.
-    gateway_api_keys: str = Field(default="", repr=False)
+    gateway_api_keys: str = Field(default="", repr=False, exclude=True)
 
     # Basic abuse guardrails for the HTTP service. Per-key, in-process (not
     # shared across Cloud Run replicas — see service/rate_limit.py). 0/negative

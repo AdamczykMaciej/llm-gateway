@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.42.2
+
+Security pass 6. Dependency audit (`pip-audit`, all extras): only `pip` itself (PYSEC-2026-3721,
+tooling, not a runtime dependency); no minimum bumped. Checked and found sound, no change: SDK
+clients all built via `sdk_http_client` (redirects off), prompt text in spans opt-in
+(`trace_include_prompts`) and responses never recorded, `request_id`/`idempotency_key` validated
+with `fullmatch` (no CR/LF reaches a header), no eval/exec/yaml/pickle on input.
+
+- Fix: `GatewayConfig.model_dump()` / `model_dump_json()` included every API key, the gateway keys
+  and the OTLP endpoint/headers (only `repr` hid them), so logging a dump leaked credentials. Those
+  fields are now `exclude=True`. Attribute access, `model_copy` and env loading are unchanged;
+  rebuilding a config from a dump no longer carries the credentials.
+
 ## 0.42.1
 
 Tests only; no behaviour change. Coverage 98.60% to 98.82% (floor raised to 98.8). New
