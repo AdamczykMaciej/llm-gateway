@@ -22,7 +22,21 @@ from .providers.base import ToolCall
 # (invisible ASCII smuggling) and variation selectors supplement.
 _HIDDEN = re.compile("[­؜᠎​-‏‪-‮⁠-⁯﻿\U000e0000-\U000e007f\U000e0100-\U000e01ef]")
 _HTML_COMMENT = re.compile(r"<!--.*?(?:-->|\Z)", re.DOTALL)
-_FENCE_LOOKALIKE = re.compile(r"<<<|>>>")
+# The ASCII fence plus visually identical runs (fullwidth, single/double angle
+# quotation marks) that a model may read as the same delimiter.
+_FENCE_LOOKALIKE = re.compile(
+    "<<<|>>>|\uff1c{3}|\uff1e{3}|\u2039{3}|\u203a{3}|\u00ab{3}|\u00bb{3}|\u226a{3}|\u226b{3}"
+)
+
+
+def _remove_to_fixpoint(pattern: re.Pattern[str], text: str) -> str:
+    """Apply `pattern.sub("")` until nothing matches: removing a match can
+    join the text around it into a new match (`<<>>><` -> `<<<`)."""
+    while True:
+        new = pattern.sub("", text)
+        if new == text:
+            return text
+        text = new
 
 
 def sanitize_untrusted(
@@ -32,10 +46,12 @@ def sanitize_untrusted(
     characters) and HTML comments, both common hiding places for injected
     instructions. An unterminated comment is removed to the end. Ordinary
     Unicode, newlines and tabs are kept."""
-    if strip_html_comments:
-        text = _HTML_COMMENT.sub("", text)
+    # Hidden characters first, so one cannot split `<!--` or `-->`; comments to
+    # a fixpoint, because removing one can join the text around it into another.
     if strip_hidden:
         text = _HIDDEN.sub("", text)
+    if strip_html_comments:
+        text = _remove_to_fixpoint(_HTML_COMMENT, text)
     return text
 
 
@@ -68,7 +84,7 @@ def wrap_untrusted(
     label = re.sub(r"[^\w.-]", "_", source)[:40] or "external"
     if sanitize:
         content = sanitize_untrusted(content)
-    body = _FENCE_LOOKALIKE.sub("", content)
+    body = _remove_to_fixpoint(_FENCE_LOOKALIKE, content)
     fence = secrets.token_hex(16)
     for _ in range(3):  # a collision is astronomically unlikely; never loop forever
         if fence not in body:
@@ -93,6 +109,27 @@ def wrap_untrusted(
     return UntrustedContent(text=text, fence=fence, truncated=truncated)
 
 
+def _safe_name(name: str) -> str:
+    """A model-chosen tool name made safe to echo back into the conversation."""
+    name = _remove_to_fixpoint(_FENCE_LOOKALIKE, _HIDDEN.sub("", name))
+    return re.sub(r"\s+", " ", name).strip()[:80]
+
+
+def tool_result_message(
+    tool_call_id: str,
+    content: str,
+    *,
+    source: str = "tool",
+    max_chars: int | None = None,
+    sanitize: bool = True,
+) -> dict:
+    """A `role: "tool"` message whose content is `wrap_untrusted(content)`.
+    Use it for every tool result that carries external text (a fetched web
+    page, an email, a file) so no result reaches the model unfenced."""
+    block = wrap_untrusted(content, source=source, max_chars=max_chars, sanitize=sanitize)
+    return {"role": "tool", "tool_call_id": tool_call_id, "content": str(block)}
+
+
 @dataclass(frozen=True)
 class ApprovalDenied:
     """A tool call that was not run because it was not approved."""
@@ -105,7 +142,9 @@ class ApprovalDenied:
         return {
             "role": "tool",
             "tool_call_id": self.call.id,
-            "content": f"Error: the call to {self.call.name} was not approved by the user.",
+            "content": (
+                f"Error: the call to {_safe_name(self.call.name)} was not approved by the user."
+            ),
         }
 
 

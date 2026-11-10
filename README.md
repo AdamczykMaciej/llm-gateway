@@ -2403,6 +2403,15 @@ allowed, denied = await gate_tool_calls(
 - `wrap_untrusted` uses a random per-call fence, removes `<<<`/`>>>` from the content so it cannot
   close the block, and strips invisible characters and HTML comments (`sanitize_untrusted`,
   also usable alone; `sanitize=False` disables).
+  Since 0.38 the removal runs to a fixpoint (`<<>>><` cannot reassemble into `<<<`), also covers
+  fullwidth and angle-quote lookalikes of the markers, and hidden characters are stripped before
+  HTML comments so they cannot split `<!--`. Wrapping an already wrapped block is safe: the inner
+  markers are neutralised, so it stays data inside one block. The fence is 128 random bits per call;
+  the closing fence is appended after truncation, so `max_chars` cannot cut it off.
+- `tool_result_message(call_id, text, source=...)` (0.38) builds a `role: "tool"` message with the
+  result wrapped. The library never wraps tool results for you: wrap every external tool result
+  (fetched pages, emails, files) yourself, or the model sees it unfenced. `ApprovalDenied.message()`
+  sanitises the model-chosen tool name it echoes back.
 - `gate_tool_calls` fails closed: a sensitive tool needs `approve(call) is True`.
 - Tool-result size caps already exist (`tool_result_max_chars`); traces are PII-masked.
 

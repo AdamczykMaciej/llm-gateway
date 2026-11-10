@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.38.0
+
+Prompt-injection boundary hardening (audit of `untrusted.py`), backward compatible.
+
+- Fix: `wrap_untrusted` removed `<<<`/`>>>` in one pass, so `<<>>><` reassembled into a live `<<<`;
+  removal now runs to a fixpoint. Fullwidth and angle-quote lookalike runs (`＜＜＜`, `«««`, ...) are
+  removed too.
+- Fix: `sanitize_untrusted` stripped HTML comments before hidden characters, so `<!<ZWSP>--` survived
+  as a comment; hidden characters go first and comments are removed to a fixpoint.
+- Fix: `ApprovalDenied.message()` echoed the model-chosen tool name verbatim; it is now sanitised.
+- New `tool_result_message()` wraps a tool result as a `role: "tool"` message.
+- Docs: clarified what is and is not protected (fencing is not a security boundary).
+- Behaviour change: content containing the lookalike runs above loses them (previously kept).
+
 ## 0.37.1
 
 Fix: the service's OpenAPI `info.version` was hard-coded to `0.9.0`; it now reports the installed
