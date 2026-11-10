@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.37.1
+
+Fix: the service's OpenAPI `info.version` was hard-coded to `0.9.0`; it now reports the installed
+package version. New edge-path tests (message-shape validation, error scrubbing, think-stripping,
+privacy streams).
+
 ## 0.37.0
 
 Retry amplification under an outage: a per-call request cap and a faster breaker. Defaults unchanged
