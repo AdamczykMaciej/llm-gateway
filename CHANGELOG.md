@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.42.0
+
+Error-taxonomy audit (`classify`, retry/breaker policy) against the providers' current error docs, read
+2026-11-10. Mappings that already matched were left alone: Anthropic 400/413/429/500/504/529,
+OpenAI `insufficient_quota` vs `rate_limit_exceeded`, `context_length_exceeded` and Azure
+`content_filter` (400, fail fast, never counts against the breaker), Gemini/Vertex 429
+`RESOURCE_EXHAUSTED`, 503 `UNAVAILABLE`, OpenRouter 402/408/429/502/503, Groq 413/422/429/5xx.
+Pages: platform.claude.com/docs/en/api/errors, developers.openai.com/api/docs/guides/error-codes,
+console.groq.com/docs/errors, openrouter.ai/docs/api-reference/errors,
+aistudio.google.com/docs/troubleshooting, learn.microsoft.com (Foundry content filtering). The
+Mistral and Hugging Face pages documented no error shapes or could not be fetched, so their
+mappings are unchanged.
+
+- Fix: Groq HTTP 498 (flex tier at capacity) was `invalid_request`; it is now `rate_limited`
+  (fail over, no same-provider retry).
+- Fix: OpenRouter HTTP 403 is shared by permissions, moderation flags, guardrail blocks and budget
+  blocks. A moderation/guardrail 403 (`metadata.flagged_input`/`reasons`/`patterns`) is now
+  `invalid_request` (no breaker trip) instead of `auth`; a budget 403 (`metadata.limit_source`)
+  is `billing` (breaker opens for the billing cooldown). Other 403s stay `auth`.
+- Fix: Anthropic `billing_error` (402) arriving inside a 200 stream is now `billing`; it was `unknown`.
+- Fix: OpenAI `credit_balance_exhausted` on a 429 and Gemini's depleted "prepayment credits" 400
+  are now `billing` (they were `rate_limited` / `invalid_request`, so every request kept calling).
+- Documented policy, unchanged: a content-filter block fails over to the next provider in the
+  chain (another provider's filter may accept it) without counting against the breaker; a
+  context-length error is `invalid_request`, fails fast on the same provider and does not trip the breaker.
+
 ## 0.41.0
 
 Structured-output audit (`output_schema=`, `validate=`, `repair_attempts=`). Every provider already
