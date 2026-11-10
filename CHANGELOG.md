@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.41.0
+
+Structured-output audit (`output_schema=`, `validate=`, `repair_attempts=`). Every provider already
+sent its native mechanism (see the README table) and validated the reply before returning it; the
+gaps were in how odd replies were handled.
+
+- New: `OutputTruncatedError` (subclass of `InvalidOutputError`). A structured reply that stopped on
+  a token limit (`length`, `max_tokens`) and is not complete JSON now raises it instead of a generic
+  parse error. It fails over as before, and `repair_attempts` no longer spends a paid call on it
+  (the repair would hit the same limit): raise `max_tokens` instead.
+- Fix: a cut-off reply is no longer parsed leniently, so a complete object embedded in a truncated
+  one (`{"a": {"b": 1}, "c": [1,`) cannot be returned as the answer.
+- Fix: a leading BOM is ignored (it used to break scalar and fenced replies).
+- Fix: data nested deeper than the validator's depth limit (64) is reported as a validation error
+  at that path; it was silently accepted. Deeply nested JSON handled by a pydantic model also
+  raises `InvalidOutputError` instead of `RecursionError`.
+- Fix: shallow dict-schema failures (not an object/array, missing required key) now carry `paths`
+  like every other validation failure.
+- The repair prompt echoes at most 8000 characters of the previous reply.
+- Unchanged and now documented: a pydantic model coerces `"3"` to `3`; a dict schema rejects it.
+
 ## 0.40.0
 
 Early-close reliability audit of `stream_chat`. The engine already closed the provider generator,
