@@ -388,6 +388,18 @@ class GatewayConfig(BaseSettings):
     # doesn't change how quickly a genuinely-down provider trips its breaker.
     retry_attempts: int = 2
     retry_base_delay_seconds: float = 0.2
+    # Hard cap on provider HTTP requests for ONE logical call, across every
+    # retry, failover and repair call (worst case without it:
+    # (1 + repair_attempts) x providers x retry_attempts). Once spent the call
+    # stops retrying and failing over and raises its last error. 0 (default)
+    # = no cap, as before.
+    max_attempts_per_call: int = 0
+    # False (default): the breaker counts a provider failure once its retries
+    # are exhausted. True: every retried failure also counts, so callers
+    # arriving together during an outage open the breaker after
+    # breaker_failure_threshold failed requests rather than failed calls and
+    # stop retrying a provider other callers just tripped.
+    breaker_count_retries: bool = False
 
     # ── Timeouts ──────────────────────────────────────────────────────────
     # 0/negative disables the corresponding bound (the SDKs' own 600 s

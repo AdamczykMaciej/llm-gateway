@@ -56,10 +56,19 @@ class Deadline:
     """Wall-clock budget for one gateway call, shared by every attempt and
     failover within it. `seconds` of 0/negative/None means unbounded."""
 
-    def __init__(self, seconds: float | None) -> None:
+    def __init__(self, seconds: float | None, max_attempts: int = 0) -> None:
         bound = _bounded(seconds)
         self.seconds = bound
         self._expires_at = time.monotonic() + bound if bound is not None else None
+        # Provider requests (first tries and retries, every provider, every
+        # repair call) one logical call may make; 0/negative = unbounded.
+        self.max_attempts = max_attempts if max_attempts > 0 else 0
+        self.attempts_made = 0
+
+    @property
+    def attempts_exhausted(self) -> bool:
+        """True once the per-call request budget (`max_attempts`) is spent."""
+        return self.max_attempts > 0 and self.attempts_made >= self.max_attempts
 
     def remaining(self) -> float | None:
         if self._expires_at is None:
@@ -84,6 +93,7 @@ async def call_with_retry(
     attempt_timeout_seconds: float | None = None,
     deadline: Deadline | None = None,
     should_retry: Callable[[Exception], bool] = is_retryable,
+    on_retry_failure: Callable[[Exception], None] | None = None,
 ) -> T:
     """Call `call()` up to `attempts` times (minimum 1), sleeping
     about `base_delay_seconds * 2**i` (jittered, or the provider's
@@ -91,22 +101,30 @@ async def call_with_retry(
     `should_retry(error)` holds and the backoff still fits in `deadline`.
     Each attempt is cut off after `attempt_timeout_seconds` (or when the
     deadline runs out, whichever is sooner) with a builtin `TimeoutError`.
+    `on_retry_failure(error)` runs for each failure that is about to be retried.
     Raises the *last* exception if no attempt succeeds."""
     deadline = deadline or Deadline(None)
     attempts = max(attempts, 1)
     last_error: Exception | None = None
     for i in range(attempts):
+        # Callers check `attempts_exhausted` before a provider's first try;
+        # a retry is refused below once the budget is spent.
+        deadline.attempts_made += 1
         try:
             async with asyncio.timeout(deadline.cap(attempt_timeout_seconds)):
                 return await call()
         except Exception as e:  # noqa: BLE001 — classified below; the caller decides what happens after
             last_error = e
-            if i == attempts - 1 or not should_retry(e):
+            if i == attempts - 1 or deadline.attempts_exhausted or not should_retry(e):
                 break
+            if on_retry_failure is not None:
+                on_retry_failure(e)
             delay = _jitter(base_delay_seconds * (2**i))
             requested = retry_after_seconds(e)
             if requested is not None:
-                delay = max(delay, requested)
+                # Jittered up (never below what the provider asked for), so a
+                # fleet told "retry after 7 s" does not return in the same instant.
+                delay = max(delay, requested * random.uniform(1.0, 1.1))
             remaining = deadline.remaining()
             if remaining is not None and remaining <= delay:
                 break

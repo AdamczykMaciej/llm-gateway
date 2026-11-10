@@ -34,7 +34,7 @@ from .policy import ProviderPolicy
 from .providers import CHAT_CALLS, CONFIGURED, DEFAULT_MODEL
 from .providers.base import ChatResult, Usage
 from .retry import Deadline, call_with_retry, resolve_deadline_seconds
-from .router import record_provider_failure
+from .router import record_provider_failure, retry_hooks
 from .routing import RequestProfile, plan_chain
 from .tool_results import cap_tool_results, resolve_cap
 from .tool_validation import (
@@ -148,7 +148,10 @@ async def _chat(
 
     tracer = get_tracer()
     start = time.monotonic() * 1000
-    deadline = Deadline(resolve_deadline_seconds(deadline_seconds, config.call_deadline_seconds))
+    deadline = Deadline(
+        resolve_deadline_seconds(deadline_seconds, config.call_deadline_seconds),
+        config.max_attempts_per_call,
+    )
     attempted_any = False
     last_error: Exception | None = None
     failures: list[ProviderFailure] = []
@@ -185,7 +188,7 @@ async def _chat(
             resolved_model = model_override or DEFAULT_MODEL[provider](config)
             if not force_provider and breaker.is_open(provider, resolved_model):
                 continue
-            if deadline.expired:
+            if deadline.expired or deadline.attempts_exhausted:
                 break
             if not await plan.allows(provider, span):
                 continue
@@ -235,6 +238,9 @@ async def _chat(
                 result = await call_with_retry(
                     _attempt,
                     attempts=config.retry_attempts,
+                    **retry_hooks(
+                        provider, resolved_model, config=config, force_provider=force_provider
+                    ),
                     base_delay_seconds=config.retry_base_delay_seconds,
                     attempt_timeout_seconds=config.request_timeout_seconds,
                     deadline=deadline,
