@@ -288,6 +288,8 @@ budget is spent, and `repair_attempts` calls draw from the same budget. Running 
 breaker:
 
 ```python
+from llm_gateway import complete
+
 await complete(system="...", prompt="...", deadline_seconds=8)
 ```
 
@@ -493,6 +495,8 @@ functions keep both signatures exact. `chat()` already works this way, and
   subsets of `input_tokens` read from or written to a prompt cache. OpenAI
   and Groq report cache reads as `prompt_tokens_details.cached_tokens` and
   have no cache-write count. `usage.uncached_input_tokens` is the rest.
+- When a host reports no usage at all, `usage_reported` is `False` and `cost_usd` is `None`
+  (since 0.33.0), never `0.0`.
 
 For Anthropic, that gives the cost of a call as
 `uncached_input_tokens × input price + cache_creation_input_tokens × 1.25 ×
@@ -562,6 +566,8 @@ back:
 
 ```python
 from pydantic import BaseModel, Field
+
+from llm_gateway import complete_with_usage
 
 
 class Verdict(BaseModel):
@@ -727,6 +733,8 @@ can take over, the original mid-stream error is raised. The HTTP service never
 restarts (the OpenAI wire format has no marker).
 
 ```python
+from llm_gateway import stream_chat
+
 parts: list[str] = []
 async for delta in stream_chat(messages=messages, restart_on_failure=True):
     if delta.restart:
@@ -776,6 +784,8 @@ gateway does not deduplicate on them.
 ### Prompt caching: `cache_system=True`
 
 ```python
+from llm_gateway import complete_with_usage
+
 result = await complete_with_usage(
     system=LONG_STATIC_INSTRUCTIONS, prompt=user_input, config=config, cache_system=True
 )
@@ -841,6 +851,8 @@ after the breakpoint, uncached. A lone system message is cached whole. The
 minimum-length rule above applies to the first message.
 
 ```python
+from llm_gateway import stream_chat
+
 async for chunk in stream_chat(
     messages=[
         {"role": "system", "content": STATIC_INSTRUCTIONS},  # cached
@@ -870,6 +882,8 @@ pip install "llm-gateway[azure] @ git+https://github.com/AdamczykMaciej/llm-gate
 ```
 
 ```python
+from llm_gateway import GatewayConfig
+
 config = GatewayConfig(
     azure_endpoint="https://my-resource.services.ai.azure.com",
     azure_model="gpt-oss-120b",  # the deployment name
@@ -1008,6 +1022,8 @@ pip install "llm-gateway[vertex,azure] @ git+https://github.com/AdamczykMaciej/l
 ```
 
 ```python
+from llm_gateway import GatewayConfig
+
 config = GatewayConfig(
     vertex_project_id="my-vertex-project",
     provider_order="anthropic,vertex,groq",  # vertex isn't in the default order
@@ -1674,6 +1690,8 @@ pip install "llm-gateway[vertex] @ git+https://github.com/AdamczykMaciej/llm-gat
 ```
 
 ```python
+from llm_gateway import GatewayConfig
+
 config = GatewayConfig(
     gemini_project_id="my-gcp-project",
     gemini_location="eu",
@@ -1804,7 +1822,12 @@ LLMError` code keeps working unchanged. Catch the subclasses first if you
 want to react differently:
 
 ```python
-from llm_gateway import AllProvidersExhaustedError, GatewayNotConfiguredError, LLMError
+from llm_gateway import (
+    AllProvidersExhaustedError,
+    GatewayNotConfiguredError,
+    LLMError,
+    complete,
+)
 
 try:
     text = await complete(system=system, prompt=prompt, config=config)
@@ -2027,6 +2050,7 @@ ends the stream — see [Streaming](#streaming).
 | `REQUEST_TIMEOUT_SECONDS` | `45` | One non-streaming attempt on one provider. Passed to the SDK client (5 s connect) and enforced by the gateway around the whole attempt. |
 | `STREAM_IDLE_TIMEOUT_SECONDS` | `30` | Streaming: the wait for the response to start and every gap between chunks (SDK read timeout). Not a cap on a stream that keeps flowing. |
 | `FIRST_TOKEN_TIMEOUT_SECONDS` | unset | `stream_chat()` only: fail over when no first chunk arrives within this many seconds. Unset = no extra bound. See "Per-attempt usage hook and first-token timeout". |
+| `STREAM_MAX_RESTARTS` | `1` | Mid-stream restarts one `stream_chat()` call may make (see `STREAM_RESTART_ON_FAILURE`) |
 | `CALL_DEADLINE_SECONDS` | `90` | One whole `complete()`/`chat()`/`stream_chat()` call — every attempt, retry, backoff and failover, including a stream that has already started. |
 
 When the deadline runs out the call raises `LLMDeadlineExceeded`, a subclass
@@ -2088,6 +2112,30 @@ Provider failures are classified once (`errors.classify`):
 
 Messages never contain prompt content, model output or credentials.
 
+## Public API reference
+
+Every name in `llm_gateway.__all__` is documented in this README. The ones not described
+elsewhere:
+
+| Name | What it is |
+|---|---|
+| `ProviderFailure` | One failed attempt in `AllProvidersExhaustedError.failures`: `provider`, `model`, `kind`, `status_code`, `detail` (credential-scrubbed, capped at 300 characters) |
+| `LongContextTier` | A `ModelPrice` tier: rates for requests whose input exceeds a token threshold; the whole request is billed at the tier rates |
+| `RoutableModel` | One `provider/model` pair a call may reach, with its worst-case cost (`None` if unpriced); see `routable_models()` and `estimate_max_cost()` |
+| `BudgetCheck` | The `ProviderPolicy(budget_check=...)` hook protocol: called before each attempt with provider, model and estimated worst-case cost; return falsy to skip that provider |
+| `AttemptHook` | The `on_attempt` callback type: a sync or async callable taking an `AttemptReport` |
+| `ToolCall` | A tool call in a `ChatResult` / `StreamDelta`: `id`, `name`, parsed `arguments` |
+| `ToolCallIssue` | One problem `check_tool_calls()` found (`kind`, tool, argument paths, never values) |
+| `ApprovalDenied` | A call `gate_tool_calls()` refused; `message()` is a `role: "tool"` message to feed back |
+| `UntrustedContent` | The fenced block `wrap_untrusted()` returns; `str()` is prompt-ready |
+| `circuit_breaker_status()` | Per-provider breaker state (`open` / `half_open` / `closed`) for a health endpoint |
+| `reset_circuit_breakers()` | Close every breaker again; for tests |
+| `Message`, `SystemMessage`, `UserMessage`, `AssistantMessage`, `ToolMessage` | Typed message shapes for `chat()` / `stream_chat()`. Typing only: plain dicts are still accepted |
+| `ContentPart`, `TextPart`, `ImagePart`, `ImageUrl` | Typed content parts of a message (text and image) |
+| `ToolSpec`, `FunctionSpec` | The `tools=[...]` entry and its `function` object |
+| `ToolChoice`, `NamedToolChoice`, `NamedFunction` | The `tool_choice` argument: `"auto"`, `"none"`, `"required"` or a named function |
+| `ToolCallMessagePart`, `FunctionCall` | A tool call as it appears inside an assistant message |
+
 ## Environment variables
 
 | Variable | Default | Purpose |
@@ -2138,6 +2186,8 @@ Messages never contain prompt content, model output or credentials.
 | `PROVIDER_ORDER` | `anthropic,groq,openai` | Comma-separated, tried in order |
 | `BREAKER_FAILURE_THRESHOLD` | `3` | Consecutive failures before a provider is skipped |
 | `BREAKER_COOLDOWN_SECONDS` | `60` | How long a tripped provider is skipped |
+| `BREAKER_BILLING_COOLDOWN_SECONDS` | `300` | Cooldown after a billing/balance failure (a retry cannot fix it). `0` = use `BREAKER_COOLDOWN_SECONDS` |
+| `BREAKER_MODEL_MISSING_COOLDOWN_SECONDS` | `1800` | Cooldown for one model after "model not found" or a retired model. `0` = use `BREAKER_COOLDOWN_SECONDS` |
 | `RETRY_ATTEMPTS` | `2` | Total attempts on one provider for transient errors before failing over. `1` disables retries. |
 | `RETRY_BASE_DELAY_SECONDS` | `0.2` | Delay before a retry; doubles each attempt. |
 | `REQUEST_TIMEOUT_SECONDS` | `45` | Per-attempt timeout for non-streaming calls. `0` falls back to the SDK default (600 s). |
@@ -2159,6 +2209,13 @@ Messages never contain prompt content, model output or credentials.
 | `MAX_CONCURRENT_STREAMS` | `256` | HTTP service: open SSE streams per process; over it, `503`. `0` disables it. |
 | `STREAM_HEARTBEAT_SECONDS` | `15` | HTTP service: send an SSE `: keepalive` comment after this many idle seconds. `0` disables it. |
 | `SHUTDOWN_GRACE_SECONDS` | `20` | HTTP service: on shutdown, wait this long for in-flight non-streaming calls before ending open streams with an error event. `0` skips the wait. |
+| `ALLOW_INSECURE_BASE_URLS` | `false` | Allow `http://` and localhost/private-address base URLs (`OPENAI_COMPAT_BASE_URL`, `HUGGINGFACE_BASE_URL`, `AZURE_ENDPOINT`). Off by default since 0.31.0; set `true` only for a local model server |
+| `STREAM_MAX_TOOL_ARGUMENTS_CHARS` | `1000000` | Per tool call's streamed arguments; past it `StreamTooLargeError`. `0` disables it |
+| `STREAM_MAX_TOTAL_CHARS` | `16000000` | Whole stream (text plus all tool-call arguments); past it `StreamTooLargeError`. `0` disables it |
+| `MAX_RESPONSE_BODY_BYTES` | `33554432` | One non-streamed provider response body; past it `ResponseTooLargeError`. `0` disables it |
+| `MAX_SSE_EVENT_BYTES` | `8388608` | One SSE event from a provider. `0` disables it |
+| `MAX_STREAM_BYTES` | `134217728` | Everything one provider SSE stream sends. `0` disables it |
+| `MAX_REQUEST_BYTES` | `16777216` | HTTP service: raw request body ceiling, checked before parsing. `0` disables it |
 | `SSL_VERIFY` | `true` | TLS certificate verification for provider calls. Set `false` only behind a corporate SSL-inspection proxy. |
 | `PROVIDER_METADATA` | `{}` | JSON object: per-provider residency / retention / training / DPA assertions; see [Provider policy](#provider-policy-and-cost-controls-050) |
 | `POLICY_RESIDENCY` | — | Only providers whose asserted region equals this (e.g. `eu`) |
@@ -2317,12 +2374,12 @@ What it does *not* do, on purpose:
 Opt-in helpers for hosts that pass web pages, emails, job ads or tool results to a model:
 
 ```python
-from llm_gateway import wrap_untrusted, gate_tool_calls
+from llm_gateway import chat, gate_tool_calls, wrap_untrusted
 
 page = wrap_untrusted(html_text, source="job-ad", max_chars=20_000)
 prompt = f"Summarise this posting.\n{page}"
 
-result = await chat(messages=[...], tools=tools)
+result = await chat(messages=[{"role": "user", "content": prompt}], tools=tools)
 allowed, denied = await gate_tool_calls(
     result.tool_calls, sensitive={"send_email", "delete_item"}, approve=ask_the_user
 )
@@ -2378,6 +2435,37 @@ key can only ever see its own usage. In-process and ephemeral (resets on
 restart, not shared across Cloud Run replicas — same tradeoff as rate
 limiting); this is cost *visibility*, not a billing system, and a valid key
 still has unlimited spend within its rate-limit window.
+
+## Upgrading from 0.28.0 to 0.35.0
+
+Nothing was removed and no signature changed incompatibly. These are the changes a consumer
+pinned at 0.28.0 may need to handle (details in `CHANGELOG.md`):
+
+1. **Base URLs must be `https://` and public (0.31.0).** `openai_compat_base_url`,
+   `huggingface_base_url` and `azure_endpoint` naming `http://`, `localhost` or a private,
+   loopback or unspecified IP now fail config validation. For a local model server set
+   `allow_insecure_base_urls=True` (`ALLOW_INSECURE_BASE_URLS=true`). A Vertex model id with
+   `..`, `/`, `?`, `#`, `%` or whitespace raises `InvalidRequestError`.
+2. **`cost_usd` can be `None` (0.33.0).** A reply that reports no token usage (some
+   `openai_compat` / `huggingface` hosts) used to cost `0.0`; now `Completion.cost_usd`,
+   `AttemptReport.cost_usd` and `cost_usd()` return `None`, and `Completion.usage_reported` is
+   `False`. Ledgers and budget code must treat `None` as unknown, not free.
+3. **Response size caps (0.32.0).** `max_response_body_bytes`, `max_sse_event_bytes` and
+   `max_stream_bytes` raise `ResponseTooLargeError` (an `InvalidOutputError`: fails over, no
+   breaker count). Normal replies never reach the defaults; catch it if you catch
+   `StreamTooLargeError` already.
+4. **Deadlines (0.29.0).** `deadline_seconds=` that is non-positive, non-finite or not a number
+   raises `InvalidRequestError`. `repair_attempts` calls now share the first call's budget, so a
+   call that used to overrun now raises `LLMDeadlineExceeded` sooner.
+5. **Estimates include the Claude fallback (0.30.0).** `estimate_max_cost()` and
+   `ProviderPolicy.max_cost_usd` price `claude_model_fallback` too: reserves go up, and an
+   unpriced fallback makes `max_cost_usd` `None`.
+6. **Idempotency keys (0.25.0, 0.26.0).** Opt-in. Reusing a key with a different request raises
+   `InvalidRequestError`; a second open `stream_chat()` with the same key does too.
+7. **Tool-call validation (0.34.0, 0.35.0).** Opt-in (`validate_tool_calls="error"` raises the
+   new `ToolCallInvalidError`, an `InvalidOutputError`). Default `"off"`.
+8. **Config error text (0.27.0).** Validation messages now read `<field> <problem>. Got
+   <value>. Fix: <how>.`; existing phrases such as "must be one of" are kept.
 
 ## Known v1 limitations
 
