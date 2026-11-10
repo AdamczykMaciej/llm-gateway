@@ -2071,6 +2071,18 @@ Worst case for one call with the default three-provider chain:
 | Non-streaming | 2 gateway × 3 SDK attempts × 600 s timeout per provider, plus backoff: ~1 h per provider, ~3 h for the chain — and no bound at all for a provider that trickles bytes | 90 s |
 | Streaming | 3 SDK attempts × 600 s to open, per provider (~90 min for the chain); no bound once the stream started | 90 s, start to last chunk |
 
+## Observability
+
+Spans follow the OpenTelemetry GenAI conventions (Development status; they now live in
+github.com/open-telemetry/semantic-conventions-genai, which could not be fetched in detail when
+this was written, so only well-established attributes were added). Per call span:
+`gen_ai.operation.name`, `gen_ai.provider.name`, `gen_ai.request.model`,
+`gen_ai.request.max_tokens`, `gen_ai.response.model`, `gen_ai.response.finish_reasons`,
+`gen_ai.usage.*_tokens` and `error.type`. Each provider attempt is a child `llm_gateway.attempt`
+span with the same keys. Deprecated aliases (`gen_ai.system`, `llm_gateway.*`) remain. Span names keep
+the `llm_gateway.*` form. Prompt text is off unless `TRACE_INCLUDE_PROMPTS=true` (PII-masked,
+truncated); responses are never recorded. Attribute values are bounded (ids, classes, counts).
+
 ## Error reference
 
 Everything is importable from `llm_gateway`. "Retried" means the gateway

@@ -377,6 +377,7 @@ async def _stream_chat(
     failures: list[ProviderFailure] = []
 
     with call_span(tracer, "llm_gateway.stream_chat") as span:
+        span.set_attribute("gen_ai.request.max_tokens", max_tokens)
         span.set_attribute("llm_gateway.fallback", False)
         span.set_attribute("llm_gateway.request_id", rid)
         if idempotency_key:
