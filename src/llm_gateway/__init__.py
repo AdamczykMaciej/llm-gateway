@@ -34,6 +34,7 @@ from .config import GatewayConfig
 from .errors import (
     AllProvidersExhaustedError,
     EmptyCompletionError,
+    FailureClass,
     FirstTokenTimeoutError,
     GatewayNotConfiguredError,
     InvalidOutputError,
@@ -102,6 +103,7 @@ from .untrusted import (
 __all__ = [
     "InvalidRequestError",
     "ProviderFailure",
+    "FailureClass",
     "ProviderPolicy",
     "ProviderMetadata",
     "LongContextTier",

@@ -2137,6 +2137,7 @@ Provider failures are classified once (`errors.classify`):
 | `BILLING` | out of credit or over a spend limit | no | opens at once |
 | `INVALID_REQUEST`, `INVALID_OUTPUT` | other 4xx; unusable output | no | ignored |
 | `EMPTY_RESPONSE`, `UNKNOWN` | no usable text; anything else | no | counts |
+| `POLICY_VIOLATION` | `PolicyViolationError`: the routing policy excluded every provider (raised before any call) | no | ignored |
 
 Messages never contain prompt content, model output or credentials.
 
@@ -2148,6 +2149,7 @@ elsewhere:
 | Name | What it is |
 |---|---|
 | `ProviderFailure` | One failed attempt in `AllProvidersExhaustedError.failures`: `provider`, `model`, `kind`, `status_code`, `detail` (credential-scrubbed, capped at 300 characters) |
+| `FailureClass` | `Literal` of the closed set of `failure_class()` labels, the type of `ProviderFailure.kind` (`network`, `timeout`, `rate_limited`, `auth`, `billing`, `invalid_request`, `invalid_output`, `empty_response`, `policy_violation`, `model_retired`, `overloaded`, `unknown`) |
 | `LongContextTier` | A `ModelPrice` tier: rates for requests whose input exceeds a token threshold; the whole request is billed at the tier rates |
 | `RoutableModel` | One `provider/model` pair a call may reach, with its worst-case cost (`None` if unpriced); see `routable_models()` and `estimate_max_cost()` |
 | `BudgetCheck` | The `ProviderPolicy(budget_check=...)` hook protocol: called before each attempt with provider, model and estimated worst-case cost; return falsy to skip that provider |
