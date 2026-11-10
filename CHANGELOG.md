@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.40.0
+
+Early-close reliability audit of `stream_chat`. The engine already closed the provider generator,
+released the breaker probe, freed the idempotency slot, reported one `cancelled`/partial attempt and
+ended spans without an error status on `break`, exceptions in the loop body, task cancellation and
+client disconnect; these are now pinned by tests (1000 early closes leave no open upstream
+connection, also under asyncio debug mode, and the service stops the upstream call on disconnect).
+
+- Fix: the OpenAI-SDK-backed providers (OpenAI, Groq, Azure, and the OpenAI-compatible family:
+  Mistral, OpenRouter, Hugging Face, ...) iterated the SDK stream without closing it, so a consumer
+  that stopped early left the HTTP response (and its pooled connection) open until garbage
+  collection. The stream is now closed when the provider generator exits. No API change.
+
 ## 0.39.0
 
 Model catalogue freshness (audit against the vendors' pages, read 2026-11-10). Existing entries,
