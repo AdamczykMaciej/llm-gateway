@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.35.0
+
+`stream_chat` gets `validate_tool_calls`. Additive; the default changes nothing.
+
+- New: `stream_chat(validate_tool_calls="off"|"warn"|"error")`, same checks as `chat()` (unknown
+  tool, arguments vs schema) plus arguments that are not a JSON object (`arguments_not_json`),
+  run once the streamed fragments are complete (the provider stream ended). `warn` streams as
+  usual and logs names and paths only. `error` withholds tool-call fragments (and everything after
+  the first) until the check passes, then yields them in order; text before them streams at once.
+  On failure it fails over only if nothing was yielded (no text, no restart marker); otherwise
+  `ToolCallInvalidError` is raised to the consumer with no failover. Rejected attempts are reported
+  to `on_attempt` as failed, with their usage. No `tools` means no check; bad values are
+  `InvalidRequestError`.
+- Parity audit `chat` vs `stream_chat`: `deadline_seconds`, `idempotency_key` (header, spans,
+  reports; stream has no single-flight by design), `policy`, size caps (`stream_max_*`; `chat`
+  gets whole objects) and pricing (shared `lookup_price`, serving model) already match.
+  Remaining differences, left as is: `chat()` has no `cache_system`; `stream_chat` has no
+  single-flight; the HTTP service exposes none of these per-call options.
+
 ## 0.34.0
 
 Opt-in validation of the tool calls a model returns. Additive; the default changes nothing.

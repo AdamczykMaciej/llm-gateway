@@ -107,6 +107,14 @@ today's working replies into failures; try `"warn"` first. Malformed JSON argume
 `InvalidOutputError` on every OpenAI-style host; Anthropic and Vertex return parsed
 objects.
 
+`stream_chat(validate_tool_calls=...)` (0.35.0) applies the same checks when the streamed
+fragments are complete (at the end of the provider's stream), plus a check that each call's
+arguments are a JSON object. `"warn"` streams unchanged and logs. `"error"` holds back tool-call
+fragments until the check passes; text before them streams at once. If the check fails and
+nothing was yielded yet, the engine fails over to the next provider; if text was already
+yielded, `ToolCallInvalidError` is raised to the consumer without failover (a restart marker
+also counts as yielded).
+
 ### Tool calling and the `check_tool_calls` feedback loop
 
 `check_tool_calls` validates a model's tool calls (known tool, arguments match the

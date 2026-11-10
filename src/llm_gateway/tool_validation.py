@@ -273,14 +273,20 @@ def resolve_validate_mode(mode: str | None) -> str:
 
 
 def enforce_tool_calls(
-    tools: list[dict] | None, tool_calls: Sequence[ToolCall], mode: str, max_chars: int = 0
+    tools: list[dict] | None,
+    tool_calls: Sequence[ToolCall],
+    mode: str,
+    max_chars: int = 0,
+    extra_issues: Sequence[ToolCallIssue] = (),
 ) -> None:
     """Apply `chat(validate_tool_calls=mode)` to one provider reply: "warn"
     logs the issues, "error" raises `ToolCallInvalidError` (so the engine fails
-    over). `max_chars` > 0 also bounds each call's JSON arguments size."""
-    if mode == "off" or not tool_calls:
+    over). `max_chars` > 0 also bounds each call's JSON arguments size.
+    `extra_issues` are problems the caller already found (a streamed call whose
+    arguments were not JSON) and are reported with the rest."""
+    if mode == "off" or not (tool_calls or extra_issues):
         return
-    issues = check_tool_calls(tools, tool_calls)
+    issues = [*extra_issues, *check_tool_calls(tools, tool_calls)]
     if max_chars > 0:
         for call in tool_calls:
             if len(json.dumps(call.arguments)) > max_chars:
