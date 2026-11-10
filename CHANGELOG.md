@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.35.1
+
+Documentation accuracy. No behaviour change in `src` (docstrings only).
+
+- Docs: every fenced `python` block in `README.md` and `MIGRATION.md` is now executed by
+  `tests/test_docs_blocks.py` against fake providers; fragments that lacked imports or used `...`
+  as live code were completed. `tests/test_docs_coverage.py` fails if a public name or a
+  `GatewayConfig` field is missing from the README, or an environment-variable default disagrees
+  with the code.
+- Docs: new README "Public API reference" and the previously missing environment variables
+  (`BREAKER_BILLING_COOLDOWN_SECONDS`, `BREAKER_MODEL_MISSING_COOLDOWN_SECONDS`,
+  `STREAM_MAX_RESTARTS`, `ALLOW_INSECURE_BASE_URLS`, `STREAM_MAX_*`, `MAX_RESPONSE_BODY_BYTES`,
+  `MAX_SSE_EVENT_BYTES`, `MAX_STREAM_BYTES`, `MAX_REQUEST_BYTES`).
+- Docs: README and MIGRATION "Upgrading from 0.28.0 to 0.35.0". Changelog cross-references added
+  to 0.31.0 (size caps, fixed in 0.32.0), 0.33.0 (flagged as a behaviour change) and 0.34.0
+  (`stream_chat` validation, added in 0.35.0).
+
 ## 0.35.0
 
 `stream_chat` gets `validate_tool_calls`. Additive; the default changes nothing.
@@ -32,11 +49,12 @@ Opt-in validation of the tool calls a model returns. Additive; the default chang
 - Audit, no change needed: pre-flight checks (0.14), truncated tool calls (0.16), duplicate/empty
   ids (`unique_tool_call_ids`), tool-result pairing and malformed-JSON handling are consistent.
   Not done: an automatic repair retry (a failover or the `tool_error_message` loop does this);
-  `stream_chat` does not validate (callers assemble fragments).
+  `stream_chat` does not validate (callers assemble fragments; added in 0.35.0).
 
 ## 0.33.0
 
-Cost accounting audit: unknown usage is no longer priced as free.
+Cost accounting audit: unknown usage is no longer priced as free. **Behaviour change**:
+`cost_usd` can now be `None` where it was `0.0`; handle it in any ledger or budget code.
 
 - Fixed: a reply with no usage block (some `openai_compat` / `huggingface` hosts, or any host that
   omits it) gave `Usage()` all zeros and `Completion.cost_usd == 0.0`, and a 0.0 `AttemptReport.cost_usd`,
@@ -76,7 +94,7 @@ Base URL and model-id hardening. **Behaviour change** (safe defaults, one opt-ou
   development, e.g. `http://localhost:11434/v1`. Metadata/link-local hosts stay refused either way.
 - Fixed: the vertex provider wrote the model id (config or per call) into the request URL path
   unchecked; ids with `..`, `/`, `?`, `#`, `%` or whitespace now raise `InvalidRequestError`.
-- Known limit: non-streamed response bodies and SSE lines have no size cap yet.
+- Known limit: non-streamed response bodies and SSE lines have no size cap yet (fixed in 0.32.0).
 
 ## 0.30.0
 
@@ -211,8 +229,8 @@ Untrusted-content helpers. Opt-in and backward compatible: nothing changes unles
 
 ## 0.23.0
 
-Model catalogue correctness, checked against the vendors' docs on 2026-11-09. Backward compatible
-except that a model whose announced shutdown date has passed is now skipped (see below).
+Model catalogue correctness, checked against the vendors' docs on 2026-11-09. **Behaviour change**:
+backward compatible except that a model whose announced shutdown date has passed is now skipped (see below).
 
 - New: `llm_gateway/lifecycle.py` records announced retirements (Anthropic, Groq, OpenAI, Gemini on
   Vertex), each with its source URL and check date. Routing skips a provider whose model is

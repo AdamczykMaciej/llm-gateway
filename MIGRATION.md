@@ -4,6 +4,12 @@ No release in this range removes a public name or changes a function signature
 incompatibly; every new argument defaults to the old behaviour. This page lists
 the behaviour changes a caller might notice. Details are in `CHANGELOG.md`.
 
+## Upgrading from 0.28.0 to 0.35.0
+
+See "Upgrading from 0.28.0 to 0.35.0" in the README: https-only base URLs (0.31.0), `cost_usd` `None`
+for unreported usage (0.33.0), response size caps (0.32.0), deadline validation (0.29.0), fallback in
+cost estimates (0.30.0), opt-in idempotency and tool-call validation.
+
 ## Budget estimates: price the routable models only (0.28.0)
 
 Nothing changes unless you opt in. If you estimate a worst-case cost from the whole

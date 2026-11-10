@@ -16,7 +16,7 @@ from llm_gateway.providers.base import ChatResult, ProviderResult, StreamDelta, 
 pytestmark = pytest.mark.asyncio
 
 _README = (Path(__file__).parent.parent / "README.md").read_text(encoding="utf-8")
-_BLOCKS = dict(re.findall(r"<!-- runnable: (\w+) -->\n```python\n(.*?)\n```", _README, re.S))
+_BLOCKS = dict(re.findall(r"<!-- runnable: ([\w-]+) -->\n```python\n(.*?)\n```", _README, re.S))
 
 EXPECTED = {
     "quickstart",
@@ -28,6 +28,7 @@ EXPECTED = {
     "budgets",
     "timeouts",
     "pricing",
+    "estimate-max-cost",
     "security",
 }
 
