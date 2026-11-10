@@ -531,6 +531,7 @@ async def _complete_once(
     failures: list[ProviderFailure] = []
 
     with call_span(tracer, "llm_gateway.complete") as span:
+        span.set_attribute("gen_ai.request.max_tokens", max_tokens)
         span.set_attribute("llm_gateway.fallback", False)
         span.set_attribute("llm_gateway.request_id", request_id)
         if ikey:
@@ -703,6 +704,8 @@ async def _complete_once(
                 started_ns=attempt_started_ns,
                 input_tokens=usage.input_tokens,
                 output_tokens=usage.output_tokens,
+                response_model=result.model,
+                finish_reason=result.stop_reason,
             )
             set_call_attributes(
                 span,
@@ -719,6 +722,7 @@ async def _complete_once(
                 cache_read_input_tokens=usage.cache_read_input_tokens,
                 cache_creation_input_tokens=usage.cache_creation_input_tokens,
                 reasoning_tokens=usage.reasoning_tokens,
+                finish_reason=result.stop_reason or "",
             )
             logger.debug(
                 "llm_gateway served: provider=%s model=%s input_tokens=%s output_tokens=%s "

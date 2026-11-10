@@ -154,6 +154,7 @@ async def _chat(
     failures: list[ProviderFailure] = []
 
     with call_span(tracer, "llm_gateway.chat") as span:
+        span.set_attribute("gen_ai.request.max_tokens", max_tokens)
         span.set_attribute("llm_gateway.fallback", False)
         span.set_attribute("llm_gateway.request_id", rid)
         if ikey:
@@ -327,6 +328,8 @@ async def _chat(
                 started_ns=attempt_started_ns,
                 input_tokens=result.input_tokens,
                 output_tokens=result.output_tokens,
+                response_model=result.model,
+                finish_reason=result.finish_reason,
             )
             await report_attempt(
                 on_attempt,

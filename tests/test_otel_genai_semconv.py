@@ -154,3 +154,40 @@ async def test_complete_opt_in_records_masked_prompt_only():
     assert "RESPONSE-SECRET" not in repr(
         [dict(s.attributes) for s in exporter.get_finished_spans()]
     )
+
+
+@pytest.mark.asyncio
+async def test_request_max_tokens_on_call_spans():
+    exporter = await _chat_with_fallback()
+    (root,) = _by_name(exporter, "llm_gateway.chat")
+    assert root.attributes["gen_ai.request.max_tokens"] == 2000
+    exporter = await _complete(_config())
+    (root,) = _by_name(exporter, "llm_gateway.complete")
+    assert root.attributes["gen_ai.request.max_tokens"] == 2000
+
+
+@pytest.mark.asyncio
+async def test_complete_span_and_attempt_carry_finish_reason_and_response_model():
+    tracer, exporter = _tracer()
+    fake = AsyncMock(return_value=ProviderResult("x", "m-served", 4, 2, stop_reason="end_turn"))
+    with (
+        patch("llm_gateway.router.get_tracer", return_value=tracer),
+        patch("llm_gateway.router.CALLS", {"anthropic": fake}),
+    ):
+        await complete_with_usage(system="s", prompt="p", config=_config())
+    (root,) = _by_name(exporter, "llm_gateway.complete")
+    assert tuple(root.attributes["gen_ai.response.finish_reasons"]) == ("end_turn",)
+    (att,) = _by_name(exporter, "llm_gateway.attempt")
+    assert tuple(att.attributes["gen_ai.response.finish_reasons"]) == ("end_turn",)
+    assert att.attributes["gen_ai.response.model"] == "m-served"
+
+
+@pytest.mark.asyncio
+async def test_chat_attempt_span_has_finish_reason_only_on_success():
+    exporter = await _chat_with_fallback()
+    attempts = sorted(
+        _by_name(exporter, "llm_gateway.attempt"), key=lambda s: s.attributes["llm_gateway.attempt"]
+    )
+    assert "gen_ai.response.finish_reasons" not in attempts[0].attributes
+    assert tuple(attempts[1].attributes["gen_ai.response.finish_reasons"]) == ("stop",)
+    assert attempts[1].attributes["gen_ai.response.model"] == "served-v2"

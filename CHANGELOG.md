@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.36.0
+
+Observability: more OpenTelemetry GenAI attributes, nothing removed or renamed.
+
+- Call spans (`llm_gateway.complete` / `.chat` / `.stream_chat`) add `gen_ai.request.max_tokens`.
+- `llm_gateway.complete` now sets `gen_ai.response.finish_reasons` (the provider stop reason,
+  with `llm_gateway.finish_reason` as alias), as `chat` already did.
+- Successful `llm_gateway.attempt` spans add `gen_ai.response.model` and, when known,
+  `gen_ai.response.finish_reasons`.
+- Prompt content stays off by default (`TRACE_INCLUDE_PROMPTS`, PII-masked); responses are never recorded.
+
 ## 0.35.3
 
 Security: SDK error attributes are scrubbed, not just their text.

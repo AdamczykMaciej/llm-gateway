@@ -115,6 +115,7 @@ def set_call_attributes(
     cache_creation_input_tokens: int = 0,
     reasoning_tokens: int = 0,
     response_model: str | None = None,
+    finish_reason: str = "",
 ) -> None:
     """Set attributes on an in-progress span. Never raises — a tracing bug
     must not break the actual LLM call."""
@@ -133,6 +134,9 @@ def set_call_attributes(
             fallback=fallback,
             error_code=error_code,
         )
+        if finish_reason:
+            span.set_attribute("gen_ai.response.finish_reasons", [finish_reason])
+            span.set_attribute("llm_gateway.finish_reason", finish_reason)
         if config.trace_include_prompts and prompt:
             masked = mask_pii(prompt[:2000])
             # gen_ai.prompt is the deprecated pre-semconv name. Opt-in only;
@@ -249,6 +253,8 @@ def emit_attempt_span(
     idempotency_key: str | None = None,
     fallback_reason: str | None = None,
     breaker_state: str | None = None,
+    response_model: str | None = None,
+    finish_reason: str | None = None,
 ) -> None:
     """Record one provider attempt as a child span of the current call span.
 
@@ -264,6 +270,10 @@ def emit_attempt_span(
         span.set_attribute("llm_gateway.attempt", attempt)
         span.set_attribute("gen_ai.system", provider)
         span.set_attribute("gen_ai.request.model", model)
+        if response_model:
+            span.set_attribute("gen_ai.response.model", response_model)
+        if finish_reason:
+            span.set_attribute("gen_ai.response.finish_reasons", [finish_reason])
         outcome = outcome_of(error)
         span.set_attribute("llm_gateway.outcome", outcome)
         if error is not None and outcome != "cancelled":
