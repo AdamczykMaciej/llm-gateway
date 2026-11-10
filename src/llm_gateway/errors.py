@@ -76,6 +76,8 @@ When *no* provider serves the call at all, `complete()`/`chat()`/
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
@@ -720,19 +722,27 @@ def policy_for(exc: BaseException) -> ErrorPolicy:
 
 
 def retry_after_seconds(exc: BaseException) -> float | None:
-    """Seconds a provider asked us to wait (`Retry-After`, delta-seconds form)
-    on an SDK status error, or `None`. Capped at 60 s so a hostile or broken
-    header can't park a call; the retry loop still drops the retry if it
-    doesn't fit the call deadline."""
+    """Seconds a provider asked us to wait (`Retry-After`, delta-seconds or
+    HTTP-date form) on an SDK status error, or `None`. Capped at 60 s so a
+    hostile or broken header can't park a call; a date in the past is 0. The
+    retry loop still drops the retry if it doesn't fit the call deadline."""
     response = getattr(exc, "response", None)
     headers = getattr(response, "headers", None)
     if headers is None:
         return None
     try:
-        value = float(headers.get("retry-after"))
-    except (TypeError, ValueError, AttributeError):
+        raw = headers.get("retry-after")
+        try:
+            value = float(raw)
+        except ValueError:
+            when = parsedate_to_datetime(raw)
+            if when.tzinfo is None:
+                when = when.replace(tzinfo=UTC)
+            # A date already past means "now".
+            value = max((when - datetime.now(UTC)).total_seconds(), 0.0)
+    except (TypeError, ValueError, AttributeError, IndexError, OverflowError):
         return None
-    if not value >= 0:  # also rejects NaN
+    if not value >= 0:  # negative delta or NaN
         return None
     return min(value, 60.0)
 
