@@ -747,6 +747,122 @@ def redact_secrets(
 
 ERROR_DETAIL_MAX_CHARS = 1000
 
+# Header and mapping-key names whose value is a credential whatever it looks like.
+_SENSITIVE_NAMES = frozenset(
+    {
+        "authorization",
+        "proxy-authorization",
+        "x-api-key",
+        "api-key",
+        "x-goog-api-key",
+        "ocp-apim-subscription-key",
+        "cookie",
+        "set-cookie",
+        "api_key",
+        "apikey",
+        "key",
+        "token",
+        "access_token",
+        "secret",
+        "password",
+        "client_secret",
+    }
+)
+_MAX_SCRUB_NODES = 20000
+
+
+def _scrub_value(value: object, config: "GatewayConfig | None", budget: list[int], depth: int = 0):
+    """A credential-scrubbed copy of a str / dict / list / tuple (other values
+    are returned as they are). Mapping keys that name a credential are blanked
+    whatever their value looks like. Bounded in depth and node count."""
+    budget[0] -= 1
+    if budget[0] < 0 or depth > 8:
+        return value
+    if isinstance(value, str):
+        return redact_secrets(value, config)
+    if isinstance(value, dict):
+        out = {}
+        for k, v in value.items():
+            if isinstance(k, str) and k.lower() in _SENSITIVE_NAMES and isinstance(v, str):
+                out[k] = "[REDACTED]"
+            else:
+                out[k] = _scrub_value(v, config, budget, depth + 1)
+        return out
+    if isinstance(value, list):
+        return [_scrub_value(v, config, budget, depth + 1) for v in value]
+    if isinstance(value, tuple) and type(value) is tuple:
+        return tuple(_scrub_value(v, config, budget, depth + 1) for v in value)
+    return value
+
+
+def _scrub_http_object(obj: object, config: "GatewayConfig | None", seen: set[int]) -> None:
+    """Scrub an `httpx`-style request or response in place: credential headers
+    blanked, other header values and the URL redacted, a buffered response body
+    redacted, the request body dropped (it holds the prompt, not credentials).
+    In place, so the frames an error tracker captures hold the scrubbed object
+    too. Duck-typed (`httpx`, `httpx2`, `requests`-like); best effort."""
+    if id(obj) in seen:
+        return
+    seen.add(id(obj))
+    headers = getattr(obj, "headers", None)
+    if headers is not None and hasattr(headers, "items"):
+        try:
+            for name, val in list(headers.items()):
+                new = (
+                    "[REDACTED]"
+                    if str(name).lower() in _SENSITIVE_NAMES
+                    else redact_secrets(str(val), config)
+                )
+                if new != val:
+                    headers[name] = new
+        except Exception:  # noqa: BLE001, S110
+            pass
+    try:
+        url = getattr(obj, "url", None)
+        if url is not None and not isinstance(url, str) and hasattr(obj, "method"):
+            scrubbed = redact_secrets(str(url), config)
+            if scrubbed != str(url):
+                obj.url = type(url)(scrubbed)  # type: ignore[attr-defined]
+        if hasattr(obj, "method") and hasattr(obj, "stream"):
+            if hasattr(obj, "_content"):
+                obj._content = b""  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001, S110
+        pass
+    try:
+        content = getattr(obj, "_content", None)
+        if isinstance(content, bytes) and content and hasattr(obj, "status_code"):
+            text = content.decode("utf-8", "replace")
+            scrubbed = redact_secrets(text, config)
+            if scrubbed != text:
+                obj._content = scrubbed.encode()  # type: ignore[attr-defined]
+                for cached in ("_text", "_decoded_content"):
+                    obj.__dict__.pop(cached, None)
+    except Exception:  # noqa: BLE001, S110
+        pass
+    try:
+        request = obj.__dict__.get("_request") or getattr(obj, "request", None)
+        if request is not None and request is not obj:
+            _scrub_http_object(request, config, seen)
+    except Exception:  # noqa: BLE001, S110
+        pass
+
+
+def _scrub_exception_attributes(exc: BaseException, config: "GatewayConfig | None") -> None:
+    """Scrub `body`, `param`, `code`, `response`, `request` and any other
+    string / dict / list / HTTP-object attribute of an SDK exception."""
+    budget = [_MAX_SCRUB_NODES]
+    seen: set[int] = set()
+    for name, value in list(getattr(exc, "__dict__", {}).items()):
+        try:
+            if isinstance(value, str | dict | list | tuple):
+                scrubbed = _scrub_value(value, config, budget)
+                if scrubbed != value:
+                    setattr(exc, name, scrubbed)
+            elif hasattr(value, "headers") or hasattr(value, "_content"):
+                _scrub_http_object(value, config, seen)
+        except Exception:  # noqa: BLE001, S110 - scrubbing must never mask the real error
+            pass
+
 
 def scrub_exception_chain(
     error: BaseException | None, config: "GatewayConfig | None" = None
@@ -756,8 +872,15 @@ def scrub_exception_chain(
     the last provider error, and a traceback (logged by the caller, sent to an
     error tracker) prints that error's message, which a provider can fill with
     the rejected key or an `Authorization` header. Only string `args` (and a
-    string `message`) are rewritten, and only when scrubbing changes them; the
-    exception type and every other attribute are untouched. Never raises."""
+    string `message`) are rewritten, and only when scrubbing changes them. SDK
+    errors also carry `body`, `response` and `request`, which error trackers
+    serialise: strings, dicts and lists among their attributes are replaced by
+    scrubbed copies, and an attached HTTP request/response is scrubbed in
+    place (credential headers such as `Authorization` / `x-api-key` blanked,
+    URL query keys redacted, response body redacted, request body dropped).
+    The exception type, `status_code`, `response.status_code`, response
+    headers (e.g. `Retry-After`), the request method and host, and the shape
+    of `body` (error type and code) stay available. Never raises."""
     seen: set[int] = set()
     todo: list[BaseException | None] = [error]
     while todo and len(seen) < 16:
@@ -777,6 +900,7 @@ def scrub_exception_chain(
                     exc.message = scrubbed  # type: ignore[attr-defined]
         except Exception:  # noqa: BLE001, S110 - scrubbing must never mask the real error
             pass
+        _scrub_exception_attributes(exc, config)
 
 
 def error_detail(error: BaseException | None, config: "GatewayConfig | None" = None) -> str:
