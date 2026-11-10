@@ -748,6 +748,37 @@ def redact_secrets(
 ERROR_DETAIL_MAX_CHARS = 1000
 
 
+def scrub_exception_chain(
+    error: BaseException | None, config: "GatewayConfig | None" = None
+) -> None:
+    """Scrub credentials from the text of `error` and its `__cause__` /
+    `__context__` chain, in place. The gateway chains its aggregate errors from
+    the last provider error, and a traceback (logged by the caller, sent to an
+    error tracker) prints that error's message, which a provider can fill with
+    the rejected key or an `Authorization` header. Only string `args` (and a
+    string `message`) are rewritten, and only when scrubbing changes them; the
+    exception type and every other attribute are untouched. Never raises."""
+    seen: set[int] = set()
+    todo: list[BaseException | None] = [error]
+    while todo and len(seen) < 16:
+        exc = todo.pop()
+        if exc is None or id(exc) in seen:
+            continue
+        seen.add(id(exc))
+        todo += [exc.__cause__, exc.__context__]
+        try:
+            args = tuple(redact_secrets(a, config) if isinstance(a, str) else a for a in exc.args)
+            if args != exc.args:
+                exc.args = args
+            message = getattr(exc, "message", None)
+            if isinstance(message, str):
+                scrubbed = redact_secrets(message, config)
+                if scrubbed != message:
+                    exc.message = scrubbed  # type: ignore[attr-defined]
+        except Exception:  # noqa: BLE001, S110 - scrubbing must never mask the real error
+            pass
+
+
 def error_detail(error: BaseException | None, config: "GatewayConfig | None" = None) -> str:
     """A provider error's text for a gateway exception message or span status:
     scrubbed of credentials and capped (a provider body can be megabytes and
@@ -761,6 +792,7 @@ def deadline_exceeded(
     config: "GatewayConfig | None" = None,
     failures: Sequence[ProviderFailure] = (),
 ) -> LLMDeadlineExceeded:
+    scrub_exception_chain(last_error, config)
     detail = f" Last error: {error_detail(last_error, config)}" if last_error else ""
     causes = f" Causes: {failure_summary(failures)}." if failures else ""
     error = LLMDeadlineExceeded(f"Call deadline of {seconds:g}s exceeded.{detail}{causes}")
@@ -776,6 +808,7 @@ def all_failed(
 ) -> AllProvidersExhaustedError:
     """The single aggregate error for a chain where every attempt failed: the
     last error's text (as before) plus each provider's classified cause."""
+    scrub_exception_chain(last_error, config)
     causes = f" Causes: {failure_summary(failures)}." if failures else ""
     error = AllProvidersExhaustedError(
         f"All configured providers failed. Last error: {error_detail(last_error, config)}"
