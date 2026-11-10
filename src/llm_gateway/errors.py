@@ -231,6 +231,26 @@ class StreamTooLargeError(InvalidOutputError):
         self.limit = limit
 
 
+class ResponseTooLargeError(StreamTooLargeError):
+    """A provider's HTTP response passed a transport-level size cap while it
+    was being read: a non-streamed body over `max_response_body_bytes`, one SSE
+    event (or line) over `max_sse_event_bytes`, or a whole stream over
+    `max_stream_bytes`. The connection is closed at once and nothing past the
+    cap is buffered. A subclass of `StreamTooLargeError` (so of
+    `InvalidOutputError`): classified `INVALID_OUTPUT`, never retried on the
+    same provider, does not count toward the circuit breaker (the provider
+    answered; an oversized reply says nothing about its availability), and the
+    chain fails over. The SDKs wrap errors raised while a non-streamed body is
+    read in their own connection error; `classify` looks through that
+    `__cause__`. `kind` is `"body"`, `"sse_event"` or `"stream"`; `limit` is
+    the cap in bytes. The message never carries response content.
+    """
+
+    def __init__(self, message: str = "", limit: int = 0, kind: str = "body") -> None:
+        super().__init__(message, limit=limit)
+        self.kind = kind
+
+
 class ProviderAuthError(Exception):
     """A provider could not authenticate before sending its request, e.g.
     Azure with `azure_auth="entra"` when no Microsoft Entra token can be
@@ -474,7 +494,22 @@ _FILTERED_FINISH_REASONS = frozenset(
 )
 
 
+def _caused_by_oversized_response(exc: BaseException) -> bool:
+    """The SDKs wrap whatever the transport raises while reading a body in
+    their own connection error; look through the explicit cause chain."""
+    seen = 0
+    cause = exc.__cause__
+    while cause is not None and seen < 5:
+        if isinstance(cause, ResponseTooLargeError):
+            return True
+        cause = cause.__cause__
+        seen += 1
+    return False
+
+
 def classify(exc: BaseException) -> ErrorKind:
+    if _caused_by_oversized_response(exc):
+        return ErrorKind.INVALID_OUTPUT
     if isinstance(exc, PolicyViolationError):
         return ErrorKind.POLICY_VIOLATION
     if isinstance(exc, InvalidOutputError):

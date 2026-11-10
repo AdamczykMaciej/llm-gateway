@@ -445,6 +445,23 @@ class GatewayConfig(BaseSettings):
     # Whole stream (text plus all tool-call arguments):
     stream_max_total_chars: int = 16_000_000
 
+    # ── HTTP response size caps (bytes; 0 disables) ───────────────────────
+    # Enforced on the bytes the SDK reads (after content-decoding, so a
+    # compression bomb counts at its decoded size), by a guard on every SDK
+    # client, so a hostile or broken endpoint (above all a configurable base
+    # URL) cannot exhaust memory with an endless body or SSE line. Past a cap
+    # the connection is closed and `ResponseTooLargeError` is raised. Sizing:
+    # output is bounded by max_tokens (<= ~128k tokens even on the largest
+    # models, ~4 bytes a token, ~12 with every character JSON-escaped, so
+    # <= ~1.5 MB of text); the defaults leave 5x or more over that.
+    # One non-streamed body (also an error body), JSON envelope included:
+    max_response_body_bytes: int = 32 * 1024 * 1024
+    # One SSE event (all its lines up to the blank line, so also any one line):
+    max_sse_event_bytes: int = 8 * 1024 * 1024
+    # Everything one SSE stream sends, framing and keep-alives included (a
+    # one-token chunk is ~200-300 bytes of JSON, so 128k tokens is ~40 MB):
+    max_stream_bytes: int = 128 * 1024 * 1024
+
     # ── Tracing ───────────────────────────────────────────────────────────
     # Prompts are never traced unless this is explicitly enabled, and even
     # then they're PII-masked first (see pii.mask_pii). Off by default.

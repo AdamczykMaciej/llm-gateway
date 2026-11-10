@@ -361,6 +361,28 @@ model you route to that the built-in table lacks.
   be `https://` and not localhost or a private/loopback IP; set `allow_insecure_base_urls=True`
   (`ALLOW_INSECURE_BASE_URLS=true`) for a local model server. Vertex model ids are checked
   before they go into the URL path.
+- **Response size caps (0.32.0)**: a guard on every SDK client (openai, azure, groq, openai_compat,
+  huggingface, mistral, openrouter, gemini, anthropic, vertex) bounds what a hostile or broken
+  endpoint can make the gateway read. Counted in decoded bytes, so a compression bomb is stopped
+  too; the connection is closed at once and `ResponseTooLargeError` is raised (a
+  `StreamTooLargeError`/`InvalidOutputError`: fails over, not retried, not counted by the circuit
+  breaker). `0` disables a cap.
+
+  | Setting (env) | Default | Bounds |
+  |---|---|---|
+  | `max_response_body_bytes` (`MAX_RESPONSE_BODY_BYTES`) | 32 MiB | one non-streamed body, error bodies included |
+  | `max_sse_event_bytes` (`MAX_SSE_EVENT_BYTES`) | 8 MiB | one SSE event (so also any line) |
+  | `max_stream_bytes` (`MAX_STREAM_BYTES`) | 128 MiB | a whole SSE stream, framing included |
+
+  Sizing: output is capped by `max_tokens` (at most ~128k tokens, i.e. ~0.5 MB of text, ~1.5 MB
+  with every character JSON-escaped; a one-token stream chunk is ~300 bytes, so ~40 MB per
+  stream), leaving 5x or more headroom, so normal replies never hit a cap. The text-level
+  `stream_max_total_chars` / `stream_max_tool_arguments_chars` caps still apply on top.
+  Gaps: a Content-Length over the body cap is refused before any read, but a decoder can expand
+  one wire chunk (<= ~64 KiB, ~1000x for gzip) before the check, so memory can briefly exceed a
+  cap by that much; the Google/Entra credential fetches (`google-auth`, `azure-identity`) use
+  their own HTTP stacks and are not covered; with `sdk_max_retries > 0` the SDK may re-request
+  after an oversized reply.
 - **Redaction**: provider error text is scrubbed (`redact_secrets`) and bounded before it
   reaches an exception, a span or an HTTP response. `AttemptReport` carries an error
   *class name* only. Spans and logs never hold prompts or replies.
@@ -2025,6 +2047,7 @@ you finally see.
 | `InvalidOutputError` | A provider answered with unusable output (refusal, invalid JSON, schema failure). Fails over; surfaces only inside `LLMError` | no | yes | rarely; a different prompt or schema |
 | `ToolCallTruncatedError` | The reply hit `max_tokens` inside a tool call (subclass of `InvalidOutputError`; fails over the same way) | no | yes | yes, with a larger `max_tokens` |
 | `StreamTooLargeError` | A streamed reply passed `stream_max_tool_arguments_chars` or `stream_max_total_chars` (subclass of `InvalidOutputError`; fails over the same way) | no | yes (not by mid-stream restart) | no |
+| `ResponseTooLargeError` | An HTTP response passed `max_response_body_bytes`, `max_sse_event_bytes` or `max_stream_bytes` (subclass of `StreamTooLargeError`; classified invalid output, no breaker count, fails over) | no | yes (not by mid-stream restart) | no |
 | `FirstTokenTimeoutError` | A streaming attempt sent no first chunk within `first_token_timeout_seconds` (subclass of the builtin `TimeoutError`: a provider timeout, fails over before anything is yielded) | no | yes | yes |
 | `EmptyCompletionError` | A provider returned no text and no tool calls (often a reasoning model out of budget). Fails over | no | yes | raise `max_tokens` |
 | `ProviderAuthError` | A provider could not authenticate before sending (e.g. no Entra token). Fails over | no | yes | no, fix credentials |
