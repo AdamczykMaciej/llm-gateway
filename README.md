@@ -93,6 +93,20 @@ async for delta in stream_chat(
 assert "".join(parts) == "Hello there"  # no "Hel" left over from the failed attempt
 ```
 
+### Validating returned tool calls: `validate_tool_calls` (0.34.0)
+
+`chat(validate_tool_calls=...)` checks every reply's tool calls with `check_tool_calls`
+inside the provider attempt: unknown (hallucinated) tool, arguments failing the tool's
+schema (types, required, enum, `additionalProperties: false`, string/array length
+bounds) and arguments larger than `stream_max_tool_arguments_chars`. `"off"` (default)
+changes nothing, `"warn"` logs names and paths (never values) and returns the reply,
+`"error"` raises `ToolCallInvalidError`, so the engine fails over to the next provider.
+Off by default because a stricter schema than the model was trained on would turn
+today's working replies into failures; try `"warn"` first. Malformed JSON arguments
+(truncated, trailing text, single quotes, duplicate keys, NaN) were already
+`InvalidOutputError` on every OpenAI-style host; Anthropic and Vertex return parsed
+objects.
+
 ### Tool calling and the `check_tool_calls` feedback loop
 
 `check_tool_calls` validates a model's tool calls (known tool, arguments match the
@@ -2045,6 +2059,7 @@ you finally see.
 | `InvalidRequestError` | The request is malformed (bad tool definition, schema, `tool_choice`, tool-result pairing); also a `ValueError`; HTTP 400 | no | n/a (raised before any attempt) | no, fix the request |
 | `PrivacyPolicyMissingError` | A `PrivacyLayer(strict=True)` call had no `privacy=` policy; a `RuntimeError`, raised before anything is sent | no | n/a | no, pass a policy |
 | `InvalidOutputError` | A provider answered with unusable output (refusal, invalid JSON, schema failure). Fails over; surfaces only inside `LLMError` | no | yes | rarely; a different prompt or schema |
+| `ToolCallInvalidError` | `chat(validate_tool_calls="error")` and the reply named a tool the request never offered, failed the tool's JSON Schema, or exceeded `stream_max_tool_arguments_chars` (subclass of `InvalidOutputError`; `issues` hold call id, tool, kind, paths, never values; fails over) | no | yes | rarely; the model usually corrects itself with `tool_error_message` |
 | `ToolCallTruncatedError` | The reply hit `max_tokens` inside a tool call (subclass of `InvalidOutputError`; fails over the same way) | no | yes | yes, with a larger `max_tokens` |
 | `StreamTooLargeError` | A streamed reply passed `stream_max_tool_arguments_chars` or `stream_max_total_chars` (subclass of `InvalidOutputError`; fails over the same way) | no | yes (not by mid-stream restart) | no |
 | `ResponseTooLargeError` | An HTTP response passed `max_response_body_bytes`, `max_sse_event_bytes` or `max_stream_bytes` (subclass of `StreamTooLargeError`; classified invalid output, no breaker count, fails over) | no | yes (not by mid-stream restart) | no |

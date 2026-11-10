@@ -37,7 +37,12 @@ from .retry import Deadline, call_with_retry, resolve_deadline_seconds
 from .router import record_provider_failure
 from .routing import RequestProfile, plan_chain
 from .tool_results import cap_tool_results, resolve_cap
-from .tool_validation import unique_tool_call_ids, validate_chat_request
+from .tool_validation import (
+    enforce_tool_calls,
+    resolve_validate_mode,
+    unique_tool_call_ids,
+    validate_chat_request,
+)
 from .tracing import (
     call_span,
     emit_attempt_span,
@@ -70,6 +75,7 @@ async def _chat(
     on_attempt: AttemptHook | None = None,
     idempotency_key: str | None = None,
     deadline_seconds: float | None = None,
+    validate_tool_calls: str | None = None,
 ) -> ChatResult:
     """Return a ChatResult (text and/or tool_calls), trying providers in
     `config.provider_order` — same fallback/circuit-breaker semantics as
@@ -99,6 +105,14 @@ async def _chat(
     this (with a marker) before sending; overrides
     `config.tool_result_max_chars`, 0 disables (see tool_results.py).
 
+    `validate_tool_calls`: "off" (default, `None`), "warn" or "error". Checks
+    each reply's tool calls with `check_tool_calls` (a tool the request never
+    offered, arguments failing the tool's JSON Schema, arguments over
+    `config.stream_max_tool_arguments_chars`). "warn" logs the issues (names
+    and paths, never values) and returns the reply; "error" raises
+    `ToolCallInvalidError` inside the attempt, so the engine fails over and an
+    exhausted chain chains from it. Anything else is `InvalidRequestError`.
+
     Raises:
         InvalidRequestError: malformed messages, tools, `tool_choice`,
             `request_id` or `max_tool_result_chars`; nothing was sent.
@@ -113,6 +127,7 @@ async def _chat(
     rid = resolve_request_id(request_id)
     ikey = resolve_idempotency_key(idempotency_key)
     validate_chat_request(messages, tools, tool_choice)
+    validate_mode = resolve_validate_mode(validate_tool_calls)
     config = config or GatewayConfig()
     messages = cap_tool_results(
         messages, resolve_cap(max_tool_result_chars, config.tool_result_max_chars)
@@ -194,19 +209,30 @@ async def _chat(
                 if ikey and provider in IDEMPOTENCY_HEADER_PROVIDERS
                 else extra
             )
+
+            async def _attempt(call=call, attempt_extra=attempt_extra) -> ChatResult:
+                reply = await call(
+                    config,
+                    messages,
+                    tools,
+                    max_tokens,
+                    model=model_override,
+                    tool_choice=tool_choice,
+                    sampling=sampling,
+                    response_format=response_format,
+                    **attempt_extra,
+                )
+                enforce_tool_calls(
+                    tools,
+                    reply.tool_calls,
+                    validate_mode,
+                    config.stream_max_tool_arguments_chars,
+                )
+                return reply
+
             try:
                 result = await call_with_retry(
-                    lambda call=call, attempt_extra=attempt_extra: call(
-                        config,
-                        messages,
-                        tools,
-                        max_tokens,
-                        model=model_override,
-                        tool_choice=tool_choice,
-                        sampling=sampling,
-                        response_format=response_format,
-                        **attempt_extra,
-                    ),
+                    _attempt,
                     attempts=config.retry_attempts,
                     base_delay_seconds=config.retry_base_delay_seconds,
                     attempt_timeout_seconds=config.request_timeout_seconds,
@@ -397,6 +423,7 @@ async def chat(
     on_attempt: AttemptHook | None = None,
     idempotency_key: str | None = None,
     deadline_seconds: float | None = None,
+    validate_tool_calls: str | None = None,
 ) -> ChatResult:
     """Tool-calling completion with provider fallback; see `_chat` for the
     full contract.
@@ -433,6 +460,7 @@ async def chat(
         "on_attempt": on_attempt,
         "idempotency_key": idempotency_key,
         "deadline_seconds": deadline_seconds,
+        "validate_tool_calls": validate_tool_calls,
     }
     if idempotency_key is None:
         return await _chat(**impl_kwargs)

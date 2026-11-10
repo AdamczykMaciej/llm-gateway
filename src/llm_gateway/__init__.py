@@ -46,6 +46,7 @@ from .errors import (
     ResidencyViolationError,
     ResponseTooLargeError,
     StreamTooLargeError,
+    ToolCallInvalidError,
     ToolCallTruncatedError,
     UnsupportedCapabilityError,
 )
@@ -135,6 +136,7 @@ __all__ = [
     "StreamTooLargeError",
     "AttemptReport",
     "AttemptHook",
+    "ToolCallInvalidError",
     "ToolCallTruncatedError",
     "LLMError",
     "LLMDeadlineExceeded",

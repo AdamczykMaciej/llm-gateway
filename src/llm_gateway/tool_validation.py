@@ -13,12 +13,13 @@ has no such dependency): it catches what providers reject in practice.
 
 import dataclasses
 import json
+import logging
 import re
 from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from .errors import InvalidRequestError
+from .errors import InvalidRequestError, ToolCallInvalidError
 from .providers._anthropic_translate import STRUCTURED_OUTPUT_TOOL_NAME
 from .providers.base import ToolCall
 from .structured import _schema_errors
@@ -256,6 +257,53 @@ def check_tool_calls(
                 )
             )
     return issues
+
+
+_MODES = frozenset({"off", "warn", "error"})
+logger = logging.getLogger("llm_gateway")
+
+
+def resolve_validate_mode(mode: str | None) -> str:
+    """`None` is "off"; anything but off/warn/error is `InvalidRequestError`."""
+    if mode is None:
+        return "off"
+    if mode not in _MODES:
+        raise InvalidRequestError("validate_tool_calls must be 'off', 'warn' or 'error'.")
+    return mode
+
+
+def enforce_tool_calls(
+    tools: list[dict] | None, tool_calls: Sequence[ToolCall], mode: str, max_chars: int = 0
+) -> None:
+    """Apply `chat(validate_tool_calls=mode)` to one provider reply: "warn"
+    logs the issues, "error" raises `ToolCallInvalidError` (so the engine fails
+    over). `max_chars` > 0 also bounds each call's JSON arguments size."""
+    if mode == "off" or not tool_calls:
+        return
+    issues = check_tool_calls(tools, tool_calls)
+    if max_chars > 0:
+        for call in tool_calls:
+            if len(json.dumps(call.arguments)) > max_chars:
+                issues.append(
+                    ToolCallIssue(
+                        call.id,
+                        call.name,
+                        "arguments_too_large",
+                        (),
+                        f"The arguments for '{call.name}' exceed {max_chars} characters.",
+                    )
+                )
+    if not issues:
+        return
+    summary = "; ".join(
+        f"{i.kind} in '{i.name}'" + (f" at {', '.join(i.paths)}" if i.paths else "") for i in issues
+    )
+    if mode == "warn":
+        logger.warning("llm_gateway: model returned invalid tool call(s): %s", summary)
+        return
+    raise ToolCallInvalidError(
+        f"The model returned invalid tool call(s): {summary}.", tuple(issues)
+    )
 
 
 def tool_error_message(issue: ToolCallIssue) -> dict:
