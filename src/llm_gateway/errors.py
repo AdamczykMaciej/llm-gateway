@@ -384,15 +384,44 @@ _BODY_ERROR_TYPES: dict[str, ErrorKind] = {
     "invalid_request_error": ErrorKind.INVALID_REQUEST,
     "not_found_error": ErrorKind.INVALID_REQUEST,
     "request_too_large": ErrorKind.INVALID_REQUEST,
+    # Anthropic's 402 type; inside a 200 stream there is no status to read.
+    "billing_error": ErrorKind.BILLING,
 }
 
 
-def _classify_status(status: int) -> ErrorKind:
+def _error_metadata(body: object) -> dict:
+    if not isinstance(body, dict):
+        return {}
+    nested = body.get("error")
+    source = nested if isinstance(nested, dict) else body
+    metadata = source.get("metadata")
+    return metadata if isinstance(metadata, dict) else {}
+
+
+def _classify_forbidden(body: object) -> ErrorKind:
+    """OpenRouter shares 403 between permissions, a moderation flag on the
+    input, a guardrail block and a budget block
+    (https://openrouter.ai/docs/api-reference/errors). Only the first is an
+    auth problem: a flagged input is about this request's content (it must not
+    trip the provider's breaker) and a budget block is a spend limit."""
+    metadata = _error_metadata(body)
+    if "limit_source" in metadata or "limit_usd" in metadata:
+        return ErrorKind.BILLING
+    if "flagged_input" in metadata or "reasons" in metadata or "patterns" in metadata:
+        return ErrorKind.INVALID_REQUEST
+    return ErrorKind.AUTH
+
+
+def _classify_status(status: int, body: object = None) -> ErrorKind:
     if status in (408, 409) or status >= 500:
         return ErrorKind.TRANSIENT
     if status == 429:
         return ErrorKind.RATE_LIMITED
-    if status in (401, 403):
+    if status == 498:  # Groq: flex tier at capacity, request not processed
+        return ErrorKind.RATE_LIMITED
+    if status == 403:
+        return _classify_forbidden(body)
+    if status == 401:
         return ErrorKind.AUTH
     if status == 402:  # Payment Required: always an account problem
         return ErrorKind.BILLING
@@ -434,7 +463,7 @@ def _classify_body(body: object) -> ErrorKind:
     # returned error", "metadata": {"provider_name": ...}}}`.
     code = source.get("code")
     if isinstance(code, int) and not isinstance(code, bool) and 400 <= code <= 599:
-        return _classify_status(code)
+        return _classify_status(code, body)
     return ErrorKind.UNKNOWN
 
 
@@ -476,6 +505,8 @@ _BILLING_MARKERS = (
     "payment required",
     "monthly spend",
     "usage limit has been reached",
+    "credit_balance_exhausted",  # OpenAI error code (developers.openai.com error-codes)
+    "prepayment credits",  # Gemini 400: "Your prepayment credits are depleted"
 )
 # Only these statuses (or none, inside a 200 stream) can mean "billing".
 _BILLING_STATUSES = frozenset({400, 402, 403, 429})
@@ -557,7 +588,7 @@ def classify(exc: BaseException) -> ErrorKind:
     if isinstance(exc, _STATUS_ERRORS) and exc.status_code >= 400:
         if exc.status_code == 400 and _body_error_code(exc.body) in _OUTPUT_ERROR_CODES:
             return ErrorKind.INVALID_OUTPUT
-        return _classify_status(exc.status_code)
+        return _classify_status(exc.status_code, exc.body)
     if isinstance(exc, _SDK_ERRORS):
         return _classify_body(exc.body)
     return ErrorKind.UNKNOWN
