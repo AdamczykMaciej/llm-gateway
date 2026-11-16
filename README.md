@@ -2517,6 +2517,29 @@ pinned at 0.28.0 may need to handle (details in `CHANGELOG.md`):
   handful of consuming apps; would need real key-management (a store +
   admin API) beyond that.
 
+## Evaluating a new app (`llm_gateway.evals`)
+
+`pip install "llm-gateway[evals]"` adds a zero-cost quality toolkit. It never calls a model
+itself: it prepares packets and scores outputs produced elsewhere (for example by Claude Code
+subagents), or runs your own callable via `run_cases(cases, fn, "v1")`.
+
+1. Write `cases.jsonl`: one `Case` per line (`id`, `turns` or `message`, `must`, `must_not`,
+   `tags`, `language`, `checks`); multi-turn cases list several user turns.
+2. Generate replies per variant (prompt version) and save them with `dump_samples`.
+3. Add app-specific checks with `@register_check("name")`, then list them in a case's `checks`.
+4. `check_case(case, sample.replies)` runs them first: length caps, forbidden/required patterns,
+   cross-turn repetition, language hook. A failed deterministic check is final.
+5. `build_packets(cases, samples, "out/")` writes shuffled anonymous batches plus the private
+   `key.json`; have blind judges write `out_*.json` next to each batch.
+6. `collect_judgments("out/")` maps every id back through the key and fails on gaps or unknown ids.
+7. `aggregate(...)` gives per-case numbers, `by_tag(...)` per-tag, `compare(...)` the A/B delta
+   (differences under 0.3 are noise; rerun a case that fails once, fix only if it fails twice).
+8. Calibrate the judge with human labels (`save_labels`/`load_labels`, `judge_vs_human`:
+   agreement and Cohen's kappa) before trusting its absolute numbers.
+9. Log each run with `RunLog("evals/log.md").append(title, summary, data)`.
+10. Judges are the same vendor and samples are small: use this for A/B and regressions, not
+    absolute quality claims.
+
 ## Development
 
 ```bash

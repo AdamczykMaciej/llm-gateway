@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- New optional `llm_gateway.evals` subpackage (extra `evals`, no new dependencies): case schema
+  (single- and multi-turn), deterministic check registry, blind-judge packet builder with a
+  private key file, rubric templates, aggregator with per-tag and A/B comparison, human
+  calibration (agreement, Cohen's kappa) and a run log. It never calls a model by default.
+
 ## 0.42.7
 
 Second coverage pass (98.85% to 99.82%, floor unchanged at 98.8 because 99.8 would leave under
