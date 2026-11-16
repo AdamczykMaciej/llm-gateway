@@ -24,19 +24,63 @@ def _prov(**kw):
     return Provenance(provider="p", model="m", created_at=WHEN, **kw)
 
 
-def test_assertion_and_dict_omit_unset_fields():
-    prov = _prov(request_id="r1", app="a", surface="s", prompt_version="v")
+_DETAIL = dict(request_id="req-secret", surface="surf-x", prompt_version="pv-9")
+
+
+def _flat(obj) -> str:
+    return repr(obj)
+
+
+def test_default_output_discloses_only_the_marking_essentials():
+    prov = Provenance(provider="prov-x", model="model-y", created_at=WHEN, **_DETAIL)
+    for out in (
+        prov.to_dict(),
+        prov.c2pa_assertion(),
+        prov.http_headers(),
+        prov.pdf_metadata(),
+    ):
+        for secret in ("prov-x", "model-y", "req-secret", "surf-x", "pv-9"):
+            assert secret not in _flat(out), (secret, out)
     action = prov.c2pa_assertion()["data"]["actions"][0]
-    assert action["digitalSourceType"] == TRAINED_ALGORITHMIC_MEDIA
-    assert action["when"] == "2026-01-02T03:04:05Z"
-    assert action["parameters"]["surface"] == "s"
-    assert _prov().to_dict() == {
-        "ai_generated": True,
-        "provider": "p",
-        "model": "m",
-        "created_at": "2026-01-02T03:04:05Z",
+    assert action == {
+        "action": "c2pa.created",
+        "when": "2026-01-02T03:04:05Z",
+        "digitalSourceType": TRAINED_ALGORITHMIC_MEDIA,
     }
-    assert "app" not in _prov().c2pa_assertion()["data"]["actions"][0]["parameters"]
+    assert prov.to_dict() == {"ai_generated": True, "created_at": "2026-01-02T03:04:05Z"}
+    assert prov.http_headers() == {
+        "X-AI-Generated": "true",
+        "X-AI-Created": "2026-01-02T03:04:05Z",
+    }
+
+
+def test_app_is_the_only_optional_default_field():
+    prov = _prov(app="my-app", **_DETAIL)
+    assert prov.to_dict()["app"] == "my-app"
+    assert prov.http_headers()["X-AI-App"] == "my-app"
+    assert prov.pdf_metadata()["Producer"] == "my-app"
+    assert prov.c2pa_assertion()["data"]["actions"][0]["parameters"] == {"app": "my-app"}
+    assert "Producer" not in _prov().pdf_metadata()
+
+
+def test_include_opts_in_to_detail():
+    prov = _prov(app="a", **_DETAIL)
+    part = prov.to_dict(include=("provider", "surface"))
+    assert part["provider"] == "p" and part["surface"] == "surf-x" and "model" not in part
+    full = prov.to_dict(include="all")
+    assert {"provider", "model", "request_id", "surface", "prompt_version"} <= set(full)
+    action = prov.c2pa_assertion(include="all")["data"]["actions"][0]
+    assert action["softwareAgent"] == "p/m"
+    assert action["parameters"]["prompt_version"] == "pv-9"
+    only_one = prov.c2pa_assertion(include=("model",))["data"]["actions"][0]
+    assert "softwareAgent" not in only_one and only_one["parameters"]["model"] == "m"
+    headers = prov.http_headers(include="all")
+    assert headers["X-AI-Provider"] == "p" and headers["X-AI-Prompt-Version"] == "pv-9"
+    meta = prov.pdf_metadata(include="all")
+    assert meta["Creator"] == "AI-generated (p/m)" and meta["AIPromptVersion"] == "pv-9"
+    assert _prov().to_dict(include=("surface",)) == _prov().to_dict()  # unset stays absent
+    with pytest.raises(ValueError):
+        prov.to_dict(include=("secret_key",))
 
 
 def test_naive_and_foreign_timezones_are_normalised_to_utc():
@@ -49,18 +93,12 @@ def test_naive_and_foreign_timezones_are_normalised_to_utc():
 
 
 def test_http_headers_cannot_split_a_header():
-    headers = _prov(request_id="a\r\nSet-Cookie: x=1", app="  ").http_headers()
-    assert headers["X-AI-Generated"] == "true"
+    headers = _prov(request_id="a\r\nSet-Cookie: x=1", app="  ").http_headers(include="all")
     assert "\r" not in headers["X-AI-Request-Id"] and "\n" not in headers["X-AI-Request-Id"]
     assert "X-AI-App" not in headers
-    assert Provenance(provider="\n", model="m").http_headers()["X-AI-Provider"] == "?"
-    assert Provenance(provider="  ", model="m").http_headers()["X-AI-Provider"] == "unknown"
-
-
-def test_pdf_metadata_producer_is_the_app():
-    assert "Producer" not in _prov().pdf_metadata()
-    meta = _prov(app="my-app").pdf_metadata()
-    assert meta["Producer"] == "my-app" and meta["DigitalSourceType"] == TRAINED_ALGORITHMIC_MEDIA
+    assert Provenance(provider="\n", model="m").http_headers(include="all")["X-AI-Provider"] == "?"
+    blank = Provenance(provider="  ", model="m").http_headers(include="all")
+    assert "X-AI-Provider" not in blank
 
 
 def test_completion_provenance_and_equality_unaffected():
@@ -112,6 +150,10 @@ def test_append_marker_round_trip_and_tamper():
     assert marked.startswith(b"\x00audio")
     record = m.verify(marked, "audio/wav")
     assert record is not None and record["app"] == "a" and record["ai_generated"] is True
+    assert "provider" not in record and "model" not in record
+    full = AppendMarker(_Signer(), _verifier, include="all")
+    rec = full.verify(full.mark(b"a", "audio/wav", _prov()), "audio/wav")
+    assert rec is not None and rec["provider"] == "p"
     assert m.verify(b"plain", "audio/wav") is None
     assert m.verify(marked.replace(b"\x00audio", b"\x00AUDIO", 1), "audio/wav") is None
     assert AppendMarker(_Signer()).verify(marked, "audio/wav") is None  # no verifier: untrusted

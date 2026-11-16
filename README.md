@@ -2265,7 +2265,7 @@ elsewhere:
 
 ## AI-output provenance (0.43.0)
 
-Machine-readable "this is AI-generated" marking, for transparency duties such as EU AI Act
+Machine-readable "this is AI-generated" marking with minimal disclosure by default, for transparency duties such as EU AI Act
 Art. 50(2). It is opt-in and additive. The library holds no keys and makes no network calls;
 signing stays in your application. Nothing here is legal advice: check with counsel which of your
 outputs are in scope and which exceptions apply.
@@ -2282,14 +2282,19 @@ prov = Provenance(
     prompt_version="v3",
 )
 prov.c2pa_assertion()  # c2pa.actions assertion, digitalSourceType trainedAlgorithmicMedia
-prov.http_headers()  # X-AI-Generated: true, X-AI-Provider, X-AI-Model, ...
+prov.http_headers()  # X-AI-Generated: true, X-AI-Created, X-AI-App (no provider or model)
 prov.pdf_metadata()  # Creator / Keywords / DigitalSourceType for PDF or XMP exports
+prov.http_headers(include=("provider", "model"))  # opt-in detail, internal or audit use
 ```
 
 For real calls use `completion.provenance(app=..., surface=..., prompt_version=...)`, or
 `provenance_of(chat_result, provider="...")` for a `ChatResult` and
 `provenance_of(delta)` for the usage chunk of `stream_chat()`. `app`, `surface` and
-`prompt_version` are free text you choose; the library gives them no meaning. Header values are
+`prompt_version` are free text you choose; the default output of every renderer carries only the
+AI-generated flag, the digital source type, the creation time and `app` (when you set it).
+Provider, model, request id, surface and prompt version appear only when you pass
+`include=(...)` (or `"all"`) to a renderer, or to `AppendMarker(include=...)`, for internal or audit
+use. They are never needed for the marking itself; the library gives them no meaning. Header values are
 forced to single-line printable ASCII.
 
 Audio, images and video go through a `Marker` (`mark(data, mime, provenance) -> bytes`,

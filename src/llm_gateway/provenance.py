@@ -3,16 +3,17 @@
 Supports transparency duties such as EU AI Act Art. 50(2) (outputs marked in a
 machine-readable format). It is app-agnostic and opt-in: the library holds no
 keys and makes no network calls. Text results carry a `Provenance` record that
-renders as a C2PA-style assertion, HTTP headers or PDF/XMP metadata. Audio,
-images and video are marked through a `Marker` that the application supplies,
-backed by a `Signer` it owns (keys, signing service). Not legal advice.
+renders as a C2PA-style assertion, HTTP headers or PDF/XMP metadata. Output is
+minimal by default (detail such as provider and model is opt-in). Audio, images
+and video are marked through a `Marker` that the application supplies, backed by
+a `Signer` it owns (keys, signing service). Not legal advice.
 """
 
 from __future__ import annotations
 
 import json
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Protocol, runtime_checkable
@@ -20,7 +21,16 @@ from typing import Any, Protocol, runtime_checkable
 # IPTC digital source type for media created by a trained algorithmic model.
 TRAINED_ALGORITHMIC_MEDIA = "http://cv.iptc.org/newscodes/digitalsourcetype/trainedAlgorithmicMedia"
 _NOT_HEADER_SAFE = re.compile(r"[^\x20-\x7e]")
-_OPTIONAL = ("request_id", "app", "surface", "prompt_version")
+# Detail that is NOT exposed unless the caller opts in (minimal disclosure).
+DETAIL_FIELDS = ("provider", "model", "request_id", "surface", "prompt_version")
+_HEADER_NAMES = {
+    "provider": "X-AI-Provider",
+    "model": "X-AI-Model",
+    "request_id": "X-AI-Request-Id",
+    "surface": "X-AI-Surface",
+    "prompt_version": "X-AI-Prompt-Version",
+}
+_PDF_NAMES = {k: "AI" + "".join(w.title() for w in k.split("_")) for k in DETAIL_FIELDS}
 
 
 def _clean(value: str | None) -> str | None:
@@ -54,65 +64,62 @@ class Provenance:
     def _when(self) -> str:
         return self.created_at.strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    def _optional(self) -> dict[str, str]:
-        return {k: v for k in _OPTIONAL if (v := getattr(self, k)) is not None}
+    def _detail(self, include: Iterable[str]) -> dict[str, str]:
+        """The opt-in detail fields named in `include` (`"all"` for every one), when set."""
+        names = {include} if isinstance(include, str) else set(include)
+        unknown = names - set(DETAIL_FIELDS) - {"all"}
+        if unknown:
+            raise ValueError(f"unknown provenance detail field(s): {sorted(unknown)}")
+        wanted = DETAIL_FIELDS if "all" in names else tuple(f for f in DETAIL_FIELDS if f in names)
+        return {k: v for k in wanted if (v := getattr(self, k)) is not None}
 
-    def to_dict(self) -> dict[str, Any]:
-        """Plain JSON-safe dict; unset optional fields are omitted."""
-        return {
-            "ai_generated": self.ai_generated,
-            "provider": self.provider,
-            "model": self.model,
-            "created_at": self._when(),
-            **self._optional(),
-        }
+    def to_dict(self, include: Iterable[str] = ()) -> dict[str, Any]:
+        """Plain JSON-safe dict. By default only the marking essentials (the
+        AI-generated flag, creation time and `app` when set); provider, model,
+        request id, surface and prompt version only when named in `include`
+        (or `"all"`) for internal or audit use."""
+        out: dict[str, Any] = {"ai_generated": self.ai_generated, "created_at": self._when()}
+        if self.app is not None:
+            out["app"] = self.app
+        return out | self._detail(include)
 
-    def c2pa_assertion(self) -> dict[str, Any]:
+    def c2pa_assertion(self, include: Iterable[str] = ()) -> dict[str, Any]:
         """A C2PA-style `c2pa.actions` assertion declaring `trainedAlgorithmicMedia`.
 
-        It is the assertion payload only: it becomes a signed manifest when an
-        application-owned `Signer` embeds it (see `Marker`)."""
-        return {
-            "label": "c2pa.actions",
-            "data": {
-                "actions": [
-                    {
-                        "action": "c2pa.created",
-                        "when": self._when(),
-                        "digitalSourceType": TRAINED_ALGORITHMIC_MEDIA,
-                        "softwareAgent": f"{self.provider}/{self.model}",
-                        "parameters": {
-                            "provider": self.provider,
-                            "model": self.model,
-                            **self._optional(),
-                        },
-                    }
-                ]
-            },
+        By default it exposes only the source type, creation time and `app`
+        (when set); see `to_dict` for `include`. It is the assertion payload
+        only: it becomes a signed manifest when an application-owned `Signer`
+        embeds it (see `Marker`)."""
+        action: dict[str, Any] = {
+            "action": "c2pa.created",
+            "when": self._when(),
+            "digitalSourceType": TRAINED_ALGORITHMIC_MEDIA,
         }
+        detail = self._detail(include)
+        if "provider" in detail and "model" in detail:
+            action["softwareAgent"] = f"{self.provider}/{self.model}"
+        params = ({"app": self.app} if self.app is not None else {}) | detail
+        if params:
+            action["parameters"] = params
+        return {"label": "c2pa.actions", "data": {"actions": [action]}}
 
-    def http_headers(self) -> dict[str, str]:
-        """Response headers marking the body as AI-generated (ASCII, single-line)."""
-        headers = {
-            "X-AI-Generated": "true",
-            "X-AI-Provider": _clean(self.provider) or "unknown",
-            "X-AI-Model": _clean(self.model) or "unknown",
-            "X-AI-Created": self._when(),
-        }
-        for name, value in (
-            ("X-AI-Request-Id", self.request_id),
-            ("X-AI-App", self.app),
-            ("X-AI-Surface", self.surface),
-            ("X-AI-Prompt-Version", self.prompt_version),
-        ):
+    def http_headers(self, include: Iterable[str] = ()) -> dict[str, str]:
+        """Response headers marking the body as AI-generated (ASCII, single-line).
+        Default: `X-AI-Generated`, `X-AI-Created` and `X-AI-App` (when set);
+        see `to_dict` for `include`."""
+        headers = {"X-AI-Generated": "true", "X-AI-Created": self._when()}
+        if (app := _clean(self.app)) is not None:
+            headers["X-AI-App"] = app
+        for key, value in self._detail(include).items():
             if (cleaned := _clean(value)) is not None:
-                headers[name] = cleaned
+                headers[_HEADER_NAMES[key]] = cleaned
         return headers
 
-    def pdf_metadata(self) -> dict[str, str]:
-        """Metadata for PDF/XMP exports (Info-dictionary style keys)."""
+    def pdf_metadata(self, include: Iterable[str] = ()) -> dict[str, str]:
+        """Metadata for PDF/XMP exports (Info-dictionary style keys). Default: no
+        provider or model; `Producer` is the app when set; see `to_dict` for `include`."""
         meta = {
-            "Creator": f"AI-generated ({self.provider}/{self.model})",
+            "Creator": "AI-generated",
             "Keywords": "AI-generated",
             "AIGenerated": "true",
             "DigitalSourceType": TRAINED_ALGORITHMIC_MEDIA,
@@ -121,6 +128,11 @@ class Provenance:
         }
         if self.app is not None:
             meta["Producer"] = self.app
+        detail = self._detail(include)
+        if "provider" in detail and "model" in detail:
+            meta["Creator"] = f"AI-generated ({self.provider}/{self.model})"
+        for key, value in detail.items():
+            meta[_PDF_NAMES[key]] = value
         return meta
 
 
@@ -200,13 +212,19 @@ class AppendMarker:
 
     _MAGIC = b"\nAIPROV1:"
 
-    def __init__(self, signer: Signer, verifier: Callable[[bytes, bytes], bool] | None = None):
+    def __init__(
+        self,
+        signer: Signer,
+        verifier: Callable[[bytes, bytes], bool] | None = None,
+        include: Iterable[str] = (),
+    ):
+        self._include = tuple([include] if isinstance(include, str) else include)
         self._signer = signer
         self._verifier = verifier
 
     def mark(self, data: bytes, mime: str, provenance: Provenance) -> bytes:
         """Append the signed provenance trailer to `data`."""
-        body = json.dumps(provenance.to_dict(), sort_keys=True).encode()
+        body = json.dumps(provenance.to_dict(self._include), sort_keys=True).encode()
         sig = self._signer.sign(data + body)
         return data + self._MAGIC + body.hex().encode() + b":" + sig.hex().encode()
 

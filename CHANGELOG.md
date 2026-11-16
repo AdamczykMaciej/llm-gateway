@@ -6,7 +6,9 @@ AI-output provenance (machine-readable "AI-generated" marking, for example EU AI
 Additive and opt-in; no existing behaviour changes. No keys held, no network calls.
 
 - New `llm_gateway.provenance`: `Provenance` (provider, model, UTC `created_at`, `request_id`,
-  caller-supplied `app` / `surface` / `prompt_version`) with `c2pa_assertion()` (a `c2pa.actions`
+  caller-supplied `app` / `surface` / `prompt_version`). Renderers disclose the minimum by default
+  (AI-generated flag, source type, time, `app` if set); provider, model, request id, surface and
+  prompt version are opt-in via `include=(...)` or `"all"`. Renderers: `c2pa_assertion()` (a `c2pa.actions`
   `trainedAlgorithmicMedia` assertion), `http_headers()`, `pdf_metadata()` and `to_dict()`.
 - `Completion.provenance(...)` and `provenance_of(result, provider=...)` for `Completion`,
   `ChatResult` and the usage chunk of `stream_chat()`. `Completion.created_at` is a new
