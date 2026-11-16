@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- New optional `llm_gateway.evals` subpackage (extra `evals`, no new dependencies): case schema
+  (single- and multi-turn), deterministic check registry, blind-judge packet builder with a
+  private key file, rubric templates, aggregator with per-tag and A/B comparison, human
+  calibration (agreement, Cohen's kappa) and a run log. It never calls a model by default.
+
 ## 0.43.0
 
 AI-output provenance (machine-readable "AI-generated" marking, for example EU AI Act Art. 50(2)).
