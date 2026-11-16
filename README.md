@@ -2158,6 +2158,9 @@ elsewhere:
 | `ToolCallIssue` | One problem `check_tool_calls()` found (`kind`, tool, argument paths, never values) |
 | `ApprovalDenied` | A call `gate_tool_calls()` refused; `message()` is a `role: "tool"` message to feed back |
 | `UntrustedContent` | The fenced block `wrap_untrusted()` returns; `str()` is prompt-ready |
+| `Provenance`, `provenance_of()` | AI-output provenance record and its builder (see "AI-output provenance") |
+| `Marker`, `Signer`, `NoopMarker`, `AppendMarker` | Media-marking contract the app implements, the app-owned signer, a dev no-op marker and a reference (non-C2PA) marker |
+| `TRAINED_ALGORITHMIC_MEDIA` | The IPTC digital-source-type URI used in the assertion |
 | `circuit_breaker_status()` | Per-provider breaker state (`open` / `half_open` / `closed`) for a health endpoint |
 | `reset_circuit_breakers()` | Close every breaker again; for tests |
 | `Message`, `SystemMessage`, `UserMessage`, `AssistantMessage`, `ToolMessage` | Typed message shapes for `chat()` / `stream_chat()`. Typing only: plain dicts are still accepted |
@@ -2259,6 +2262,54 @@ elsewhere:
 | `POLICY_MAX_COST_USD` | `0` | Per-call cost cap; `0` disables it |
 | `POLICY_SORT` | `order` | Chain ordering: `order` (as `PROVIDER_ORDER`) or by price |
 | `MODEL_PRICES` | `{}` | JSON overrides for the built-in USD-per-million-token price table |
+
+## AI-output provenance (0.43.0)
+
+Machine-readable "this is AI-generated" marking with minimal disclosure by default, for transparency duties such as EU AI Act
+Art. 50(2). It is opt-in and additive. The library holds no keys and makes no network calls;
+signing stays in your application. Nothing here is legal advice: check with counsel which of your
+outputs are in scope and which exceptions apply.
+
+```python
+from llm_gateway import Provenance
+
+prov = Provenance(
+    provider="anthropic",
+    model="model-x",
+    request_id="req-1",
+    app="my-app",
+    surface="chat",
+    prompt_version="v3",
+)
+prov.c2pa_assertion()  # c2pa.actions assertion, digitalSourceType trainedAlgorithmicMedia
+prov.http_headers()  # X-AI-Generated: true, X-AI-Created, X-AI-App (no provider or model)
+prov.pdf_metadata()  # Creator / Keywords / DigitalSourceType for PDF or XMP exports
+prov.http_headers(include=("provider", "model"))  # opt-in detail, internal or audit use
+```
+
+For real calls use `completion.provenance(app=..., surface=..., prompt_version=...)`, or
+`provenance_of(chat_result, provider="...")` for a `ChatResult` and
+`provenance_of(delta)` for the usage chunk of `stream_chat()`. `app`, `surface` and
+`prompt_version` are free text you choose; the default output of every renderer carries only the
+AI-generated flag, the digital source type, the creation time and `app` (when you set it).
+Provider, model, request id, surface and prompt version appear only when you pass
+`include=(...)` (or `"all"`) to a renderer, or to `AppendMarker(include=...)`, for internal or audit
+use. They are never needed for the marking itself; the library gives them no meaning. Header values are
+forced to single-line printable ASCII.
+
+Audio, images and video go through a `Marker` (`mark(data, mime, provenance) -> bytes`,
+`verify(data, mime) -> mapping | None`) that you inject, backed by a `Signer` you own.
+`NoopMarker` returns data unchanged (it does not mark; tests and local dev only). `AppendMarker`
+is a reference showing the contract; it is not C2PA. No c2pa binaries are vendored.
+
+Adopting in a new app:
+
+1. Call `result.provenance(app="<name>", surface="<where shown>", prompt_version="<id>")` after each call.
+2. Attach `http_headers()` to API responses and `pdf_metadata()` to exports.
+3. Implement `Marker` for media (for example over a C2PA tool) and a `Signer` over your KMS or signing service.
+4. Keep keys, certificates and the signing service in the app; rotate and monitor them there.
+5. Show a visible disclosure in the UI where the rules require one; headers and metadata alone do not satisfy that.
+6. Mark media after generation and before storage or delivery, and test `verify()` on what you ship.
 
 ## Privacy layer (reversible redaction)
 
@@ -2535,6 +2586,29 @@ pinned at 0.28.0 may need to handle (details in `CHANGELOG.md`):
   revocation short of editing the secret and redeploying. Fine for a
   handful of consuming apps; would need real key-management (a store +
   admin API) beyond that.
+
+## Evaluating a new app (`llm_gateway.evals`)
+
+`pip install "llm-gateway[evals]"` adds a zero-cost quality toolkit. It never calls a model
+itself: it prepares packets and scores outputs produced elsewhere (for example by Claude Code
+subagents), or runs your own callable via `run_cases(cases, fn, "v1")`.
+
+1. Write `cases.jsonl`: one `Case` per line (`id`, `turns` or `message`, `must`, `must_not`,
+   `tags`, `language`, `checks`); multi-turn cases list several user turns.
+2. Generate replies per variant (prompt version) and save them with `dump_samples`.
+3. Add app-specific checks with `@register_check("name")`, then list them in a case's `checks`.
+4. `check_case(case, sample.replies)` runs them first: length caps, forbidden/required patterns,
+   cross-turn repetition, language hook. A failed deterministic check is final.
+5. `build_packets(cases, samples, "out/")` writes shuffled anonymous batches plus the private
+   `key.json`; have blind judges write `out_*.json` next to each batch.
+6. `collect_judgments("out/")` maps every id back through the key and fails on gaps or unknown ids.
+7. `aggregate(...)` gives per-case numbers, `by_tag(...)` per-tag, `compare(...)` the A/B delta
+   (differences under 0.3 are noise; rerun a case that fails once, fix only if it fails twice).
+8. Calibrate the judge with human labels (`save_labels`/`load_labels`, `judge_vs_human`:
+   agreement and Cohen's kappa) before trusting its absolute numbers.
+9. Log each run with `RunLog("evals/log.md").append(title, summary, data)`.
+10. Judges are the same vendor and samples are small: use this for A/B and regressions, not
+    absolute quality claims.
 
 ## Development
 

@@ -16,6 +16,26 @@ app-agnostic.
 - New `sanitize_model_text`, `Canary`, `CanaryStreamFilter`, `classify_probe` (`output_guard.py`).
 - New `llm_gateway.injection_corpus` (`cases(category)`): a synthetic hostile-input corpus for app tests.
 - README section "Safety layer for a new app"; MIGRATION.md lists interviewer modules that could switch.
+- New optional `llm_gateway.evals` subpackage (extra `evals`, no new dependencies): case schema
+  (single- and multi-turn), deterministic check registry, blind-judge packet builder with a
+  private key file, rubric templates, aggregator with per-tag and A/B comparison, human
+  calibration (agreement, Cohen's kappa) and a run log. It never calls a model by default.
+
+## 0.43.0
+
+AI-output provenance (machine-readable "AI-generated" marking, for example EU AI Act Art. 50(2)).
+Additive and opt-in; no existing behaviour changes. No keys held, no network calls.
+
+- New `llm_gateway.provenance`: `Provenance` (provider, model, UTC `created_at`, `request_id`,
+  caller-supplied `app` / `surface` / `prompt_version`). Renderers disclose the minimum by default
+  (AI-generated flag, source type, time, `app` if set); provider, model, request id, surface and
+  prompt version are opt-in via `include=(...)` or `"all"`. Renderers: `c2pa_assertion()` (a `c2pa.actions`
+  `trainedAlgorithmicMedia` assertion), `http_headers()`, `pdf_metadata()` and `to_dict()`.
+- `Completion.provenance(...)` and `provenance_of(result, provider=...)` for `Completion`,
+  `ChatResult` and the usage chunk of `stream_chat()`. `Completion.created_at` is a new
+  equality-neutral field.
+- `Marker` and `Signer` protocols for audio, images and video (the app injects the signer and a
+  C2PA marker), plus `NoopMarker` (dev only, does not mark) and `AppendMarker` (reference, not C2PA).
 
 ## 0.42.7
 
