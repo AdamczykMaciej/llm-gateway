@@ -129,3 +129,20 @@ and on the failed attempt report, so a spend ledger no longer sees them as free.
 
 `Completion` is generic: `Completion[Model]` when `output_schema=` or `validate=` is a
 pydantic class. Existing `Completion` annotations are unchanged.
+
+## Safety layer: what a consuming app can switch to (unreleased)
+
+Nothing is forced; the old names keep working. MyInterviewer modules that duplicate gateway APIs and
+could move later (each needs a behaviour-diff check first, the app versions are stricter in places):
+
+- `services/pii.py` number masks (PESEL, NIP, IBAN, card) -> `PatternRedactor` / `safe_privacy`.
+  Keep in the app: names, addresses, dates of birth, URLs and handles (`pii_names.py`, special-category terms).
+- `agents/*` `fence_data` / `_fence_*` helpers (`prep_delegate`, `debrief`, `panel_debrief`, `cv_parser`,
+  `answer_analyzer`, `report_block_rewrite`, `job_offer_extract`) -> `neutralize_markers` with the app's marker and
+  tag names, plus `wrap_untrusted`.
+- `services/ai_output_guard.py`: `sanitize_model_text`, `classify_probe`, canary and stream filter -> `output_guard`
+  (the app keeps Prometheus counters and `settings` wiring, passing its secret to `Canary`).
+- `tests/ai_security_corpus.py` generic fence / sanitize / probe cases -> `injection_corpus`; keep the
+  coach-action and intent cases in the app.
+- Stays in the app: `services/safety/*` (crisis, distress, scope, off-topic, live help: product policy),
+  coach action-block validation, `log_redaction.py` (log scrubbing).

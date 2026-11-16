@@ -2368,6 +2368,25 @@ async def hello() -> dict[str, str]:
 numbers, and PESEL-shaped national IDs from text before it's traced. It's a
 best-effort regex-based redactor, not a certified PII detector.
 
+## Safety layer for a new app
+
+Every app gets the same two protections from the library, opt-in and offline:
+
+1. **PII out.** `safe_privacy(protected={"PERSON": [user_name]})` returns a `Privacy` policy for `PrivacyLayer`:
+   `PatternRedactor` (checksum-validated email, phone, EU IBAN, card, PESEL, NIP; `PII_KINDS`) plus
+   `ProtectedValues` (strings you already know, case-insensitive, whole words) become `[KIND_n]` placeholders
+   before the provider sees them. `output=OutputPolicy.RESTORE` puts them back in a reply only the owner sees,
+   `STRIP` removes them for stored or shared text. Combine your own detector with `CompositeRedactor`.
+2. **Injection in.** Fence every untrusted string with `wrap_untrusted`; `neutralize_markers(text,
+   markers=[...], tags=[...])` removes look-alikes of your own prompt delimiters (spacing, case, full-width
+   brackets, hidden characters); `unfence` strips fenced blocks a model echoes back; gate sensitive tools with
+   `gate_tool_calls`.
+3. **Output out.** `sanitize_model_text` neutralises images, scripts and long exfiltration links in text that
+   leaves your renderer; `Canary` / `CanaryStreamFilter` detect a prompt dump; `classify_probe` counts
+   extraction and override attempts.
+4. **Test it.** `llm_gateway.injection_corpus.cases(category)` is a synthetic hostile-input corpus for your
+   own test suite. None of this makes a model ignore injected text; the enforceable control stays the tool gate.
+
 ## Guardrails, and what's deliberately not solved here
 
 What the gateway does:

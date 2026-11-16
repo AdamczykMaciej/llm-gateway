@@ -53,7 +53,9 @@ from .errors import (
     UnsupportedCapabilityError,
 )
 from .estimate import CostEstimate, RoutableModel, estimate_max_cost, routable_models
+from .output_guard import Canary, CanaryStreamFilter, classify_probe, sanitize_model_text
 from .pii import mask_pii
+from .pii_detect import PII_KINDS, PatternRedactor
 from .policy import BudgetCheck, ProviderMetadata, ProviderPolicy
 from .pricing import LongContextTier, ModelPrice
 from .privacy import (
@@ -71,6 +73,7 @@ from .providers import aclose_all as aclose
 from .providers.base import ChatResult, StreamDelta, ToolCall, Usage
 from .residency import residency_report
 from .router import Completion, LLMError, complete, complete_with_usage
+from .safety import CompositeRedactor, ProtectedValues, safe_privacy
 from .streaming import stream_chat
 from .tool_validation import ToolCallIssue, check_tool_calls, tool_error_message
 from .types import (
@@ -95,8 +98,10 @@ from .untrusted import (
     ApprovalDenied,
     UntrustedContent,
     gate_tool_calls,
+    neutralize_markers,
     sanitize_untrusted,
     tool_result_message,
+    unfence,
     wrap_untrusted,
 )
 
@@ -134,6 +139,17 @@ __all__ = [
     "UntrustedContent",
     "gate_tool_calls",
     "sanitize_untrusted",
+    "neutralize_markers",
+    "unfence",
+    "Canary",
+    "CanaryStreamFilter",
+    "classify_probe",
+    "sanitize_model_text",
+    "PII_KINDS",
+    "PatternRedactor",
+    "CompositeRedactor",
+    "ProtectedValues",
+    "safe_privacy",
     "tool_result_message",
     "wrap_untrusted",
     "FirstTokenTimeoutError",
