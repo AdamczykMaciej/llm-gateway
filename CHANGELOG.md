@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+Shared safety layer for every app built on the gateway. All additions are opt-in; `mask_pii`,
+`wrap_untrusted` and the privacy layer behave as before. Ported from the MyInterviewer app and made
+app-agnostic.
+
+- New `PatternRedactor` / `PII_KINDS` (`pii_detect.py`): checksum-validated email, phone (PL and
+  international), EU/EEA IBAN (mod-97, any country, spaced or compact, Polish without prefix), card
+  (Luhn), PESEL and NIP. A `Redactor`, so it plugs into `Privacy`.
+- New `ProtectedValues`, `CompositeRedactor` and `safe_privacy(...)` (`safety.py`): caller-supplied
+  protected values replaced by placeholders and restored (or stripped) after the reply, per call.
+- New `neutralize_markers` and `unfence` (`untrusted.py`): hardened removal of look-alikes of the
+  host's own prompt delimiters and tags, and removal of echoed fenced blocks.
+- New `sanitize_model_text`, `Canary`, `CanaryStreamFilter`, `classify_probe` (`output_guard.py`).
+- New `llm_gateway.injection_corpus` (`cases(category)`): a synthetic hostile-input corpus for app tests.
+- README section "Safety layer for a new app"; MIGRATION.md lists interviewer modules that could switch.
 - New optional `llm_gateway.evals` subpackage (extra `evals`, no new dependencies): case schema
   (single- and multi-turn), deterministic check registry, blind-judge packet builder with a
   private key file, rubric templates, aggregator with per-tag and A/B comparison, human
