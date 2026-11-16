@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.43.0
+
+AI-output provenance (machine-readable "AI-generated" marking, for example EU AI Act Art. 50(2)).
+Additive and opt-in; no existing behaviour changes. No keys held, no network calls.
+
+- New `llm_gateway.provenance`: `Provenance` (provider, model, UTC `created_at`, `request_id`,
+  caller-supplied `app` / `surface` / `prompt_version`). Renderers disclose the minimum by default
+  (AI-generated flag, source type, time, `app` if set); provider, model, request id, surface and
+  prompt version are opt-in via `include=(...)` or `"all"`. Renderers: `c2pa_assertion()` (a `c2pa.actions`
+  `trainedAlgorithmicMedia` assertion), `http_headers()`, `pdf_metadata()` and `to_dict()`.
+- `Completion.provenance(...)` and `provenance_of(result, provider=...)` for `Completion`,
+  `ChatResult` and the usage chunk of `stream_chat()`. `Completion.created_at` is a new
+  equality-neutral field.
+- `Marker` and `Signer` protocols for audio, images and video (the app injects the signer and a
+  C2PA marker), plus `NoopMarker` (dev only, does not mark) and `AppendMarker` (reference, not C2PA).
+
 ## 0.42.7
 
 Second coverage pass (98.85% to 99.82%, floor unchanged at 98.8 because 99.8 would leave under

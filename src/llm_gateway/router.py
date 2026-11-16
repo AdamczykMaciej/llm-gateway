@@ -10,6 +10,7 @@ import logging
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any, Generic, overload
 
 from opentelemetry.trace import StatusCode
@@ -38,6 +39,7 @@ from .errors import (
 from .idempotency import IDEMPOTENCY_HEADER_PROVIDERS, single_flight
 from .policy import ProviderPolicy
 from .pricing import cost_usd, lookup_price
+from .provenance import Provenance, provenance_of
 from .providers import CALLS, CONFIGURED, DEFAULT_MODEL
 from .providers.base import ProviderResult, Usage
 from .retry import Deadline, call_with_retry, resolve_deadline_seconds
@@ -167,6 +169,19 @@ class Completion(Generic[_T]):
     parsed: _T | None = None
     cost_usd: float | None = field(default=None, compare=False)
     request_id: str | None = field(default=None, compare=False)
+    # When the answer was produced (UTC); derived data, excluded from equality.
+    created_at: datetime | None = field(default=None, compare=False)
+
+    def provenance(
+        self,
+        *,
+        app: str | None = None,
+        surface: str | None = None,
+        prompt_version: str | None = None,
+    ) -> Provenance:
+        """The AI-output provenance record of this answer (see provenance.py).
+        `app`, `surface` and `prompt_version` are caller-supplied labels."""
+        return provenance_of(self, app=app, surface=surface, prompt_version=prompt_version)
 
     @property
     def usage_reported(self) -> bool:
@@ -817,6 +832,7 @@ async def _complete_once(
                 parsed=parsed,
                 cost_usd=cost,
                 request_id=request_id,
+                created_at=datetime.now(UTC),
             )
 
         if deadline.expired:

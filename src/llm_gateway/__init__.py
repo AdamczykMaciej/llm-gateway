@@ -67,6 +67,15 @@ from .privacy import (
     TokenFormat,
     Vault,
 )
+from .provenance import (
+    TRAINED_ALGORITHMIC_MEDIA,
+    AppendMarker,
+    Marker,
+    NoopMarker,
+    Provenance,
+    Signer,
+    provenance_of,
+)
 from .providers import aclose_all as aclose
 from .providers.base import ChatResult, StreamDelta, ToolCall, Usage
 from .residency import residency_report
@@ -101,6 +110,13 @@ from .untrusted import (
 )
 
 __all__ = [
+    "Provenance",
+    "provenance_of",
+    "Marker",
+    "Signer",
+    "NoopMarker",
+    "AppendMarker",
+    "TRAINED_ALGORITHMIC_MEDIA",
     "InvalidRequestError",
     "ProviderFailure",
     "FailureClass",
