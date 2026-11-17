@@ -376,6 +376,49 @@ routable model is unpriced or nothing is routable), `unpriced`, `excluded`,
 reserve covers it; an unpriced fallback makes `max_cost_usd` `None`. Set `MODEL_PRICES` for any
 model you route to that the built-in table lacks.
 
+### Action policy: what may an agent do (opt-in)
+
+`ActionPolicy` authorises *tool calls*; it is unrelated to `ProviderPolicy`, which routes providers.
+Nothing is wired into `complete()`: ask an `ActionGuard` before running each tool.
+
+```python
+from llm_gateway import ActionGuard, ActionLog, ActionPolicy, ActionRequest, DeclarativeEngine
+
+policy = ActionPolicy.load({"id": "coach", "version": "1", "rules": [
+    {"tool": "read_cv", "effect": "allow"},
+    {"tool": "send_email", "effect": "require_approval"},   # effects: allow, require_approval, block, halt
+]})
+
+class AskHuman:  # an ApprovalHandler; only a literal True approves
+    async def request_approval(self, request, summary, expires_at):
+        return False  # ask a person here (human-gate or your own UI)
+
+guard = ActionGuard(DeclarativeEngine(policy), log=ActionLog(), approval=AskHuman())
+decision = await guard.authorize(ActionRequest("user-1", "coach", "read_cv", {"id": 3}))
+if decision.outcome == "allow": ...   # "halt" means stop the whole agent run
+```
+
+- `Rule` is one entry of `ActionPolicy.rules`; `Decision` is what `authorize()` returns (outcome,
+  reason, policy id and version); `Verification` is what the log's `verify()` returns.
+- Default deny: an unknown tool or missing rule is `block`. Fail closed: an engine error, malformed
+  answer, handler error, denial or expiry is `block` (`approval_expired`); only `True` approves.
+- `ApprovalHandler` is a protocol (`request_approval(request, summary, expires_at) -> bool`); the
+  summary is built by code from argument names, never from model text. `human-gate` can implement it
+  but is not a dependency. `ActionPolicy.missing_rules(tools)` helps a test keep rules in step.
+- `ActionLog` is append-only and hash-chained: argument digest plus a PII-masked preview (`mask_pii`,
+  best effort, 120 chars), never raw arguments. `verify()` / `verify_records()` report the first
+  bad record (pass `expected_head` to catch truncation), `to_jsonl()` exports, decisions are also
+  OpenTelemetry span events, and `evidence_report()` counts decisions per policy version.
+- Engine-neutral: `PolicyEngine.evaluate(request) -> response` uses the OpenID AuthZEN Authorization
+  API 1.0 Access Evaluation shapes (checked against the final spec, 2026-11-17): request
+  `{subject:{type,id,properties}, action:{name,properties}, resource:{type,id,properties}, context}`,
+  response `{decision: bool, context}`. Here the subject is the agent (the principal and delegation
+  chain are in `properties`), the action is `invoke`, the resource is the tool; a response context may
+  add `outcome` (`require_approval` or `halt`) and `reason_code`. No Cedar, Cerbos or OPA bindings
+  are shipped. An adapter needs only: a class with `policy_id`, `policy_version` and `evaluate()`
+  that maps these mappings to the engine (for Cedar: principal/action/resource entities plus context)
+  and maps its allow/deny and any obligation back to `{decision, context}`.
+
 ### Security notes
 
 - **Redirects are off** on every provider client: a redirect cannot carry your key to another host.
