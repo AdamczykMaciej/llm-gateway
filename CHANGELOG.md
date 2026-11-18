@@ -15,6 +15,10 @@ app-agnostic.
   host's own prompt delimiters and tags, and removal of echoed fenced blocks.
 - New `sanitize_model_text`, `Canary`, `CanaryStreamFilter`, `classify_probe` (`output_guard.py`).
 - New `llm_gateway.injection_corpus` (`cases(category)`): a synthetic hostile-input corpus for app tests.
+- New opt-in action policy layer (`actions.py`, `actionlog.py`): `ActionPolicy` / `DeclarativeEngine` (default deny,
+  rules as data), AuthZEN 1.0 shaped `PolicyEngine` protocol, `ApprovalHandler` (expiry blocks), `ActionGuard`
+  (fails closed) and a hash-chained `ActionLog` (digest + masked preview, JSONL, OTel, evidence report).
+  `complete()` is unchanged.
 - README section "Safety layer for a new app"; MIGRATION.md lists interviewer modules that could switch.
 - New optional `llm_gateway.evals` subpackage (extra `evals`, no new dependencies): case schema
   (single- and multi-turn), deterministic check registry, blind-judge packet builder with a

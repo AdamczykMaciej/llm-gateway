@@ -26,6 +26,17 @@ LangGraph's prebuilt ReAct agent works against it with zero custom code,
 just point `ChatOpenAI(base_url=...)` at it.
 """
 
+from .actionlog import ActionLog, Verification
+from .actions import (
+    ActionGuard,
+    ActionPolicy,
+    ActionRequest,
+    ApprovalHandler,
+    Decision,
+    DeclarativeEngine,
+    PolicyEngine,
+    Rule,
+)
 from .attempts import AttemptHook, AttemptReport
 from .breaker import reset as reset_circuit_breakers
 from .breaker import snapshot as circuit_breaker_status
@@ -116,6 +127,16 @@ from .untrusted import (
 
 __all__ = [
     "Provenance",
+    "ActionGuard",
+    "ActionLog",
+    "ActionPolicy",
+    "ActionRequest",
+    "ApprovalHandler",
+    "DeclarativeEngine",
+    "Decision",
+    "PolicyEngine",
+    "Rule",
+    "Verification",
     "provenance_of",
     "Marker",
     "Signer",
