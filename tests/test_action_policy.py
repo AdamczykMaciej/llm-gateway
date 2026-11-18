@@ -31,6 +31,11 @@ POLICY = ActionPolicy.load(
 )
 
 
+def _log(g: ActionGuard) -> ActionLog:
+    assert g.log is not None
+    return g.log
+
+
 def req(tool: str, agent: str = "coach", **args: object) -> ActionRequest:
     return ActionRequest("user-1", agent, tool, args, delegation=("user-1", "app"))
 
@@ -80,7 +85,7 @@ async def test_engine_error_blocks_and_log_has_no_message_or_arguments():
     g = ActionGuard(Boom(), log=ActionLog())
     d = await g.authorize(req("read_cv", note="secret@example.com"))
     assert d.outcome == "block" and d.reason == "engine_error:RuntimeError"
-    dump = g.log.to_jsonl()
+    dump = _log(g).to_jsonl()
     assert "secret@example.com" not in dump
 
 
@@ -121,7 +126,7 @@ async def test_approval_expiry_blocks_and_is_logged():
     g = guard(approval=Silent(), approval_timeout=0.05)
     d = await g.authorize(req("send_email"))
     assert (d.outcome, d.reason) == ("block", "approval_expired")
-    assert g.log.records[-1]["reason"] == "approval_expired"
+    assert _log(g).records[-1]["reason"] == "approval_expired"
 
 
 async def test_approval_handler_error_and_missing_handler_block():
@@ -147,12 +152,12 @@ async def test_log_chain_digest_preview_and_tamper_detection():
     await g.authorize(req("read_cv", email="jan.kowalski@example.com", n=1))
     await g.authorize(req("format_disk"))
     await g.authorize(req("read_cv"))
-    first = g.log.records[0]
+    first = _log(g).records[0]
     assert "jan.kowalski@example.com" not in str(first) and "[EMAIL]" in first["preview"]
     assert len(first["arguments_digest"]) == 64
-    assert g.log.verify().ok
+    assert _log(g).verify().ok
 
-    rows = ActionLog.read_jsonl(g.log.to_jsonl())
+    rows = ActionLog.read_jsonl(_log(g).to_jsonl())
     assert ActionLog.verify_records(rows).ok
     rows[1]["decision"] = "allow"
     v = ActionLog.verify_records(rows)
@@ -160,15 +165,15 @@ async def test_log_chain_digest_preview_and_tamper_detection():
 
     dropped = [rows[0], rows[2]]
     assert ActionLog.verify_records(dropped).broken_at == 1
-    head = g.log.head
-    assert not ActionLog.verify_records(g.log.records[:2], expected_head=head).ok
+    head = _log(g).head
+    assert not ActionLog.verify_records(_log(g).records[:2], expected_head=head).ok
 
 
 async def test_evidence_report_counts_per_policy_version():
     g = guard()
     await g.authorize(req("read_cv"))
     await g.authorize(req("nope"))
-    rep = g.log.evidence_report()
+    rep = _log(g).evidence_report()
     assert rep["policies"] == {"coach@7": {"allow": 1, "block": 1}} and rep["chain_ok"]
 
 

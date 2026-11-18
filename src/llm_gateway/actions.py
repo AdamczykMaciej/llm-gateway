@@ -27,9 +27,12 @@ import json
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import Any, Literal, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field
+
+if TYPE_CHECKING:
+    from .actionlog import ActionLog
 
 Outcome = Literal["allow", "require_approval", "block", "halt"]
 OUTCOMES: tuple[str, ...] = ("allow", "require_approval", "block", "halt")
@@ -201,7 +204,7 @@ class ActionGuard:
         self,
         engine: PolicyEngine,
         *,
-        log: Any | None = None,
+        log: ActionLog | None = None,
         approval: ApprovalHandler | None = None,
         approval_timeout: float = 300.0,
         validators: Mapping[str, Callable[[Mapping[str, Any]], None]] | None = None,
