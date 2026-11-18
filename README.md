@@ -384,18 +384,30 @@ Nothing is wired into `complete()`: ask an `ActionGuard` before running each too
 ```python
 from llm_gateway import ActionGuard, ActionLog, ActionPolicy, ActionRequest, DeclarativeEngine
 
-policy = ActionPolicy.load({"id": "coach", "version": "1", "rules": [
-    {"tool": "read_cv", "effect": "allow"},
-    {"tool": "send_email", "effect": "require_approval"},   # effects: allow, require_approval, block, halt
-]})
+policy = ActionPolicy.load(
+    {
+        "id": "coach",
+        "version": "1",
+        "rules": [
+            {"tool": "read_cv", "effect": "allow"},
+            {
+                "tool": "send_email",
+                "effect": "require_approval",
+            },  # effects: allow, require_approval, block, halt
+        ],
+    }
+)
+
 
 class AskHuman:  # an ApprovalHandler; only a literal True approves
     async def request_approval(self, request, summary, expires_at):
         return False  # ask a person here (human-gate or your own UI)
 
+
 guard = ActionGuard(DeclarativeEngine(policy), log=ActionLog(), approval=AskHuman())
 decision = await guard.authorize(ActionRequest("user-1", "coach", "read_cv", {"id": 3}))
-if decision.outcome == "allow": ...   # "halt" means stop the whole agent run
+if decision.outcome == "allow":
+    ...  # "halt" means stop the whole agent run
 ```
 
 - `Rule` is one entry of `ActionPolicy.rules`; `Decision` is what `authorize()` returns (outcome,
