@@ -381,6 +381,11 @@ model you route to that the built-in table lacks.
 `ActionPolicy` authorises *tool calls*; it is unrelated to `ProviderPolicy`, which routes providers.
 Nothing is wired into `complete()`: ask an `ActionGuard` before running each tool.
 
+Which to use: `gate_tool_calls()` is the simple option (named sensitive tools run only if a
+callback returns exactly `True`). Reach for `ActionGuard` when you need rules per tool, a
+tamper-evident decision log or an evidence report. A set of read-only, owner-scoped tools needs
+neither.
+
 ```python
 from llm_gateway import ActionGuard, ActionLog, ActionPolicy, ActionRequest, DeclarativeEngine
 
